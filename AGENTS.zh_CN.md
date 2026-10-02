@@ -9,8 +9,9 @@
 ## 必需 AI 技能
 
 应用背景：本仓库是 **AI Passport Quota**，固件位于根目录，正式本地账户及
-网页应用位于 `companion/`。配置、已取得的证据和下一项验收看根 README；
-修改电脑端前读 `companion/AGENTS.md`。示例截图数据与正式账户隔离。
+网页应用位于 `companion/`。配置、当前功能与限制看根 README，验证和真机
+历史看 `docs/CHANGELOG.zh_CN.md`；修改电脑端前读 `companion/AGENTS.md`。
+示例截图数据与正式账户隔离。
 浏览器 USB 超时已修改通信代码，仍等待真机确认，不可仅凭主机测试宣称解决。
 保留额度来源时间和窗口缺失语义。
 
@@ -94,6 +95,6 @@ Unverified: 仍需板卡、仪器或用户确认的事项
 [真机测试交接流程](docs/development/ai-guide.zh_CN.md#主动询问真机测试)，
 烧录前须取得用户同意；检测到设备本身不代表获得烧录授权。
 
-仅在用户请求或当前工作流明确要求时创建 commit 和 push。普通功能、应用和文档 PR 不得修改 `docs/CHANGELOG.md` 或 `docs/CHANGELOG.zh_CN.md`；用户可见行为、兼容性和发布流程影响改为写入 PR 正文及对应权威文档。发布准备期间，由发布负责人在创建 tag 前把已合并的用户可见变化统一汇总到两份变更日志。
+仅在用户请求或当前工作流明确要求时创建 commit 和 push。用户明确要求本 Fork 的根 README 只描述当前功能、用法、限制和开发入口。按日期记录的开发、验证及刷机历史放在 `docs/CHANGELOG.md` 与 `docs/CHANGELOG.zh_CN.md`，保持双语一致并保留继承的上游条目。本 Fork 的此项要求覆盖继承的“仅发布时维护变更日志”规则；不得编造发布标签或发布状态。
 
 社区规范见 `.github/CONTRIBUTING.zh_CN.md`、`.github/CODE_OF_CONDUCT.zh_CN.md`、`.github/SECURITY.zh_CN.md` 与 `.github/SUPPORT.zh_CN.md`。

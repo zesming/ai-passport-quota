@@ -4,6 +4,8 @@
 
 An AI subscription quota dashboard for the FoloToy AI Passport (ESP32-C3, 240 x 320 screen), with a local desktop companion for account login and device settings. Supports up to eight independent ChatGPT/Codex, Claude and DeepSeek API accounts, provider logos, subscription quotas or API balances, refresh timing and offline cache.
 
+The device status bar shows Wi-Fi connection, a filled battery indicator with percentage, and the current time after synchronization. OpenAI uses a monochrome mark on the dark screen. Screen off is configurable; function keys wake the screen while synchronization continues in the background.
+
 ## Screenshots
 
 These are captures of the running companion with isolated **documentation example accounts**. Emails, quotas, balances and device indicators are synthetic; no personal account data is included. The left panel is the web device preview, not a photograph of the physical screen. Its clock uses the computer's local time; live board Wi-Fi/battery telemetry is not supplied to the companion.
@@ -36,7 +38,7 @@ Open **http://127.0.0.1:4317/**. On macOS, `companion/start-dashboard.command` s
 4. Add DeepSeek with an API key from the [official portal](https://platform.deepseek.com/api_keys). The optional name is a local label; the balance API does not supply a verified email. Keys stay in owner-only local profiles and are never sent to the device. The page displays one RMB available balance (`total_balance`, including grants and top-ups) from the [official balance API](https://api-docs.deepseek.com/api/get-user-balance/), with availability and observation time. Grant/top-up details and USD are not displayed. Missing RMB data stays unknown. This check sends no model prompt.
 5. Set automatic refresh at 1, 5, 15 or 30 minutes and automatic screen off at 30 seconds, 1/2/5/10 minutes, or Never (default: 2 minutes).
 
-As of 2026-10-02, the published DeepSeek API reference does not document account-wide cumulative/period spending, request counts or historical token totals. [Model responses](https://api-docs.deepseek.com/api/create-chat-completion/) contain usage for a single request; they cannot reconstruct the portal's last-30-day totals across other clients. Those portal statistics are not implemented. A separate console data source would need investigation before adding them.
+The DeepSeek integration displays available balance only. Account-wide cumulative/period spending, request counts and historical token totals are not supported. [Model responses](https://api-docs.deepseek.com/api/create-chat-completion/) contain usage for a single request, not the portal's last-30-day totals across other clients.
 
 ## Connect the device
 
@@ -81,9 +83,9 @@ Open http://127.0.0.1:5173/ for development, matching the allowed origin above.
 
 For reproducible documentation captures without accessing real profiles: `cd companion && npm run preview:readme`, then open http://127.0.0.1:4327/ . This example service uses temporary settings and synthetic accounts; it is separate from production.
 
-## Continue development
+## Development entry points
 
-Start with [AGENTS.md](AGENTS.md), this README and the [application/protocol guide](docs/applications/ai-quota-monitor.md). Use this repository as the source of truth; do not continue editing the earlier separate working directories.
+Development starts with [AGENTS.md](AGENTS.md) and the [application/protocol guide](docs/applications/ai-quota-monitor.md). Dated changes, validation and device acceptance are recorded in the [changelog](docs/CHANGELOG.md).
 
 | Area | Files |
 | --- | --- |
@@ -94,24 +96,6 @@ Start with [AGENTS.md](AGENTS.md), this README and the [application/protocol gui
 | Official login and quota collection | `companion/server/accounts.mjs`, `clients.mjs`, `claude-feed.mjs`, `claude-session.mjs`, `deepseek.mjs` |
 | Local API, pairing and storage | `companion/server/index.mjs`, `pairing.mjs`, `protocol.mjs`, `storage.mjs` |
 | Host tests | `tests/test_quota_logic.c`, `tests/test_quota_fonts.py`, `tests/test_quota_refresh_runtime.py`, `tests/test_quota_storage_runtime.py`, `companion/test/*.test.mjs` |
-
-Companion validation: **47/47 tests PASS**, production build PASS. Browser checks confirmed a single RMB available balance without grant/top-up details, proportional quota fills, unknown board telemetry in production, and saving the screen timeout. Documentation screenshots use isolated examples.
-
-Latest firmware validation on **2026-10-02**: the complete gate passed, including the ESP-IDF build, merged image/debug archive verification, all host checks, refresh-state tests, NVS compatibility tests and coverage for 135 non-ASCII glyphs. The new screen-off, display-status and DeepSeek firmware has **not** been flashed or physically accepted. A real DeepSeek key and response have not been tested; the balance tests use synthetic responses.
-
-The current debug bundle is `build/firmware/c0eb0a8988a819ae43a2cb4b3e388747e14e79c6a667d7916a2fb73a04123de4/`, with ELF SHA-256 `4a87f07e1535d9ea084a811aeff055dbcf8fdc4ea3e5fb4ae2cee8ff42e18a8f`. It was built from the working tree (`5ef51a1-dirty`), before this change was committed. The partition table matches the previously flashed image, allowing a verified segmented upgrade to retain NVS. Confirm the detected device and exact write scope before flashing.
-
-Earlier hardware observations confirmed readable Chinese on the initial pairing page, normal two-minute window expiry and boot without observed crashes. One real Codex profile supplied weekly quota; its source omitted the 5-hour window.
-
-Hardware observations used the pre-consolidation full image `690229c2dca7ec2ee0a794d1c4f8625468e4feedab54507b7c3cae0448b1af7c`, with ELF SHA-256 `15a33663935734a7df19fd553db87e461f53d1a22e2984973342ca8df3bc0858`. Rebuilding this checkout creates a new artifact identity; its new build has not been flashed. Always match the actual image's ELF before decoding a crash.
-
-**Next acceptance task:** reproduce browser USB pairing on the actual board. A reported 15-second timeout prompted eager receive, a bounded startup wait, a 4096-byte stream buffer and specific errors; the host checks pass, but the real retry has not been confirmed. Safe short and production-sized invalid frames returned matching acknowledgments over native serial. Opening a serial monitor can reset the board, so avoid competing tools and distinguish a reset from pairing expiry.
-
-This iteration adds configurable screen off, wake-gesture suppression, real board Wi-Fi/battery indicators, a clock calibrated during the current boot, display-only plan capitalization, monochrome OpenAI marks, and DeepSeek balances. Passive cache polling no longer displays a source-refresh busy message. DeepSeek needs this new firmware; older firmware rejects that provider.
-
-The web low/critical quota preview also had a full-width colored number background; it is fixed and browser-checked. Keep the number background transparent and fill only the remaining proportion. Do not present stream simulations or web previews as physical acceptance.
-
-After successful pairing, verify Wi-Fi/HTTPS sync, Claude authorization and real quota, all screens/buttons/logos, settings round-trip, offline/reboot cache, automatic screen off/wake, DeepSeek balances and runtime heap during TLS. Keep unknown/expired windows unknown, preserve source timestamps, and never invent fresh quotas.
 
 Profiles and credentials live outside the repository in `~/.local/share/ai-passport-quota/` (or `AIQ_STATE_DIR`). Never commit auth files, Wi-Fi details, tokens, private keys, device identifiers or raw logs. UI changes should be captured with example accounts. Firmware code outside the LVGL task must use the BSP lock; networking/storage must not block button callbacks. Run the relevant tests and the full firmware gate for firmware delivery; flashing requires separate authorization.
 

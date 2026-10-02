@@ -4,6 +4,8 @@
 
 面向 FoloToy AI Passport（ESP32-C3、240 × 320 小屏）的 AI 订阅额度看板，配套本地电脑网页管理账户和设备设置。支持最多八个独立的 ChatGPT/Codex、Claude 订阅账户和 DeepSeek API 账户，展示 Logo、订阅额度或 API 余额，支持刷新间隔与离线缓存。
 
+小屏状态栏显示 Wi-Fi 连接图标、电池进度及百分比，以及校时后的当前时间。深色屏幕使用黑白 OpenAI Logo。支持设置息屏时间、功能键唤醒，息屏后仍保持后台同步。
+
 ## 页面截图
 
 以下为运行中的电脑端应用截图，使用隔离的**文档示例账户**。邮箱、额度、余额及设备状态图标都是示例数据，不含个人账户信息。左侧是网页设备预览，不是真机照片。预览时钟使用电脑本地时间；电脑端目前不接收真机 Wi-Fi/电池状态。
@@ -36,7 +38,7 @@ npm start
 4. 添加 DeepSeek 时填写[官方平台](https://platform.deepseek.com/api_keys)生成的 API Key。名称是本地备注，余额接口不提供已验证邮箱。密钥只保存在当前用户可访问的本地档案，不发送到设备。页面只显示[官方余额接口](https://api-docs.deepseek.com/api/get-user-balance/)返回的一项人民币可用余额（`total_balance`，包含赠送和充值部分），以及可用状态和采集时间。不展开赠送/充值明细，也不展示美元；缺失人民币数据时保持未知。不会发送模型请求。
 5. 刷新设置可选 1、5、15、30 分钟；自动息屏可选 30 秒、1/2/5/10 分钟或“永不”，默认 2 分钟。
 
-截至 2026-10-02，DeepSeek 公开 API 文档没有提供账户累计/区间消费、请求次数或历史 Tokens 总量查询。[模型响应](https://api-docs.deepseek.com/api/create-chat-completion/)中的用量只对应单次请求，无法还原其他客户端产生的官网近 30 天统计。这些官网统计尚未实现；添加前需另行调查官网登录后的数据来源。
+DeepSeek 当前只展示可用余额，不支持账户累计/区间消费、请求次数及历史 Tokens 总量。[模型响应](https://api-docs.deepseek.com/api/create-chat-completion/)中的用量只对应单次请求，不是其他客户端产生的官网近 30 天统计。
 
 ## 连接小屏
 
@@ -81,9 +83,9 @@ npm run dev
 
 重新生成文档截图可用 `cd companion && npm run preview:readme`，打开 http://127.0.0.1:4327/ 。该示例服务使用临时设置和示例账户，与正式账户及服务隔离。
 
-## 其他 Agent 从这里接着开发
+## 开发入口
 
-先读 [AGENTS.md](AGENTS.md)、本 README 和[应用及协议说明](docs/applications/ai-quota-monitor.zh_CN.md)。后续以此仓库为准，停止在此前分散的工作目录继续修改。
+开发时先读 [AGENTS.md](AGENTS.md) 和[应用及协议说明](docs/applications/ai-quota-monitor.zh_CN.md)。按日期记录的变更、验证及真机验收见[更新记录](docs/CHANGELOG.zh_CN.md)。
 
 | 范围 | 文件 |
 | --- | --- |
@@ -94,24 +96,6 @@ npm run dev
 | 官方登录与额度采集 | `companion/server/accounts.mjs`、`clients.mjs`、`claude-feed.mjs`、`claude-session.mjs`、`deepseek.mjs` |
 | 本机 API、配对与存储 | `companion/server/index.mjs`、`pairing.mjs`、`protocol.mjs`、`storage.mjs` |
 | 主机测试 | `tests/test_quota_logic.c`、`tests/test_quota_fonts.py`、`tests/test_quota_refresh_runtime.py`、`tests/test_quota_storage_runtime.py`、`companion/test/*.test.mjs` |
-
-电脑端验证：**47/47 项测试通过**，正式构建通过。网页检查确认只显示一项人民币可用余额、不展开赠送/充值明细，正确的额度填充比例、正式服务的设备状态保持未知、息屏时间保存。文档截图使用隔离示例。
-
-**2026-10-02 固件验证状态**：完整检查通过，包括 ESP-IDF 构建、合并镜像/调试归档核验、全部主机检查、刷新状态测试、NVS 兼容测试和 135 个非 ASCII 字形覆盖。新增息屏、显示状态和 DeepSeek 的固件**尚未刷入或真机验收**。DeepSeek 尚未使用真实密钥及响应测试；余额测试使用模拟响应。
-
-当前调试归档为 `build/firmware/c0eb0a8988a819ae43a2cb4b3e388747e14e79c6a667d7916a2fb73a04123de4/`，ELF SHA-256 为 `4a87f07e1535d9ea084a811aeff055dbcf8fdc4ea3e5fb4ae2cee8ff42e18a8f`。该产物由提交前工作区（`5ef51a1-dirty`）构建。分区表与此前实际刷入镜像一致，可按核验后的分段升级保留 NVS。刷机前确认当前设备及具体写入范围。
-
-此前真机观察确认初始配对页中文清晰、两分钟窗口关闭正常、启动未见崩溃。一个真实 Codex 账户已提供周额度，其数据源没有提供 5 小时窗口。
-
-上述真机观察使用整理仓库之前的完整镜像 `690229c2dca7ec2ee0a794d1c4f8625468e4feedab54507b7c3cae0448b1af7c`，匹配 ELF SHA-256 为 `15a33663935734a7df19fd553db87e461f53d1a22e2984973342ca8df3bc0858`。重新编译此仓库会产生新的产物身份，本次新构建尚未刷机。分析崩溃前必须匹配实际刷入镜像的 ELF。
-
-**接下来先验收 USB 配对**：用户报告过配对窗口内仍出现 15 秒超时。网页已改为打开后立即接收、有限等待启动、4096 字节数据流缓冲和具体错误提示；主机检查通过，实际重试尚未确认。原生串口发送短帧和实际配置长度的安全无效帧均得到匹配编号的确认。打开串口监视器可能重启设备，避免同时占用串口，区分重启与配对超时。
-
-本次增加可设置的自动息屏、完整唤醒按键抑制、设备真实 Wi-Fi/电池图标、本次启动校时后显示的时钟、订阅名称展示首字母大写、黑白 OpenAI Logo 和 DeepSeek 余额。后台读取缓存不再提示正在刷新。DeepSeek 需要本次新固件，旧固件会拒绝该平台。
-
-网页低额度/危险额度预览曾把整块数字背景着色，现已修正并在浏览器检查。保持数字背景透明，进度条只填充剩余比例；不要把模拟数据流检查或网页预览当成真机验收。
-
-配对成功后继续验证 Wi-Fi/HTTPS 同步、Claude 授权与真实额度、全部页面/按键/Logo、设置双向同步、断网及重启缓存、自动息屏/唤醒、DeepSeek 余额、TLS 动态内存。未知或重置过期窗口保持未知，保留来源时间，不伪造新额度。
 
 凭证和档案在仓库外的 `~/.local/share/ai-passport-quota/`（或 `AIQ_STATE_DIR`）。禁止提交认证文件、Wi-Fi 信息、令牌、私钥、设备标识或原始日志；截图用示例账户。LVGL 线程之外的固件界面操作需要 BSP 锁，网络及存储不能阻塞按键回调。按改动运行测试，固件交付通过完整检查；刷机需要另外授权。
 

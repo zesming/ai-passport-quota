@@ -10,8 +10,9 @@ This file is the only mandatory entry point for AI-assisted work in this reposit
 
 Application context: this checkout is **AI Passport Quota**, with the firmware at
 the repository root and the real local account/dashboard app in `companion/`.
-Read the root README for setup, current evidence and the next acceptance task;
-read `companion/AGENTS.md` before editing that app. Keep example screenshot data
+Read the root README for setup, current functionality and constraints; read
+`docs/CHANGELOG.md` for validation and device history, and read
+`companion/AGENTS.md` before editing that app. Keep example screenshot data
 separate from production. The reported browser USB timeout is still awaiting
 physical confirmation after the transport fix; do not mark it resolved from
 host tests. Preserve source quota timestamps and missing-window semantics.
@@ -104,6 +105,6 @@ connect it to a computer USB port with a data-capable cable. Follow the
 [on-device testing handoff](docs/development/ai-guide.md#offer-on-device-testing)
 and obtain approval before flashing; detection alone is not consent.
 
-Create commits and push only when the user requests them or the active workflow explicitly requires them. Ordinary feature, application, and documentation pull requests must not edit `docs/CHANGELOG.md` or `docs/CHANGELOG.zh_CN.md`; describe user-visible behavior, compatibility, and release-flow impact in the pull-request body and authoritative documentation instead. During release preparation, the release maintainer aggregates merged user-visible changes into both changelog files before creating the tag.
+Create commits and push only when the user requests them or the active workflow explicitly requires them. The owner explicitly requires this fork's root README to describe current functionality, usage, constraints and development entry points only. Record dated development, validation and flashing history in `docs/CHANGELOG.md` and `docs/CHANGELOG.zh_CN.md`, keeping both aligned and preserving inherited upstream entries. This fork-specific instruction overrides the inherited release-only changelog rule; do not invent release tags or publication status.
 
 Community guidance is in `.github/CONTRIBUTING.md`, `.github/CODE_OF_CONDUCT.md`, `.github/SECURITY.md`, and `.github/SUPPORT.md`.
