@@ -8,6 +8,15 @@
 
 ## 必需 AI 技能
 
+应用背景：本仓库是 **AI Passport Quota**，固件位于根目录，正式本地账户及
+网页应用位于 `companion/`。配置、已取得的证据和下一项验收看根 README；
+修改电脑端前读 `companion/AGENTS.md`。示例截图数据与正式账户隔离。
+浏览器 USB 超时已修改通信代码，仍等待真机确认，不可仅凭主机测试宣称解决。
+保留额度来源时间和窗口缺失语义。
+
+用户已明确要求整理项目、提交并推送到其新建私有仓库。后续发布标签、公开
+仓库、上游提交与刷机分别适用各自授权要求。同步上游时不得把应用换回演示 UI。
+
 以下五个技能是本仓库 AI 辅助开发的必需项：`passport-develop`、
 `passport-setup`、`passport-build`、`passport-device-test`、`passport-debug`。
 技能权威源文件位于 `skills/`。

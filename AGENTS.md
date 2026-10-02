@@ -8,6 +8,19 @@ This file is the only mandatory entry point for AI-assisted work in this reposit
 
 ## Required AI skills
 
+Application context: this checkout is **AI Passport Quota**, with the firmware at
+the repository root and the real local account/dashboard app in `companion/`.
+Read the root README for setup, current evidence and the next acceptance task;
+read `companion/AGENTS.md` before editing that app. Keep example screenshot data
+separate from production. The reported browser USB timeout is still awaiting
+physical confirmation after the transport fix; do not mark it resolved from
+host tests. Preserve source quota timestamps and missing-window semantics.
+
+Repository organization, commits and a push to the owner's new private repo
+were explicitly requested. Future release tags, public visibility, upstream
+submissions and flashing need their own applicable authorization. Do not
+replace this app with upstream demo UI during synchronization.
+
 The following five skills are required for AI-assisted development in this repository:
 `passport-develop`, `passport-setup`, `passport-build`, `passport-device-test`, and
 `passport-debug`. Their maintained sources are under `skills/`.

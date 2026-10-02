@@ -41,3 +41,22 @@ Store reusable music and sound-effect sources in `music/`.
 - Prefer 16 kHz, 16-bit mono PCM when it matches the current BSP audio path.
 - Check Flash and internal-RAM cost before embedding audio; stream or chunk long recordings.
 - Do not commit media without redistribution permission.
+
+## Quota monitor assets
+
+- `fonts/quota_font_12.c` and `fonts/quota_font_16.c`: LVGL 9, 4-bpp subsets of Noto Sans SC Regular at 12 and 16 pixels. Input: the locked LVGL component's `tests/src/test_files/fonts/noto/NotoSansSC-Regular.ttf`; license: SIL Open Font License 1.1, preserved in `fonts/NotoSansSC-OFL.txt`. Generated with `lv_font_conv@1.5.3`, ASCII U+0020–U+007E plus `fonts/quota-font-glyphs.txt`. `fonts/quota-font-codepoints.txt` records the exact non-ASCII coverage. Quota UI text uses these fonts; account-provided non-ASCII email/plan text is rendered with an explicit ASCII fallback to avoid missing glyphs. The font sources are linked read-only in Flash; no full CJK font is loaded into RAM. On-device rendering is still required for acceptance.
+- `images/openai-quota.svg` and `images/claude-quota.svg`: the approved design's provider marks, sourced from [Lobe Icons OpenAI](https://github.com/lobehub/lobe-icons/blob/master/packages/static-svg/icons/openai.svg) and [Lobe Icons Claude](https://github.com/lobehub/lobe-icons/blob/master/packages/static-svg/icons/claude-color.svg). The icon package is MIT-licensed; provider trademarks remain with their owners. They identify connected subscription providers, not endorsement.
+- `images/openai-quota.png` and `images/claude-quota.png`: 36 × 36 RGBA PNG, deterministically rendered with `@resvg/resvg-js@2.6.2` from the SVGs. Their generated RGB565 LVGL image descriptors live in `main/quota_brand_assets.c` and are used on the dashboard and account list. Transparent pixels are composited against the dashboard background.
+
+To regenerate the font subsets after changing literal UI text, update the two glyph lists, then run from the repository root (repeat with size 16 and its matching font name/output):
+
+```bash
+npx --yes lv_font_conv@1.5.3 \
+  --font managed_components/lvgl__lvgl/tests/src/test_files/fonts/noto/NotoSansSC-Regular.ttf \
+  --range 0x20-0x7E --symbols "$(cat assets/fonts/quota-font-glyphs.txt)" \
+  --size 12 --bpp 4 --format lvgl --no-compress \
+  --lv-font-name quota_font_12 --lv-include lvgl.h \
+  --output assets/fonts/quota_font_12.c
+```
+
+`tests/test_quota_fonts.py` checks the generated cmap tables against actual UI literals and the ASCII range. The original icon copyright notice is retained in `images/lobe-icons-LICENSE.txt`.
