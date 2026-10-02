@@ -112,22 +112,15 @@ h1 { color: #22362b; font-size: 27px; line-height: 1.35; font-weight: 600; lette
 .deepseek-availability.unavailable { color: #a77847; }
 .deepseek-availability.unknown { color: #909b91; }
 .currency-balance { min-width: 0; padding: 10px 12px; border: 1px solid #e3ebe2; border-radius: 7px; background: #fbfcfa; }
-.currency-balance header, .currency-balance>div { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.currency-balance header { padding-bottom: 6px; border-bottom: 1px solid #e7ece6; color: #526d59; font-size: 10px; }
+.currency-balance header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; color: #526d59; font-size: 10px; }
 .currency-balance header strong { font-weight: 600; }
 .currency-balance header span { color: #3e7653; font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.currency-balance>div { padding-top: 5px; color: #87958a; font-size: 9px; }
-.currency-balance>div strong { color: #68796b; font-size: 10px; font-weight: 500; font-variant-numeric: tabular-nums; }
-.deepseek-no-balance { padding: 14px 12px; border: 1px dashed #dbe5da; border-radius: 7px; color: #929e93; font-size: 10px; }
 .device-deepseek-balances { position: absolute; top: 107px; left: 12px; width: 216px; }
 .device-deepseek-balances section { position: absolute; top: 0; width: 216px; height: 76px; }
 .device-deepseek-balances section>div { position: absolute; width: 216px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .device-deepseek-balances .balance-heading { top: 0; height: 18px; color: #afbbc6; font-size: 12px; line-height: 18px; }
 .device-deepseek-balances .balance-total { top: 17px; height: 26px; color: #edf1f4; line-height: 26px; }
 .device-deepseek-balances .balance-total.unknown { font-size: 16px; }
-.device-deepseek-balances .balance-granted, .device-deepseek-balances .balance-topped-up { height: 18px; color: #afbbc6; font-size: 12px; line-height: 18px; }
-.device-deepseek-balances .balance-granted { top: 41px; }
-.device-deepseek-balances .balance-topped-up { top: 58px; }
 .device-update.deepseek-update { position: absolute; top: 262px; left: 12px; width: 216px; height: 18px; padding: 0; font-size: 12px; line-height: 18px; }
 .deepseek-refresh { margin-top: 11px; }
 .deepseek-key-form, .deepseek-add-form { display: grid; gap: 11px; margin-top: 15px; padding: 14px; border: 1px solid #e2ebe1; border-radius: 8px; background: #fafcfa; }

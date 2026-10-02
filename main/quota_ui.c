@@ -41,8 +41,6 @@ typedef struct {
     lv_obj_t *metric_bar[2];
     lv_obj_t *balance_heading[QUOTA_BALANCE_CURRENCIES];
     lv_obj_t *balance_total[QUOTA_BALANCE_CURRENCIES];
-    lv_obj_t *balance_granted[QUOTA_BALANCE_CURRENCIES];
-    lv_obj_t *balance_topped_up[QUOTA_BALANCE_CURRENCIES];
     lv_obj_t *home_status;
     lv_obj_t *setting_rows[5];
     lv_obj_t *setting_markers[5];
@@ -210,10 +208,6 @@ static void create_home_page(void)
                                                &quota_font_12, UI_MUTED, LV_TEXT_ALIGN_LEFT, "");
         s_ui.balance_total[i] = create_label(s_page, 12, y + 17, 216, 26,
                                              &lv_font_montserrat_20, UI_INK, LV_TEXT_ALIGN_LEFT, "");
-        s_ui.balance_granted[i] = create_label(s_page, 12, y + 41, 216, 18,
-                                               &quota_font_12, UI_MUTED, LV_TEXT_ALIGN_LEFT, "");
-        s_ui.balance_topped_up[i] = create_label(s_page, 12, y + 58, 216, 18,
-                                                 &quota_font_12, UI_MUTED, LV_TEXT_ALIGN_LEFT, "");
     }
     s_ui.home_status = create_label(s_page, 12, 254, 216, 18, &quota_font_12,
                                     UI_MUTED, LV_TEXT_ALIGN_LEFT, "等待电脑数据");
@@ -446,9 +440,8 @@ static void render_home(const quota_navigation_t *navigation,
         service->snapshot.accounts[navigation->selected_account < service->snapshot.account_count
                                     ? navigation->selected_account : 0].provider == QUOTA_PROVIDER_DEEPSEEK;
     for (size_t i = 0; i < QUOTA_BALANCE_CURRENCIES; i++) {
-        lv_obj_t *balance_objects[] = {s_ui.balance_heading[i], s_ui.balance_total[i],
-            s_ui.balance_granted[i], s_ui.balance_topped_up[i]};
-        for (size_t j = 0; j < 4; j++) lv_obj_add_flag(balance_objects[j], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_t *balance_objects[] = {s_ui.balance_heading[i], s_ui.balance_total[i]};
+        for (size_t j = 0; j < 2; j++) lv_obj_add_flag(balance_objects[j], LV_OBJ_FLAG_HIDDEN);
         lv_obj_t *quota_objects[] = {s_ui.metric_name[i], s_ui.metric_reset[i], s_ui.metric_value[i], s_ui.metric_bar[i]};
         for (size_t j = 0; j < 4; j++) {
             if (deepseek) lv_obj_add_flag(quota_objects[j], LV_OBJ_FLAG_HIDDEN);
@@ -505,22 +498,16 @@ static void render_home(const quota_navigation_t *navigation,
         const quota_currency_balance_t *entry = quota_balance_cny(balance);
         if (entry != NULL) {
             size_t i = 0;
-            char heading[32], granted[64], topped[64];
+            char heading[32];
             snprintf(heading, sizeof(heading), "人民币可用余额");
-            snprintf(granted, sizeof(granted), "赠送余额 %s", entry->granted_balance);
-            snprintf(topped, sizeof(topped), "充值余额 %s", entry->topped_up_balance);
             set_label_text(s_ui.balance_heading[i], heading);
             set_label_text(s_ui.balance_total[i], entry->total_balance);
             lv_obj_set_style_text_font(s_ui.balance_total[i], strlen(entry->total_balance) > 16
                 ? &lv_font_montserrat_12 : strlen(entry->total_balance) > 12
                 ? &lv_font_montserrat_14 : &lv_font_montserrat_20, 0);
             lv_obj_set_style_text_color(s_ui.balance_total[i], color(stale ? UI_DIM : UI_INK), 0);
-            set_label_text(s_ui.balance_granted[i], granted);
-            set_label_text(s_ui.balance_topped_up[i], topped);
             lv_obj_clear_flag(s_ui.balance_heading[i], LV_OBJ_FLAG_HIDDEN);
             lv_obj_clear_flag(s_ui.balance_total[i], LV_OBJ_FLAG_HIDDEN);
-            lv_obj_clear_flag(s_ui.balance_granted[i], LV_OBJ_FLAG_HIDDEN);
-            lv_obj_clear_flag(s_ui.balance_topped_up[i], LV_OBJ_FLAG_HIDDEN);
         }
         if (entry == NULL) {
             set_label_text(s_ui.balance_heading[0], "人民币可用余额");

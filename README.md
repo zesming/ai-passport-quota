@@ -33,8 +33,10 @@ Open **http://127.0.0.1:4317/**. On macOS, `companion/start-dashboard.command` s
 1. In account management, add Codex or Claude and complete authorization on the official provider page. Each profile is isolated; existing CLI credentials are not imported.
 2. Codex quota is collected through the official app-server. It describes **Codex usage**, not every ordinary ChatGPT message limit. Missing windows display as unknown.
 3. For Claude, copy the account's session launch command from the page and use that profile normally. A statusline callback after a normal model response supplies its quota. Refreshing never sends a paid model prompt.
-4. Add DeepSeek with an API key from the [official portal](https://platform.deepseek.com/api_keys). The optional name is a local label; the balance API does not supply a verified email. Keys stay in owner-only local profiles and are never sent to the device. The page displays RMB total, granted and topped-up balances from the [official balance API](https://api-docs.deepseek.com/api/get-user-balance/), with availability and observation time. USD is not displayed in this version. Missing RMB data stays unknown. This check sends no model prompt.
+4. Add DeepSeek with an API key from the [official portal](https://platform.deepseek.com/api_keys). The optional name is a local label; the balance API does not supply a verified email. Keys stay in owner-only local profiles and are never sent to the device. The page displays one RMB available balance (`total_balance`, including grants and top-ups) from the [official balance API](https://api-docs.deepseek.com/api/get-user-balance/), with availability and observation time. Grant/top-up details and USD are not displayed. Missing RMB data stays unknown. This check sends no model prompt.
 5. Set automatic refresh at 1, 5, 15 or 30 minutes and automatic screen off at 30 seconds, 1/2/5/10 minutes, or Never (default: 2 minutes).
+
+As of 2026-10-02, the published DeepSeek API reference does not document account-wide cumulative/period spending, request counts or historical token totals. [Model responses](https://api-docs.deepseek.com/api/create-chat-completion/) contain usage for a single request; they cannot reconstruct the portal's last-30-day totals across other clients. Those portal statistics are not implemented. A separate console data source would need investigation before adding them.
 
 ## Connect the device
 
@@ -93,11 +95,11 @@ Start with [AGENTS.md](AGENTS.md), this README and the [application/protocol gui
 | Local API, pairing and storage | `companion/server/index.mjs`, `pairing.mjs`, `protocol.mjs`, `storage.mjs` |
 | Host tests | `tests/test_quota_logic.c`, `tests/test_quota_fonts.py`, `tests/test_quota_refresh_runtime.py`, `tests/test_quota_storage_runtime.py`, `companion/test/*.test.mjs` |
 
-Companion validation: **47/47 tests PASS**, production build PASS. Browser checks confirmed RMB-only balances, proportional quota fills, unknown board telemetry in production, and saving the screen timeout. Documentation screenshots use isolated examples.
+Companion validation: **47/47 tests PASS**, production build PASS. Browser checks confirmed a single RMB available balance without grant/top-up details, proportional quota fills, unknown board telemetry in production, and saving the screen timeout. Documentation screenshots use isolated examples.
 
 Latest firmware validation on **2026-10-02**: the complete gate passed, including the ESP-IDF build, merged image/debug archive verification, all host checks, refresh-state tests, NVS compatibility tests and coverage for 135 non-ASCII glyphs. The new screen-off, display-status and DeepSeek firmware has **not** been flashed or physically accepted. A real DeepSeek key and response have not been tested; the balance tests use synthetic responses.
 
-The current debug bundle is `build/firmware/07225fb61fd6e6264f36c88be46fdf64fbe0b8120ca74692c166465e0b3d1050/`, with ELF SHA-256 `c93feedbdc8378ebadc4c6a38ff063abd4b0588667b35073ebcff0be94c21ede`. It was built from the working tree (`c2bb775-dirty`), before this change was committed. The partition table matches the previously flashed image, allowing a verified segmented upgrade to retain NVS. Confirm the detected device and exact write scope before flashing.
+The current debug bundle is `build/firmware/c0eb0a8988a819ae43a2cb4b3e388747e14e79c6a667d7916a2fb73a04123de4/`, with ELF SHA-256 `4a87f07e1535d9ea084a811aeff055dbcf8fdc4ea3e5fb4ae2cee8ff42e18a8f`. It was built from the working tree (`5ef51a1-dirty`), before this change was committed. The partition table matches the previously flashed image, allowing a verified segmented upgrade to retain NVS. Confirm the detected device and exact write scope before flashing.
 
 Earlier hardware observations confirmed readable Chinese on the initial pairing page, normal two-minute window expiry and boot without observed crashes. One real Codex profile supplied weekly quota; its source omitted the 5-hour window.
 

@@ -45,10 +45,6 @@ function DeepSeekBalance({ balance, compact = false }) {
       <section>
         <div className="balance-heading">人民币可用余额</div>
         <div className={`balance-total ${info ? '' : 'unknown'}`} style={info ? { fontSize: info.total_balance.length > 16 ? 12 : info.total_balance.length > 12 ? 14 : 20 } : undefined}>{info?.total_balance || availability}</div>
-        {info && <>
-          <div className="balance-granted">赠送余额 {info.granted_balance}</div>
-          <div className="balance-topped-up">充值余额 {info.topped_up_balance}</div>
-        </>}
       </section>
     </div>;
   }
@@ -58,8 +54,6 @@ function DeepSeekBalance({ balance, compact = false }) {
       {info && (
         <section className="currency-balance">
           <header><strong>人民币</strong><span>{info.total_balance}</span></header>
-          <div><span>赠送余额</span><strong>{info.granted_balance}</strong></div>
-          <div><span>充值余额</span><strong>{info.topped_up_balance}</strong></div>
         </section>
       )}
     </div>

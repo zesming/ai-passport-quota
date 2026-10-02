@@ -33,8 +33,10 @@ npm start
 1. 在账户管理中添加 Codex 或 Claude，在官方页面完成授权。每个账户使用独立档案，不导入已有 CLI 登录信息。
 2. Codex 通过官方 app-server 采集额度。它展示 **Codex 使用窗口**，不代表普通 ChatGPT 的全部消息限制；数据源缺少的窗口显示未知。
 3. Claude 登录后复制页面提供的账户会话启动命令，正常使用该独立账户。正常模型回复后的状态栏回调提供额度；看板刷新不会发送付费模型请求。
-4. 添加 DeepSeek 时填写[官方平台](https://platform.deepseek.com/api_keys)生成的 API Key。名称是本地备注，余额接口不提供已验证邮箱。密钥只保存在当前用户可访问的本地档案，不发送到设备。页面显示[官方余额接口](https://api-docs.deepseek.com/api/get-user-balance/)返回的人民币总余额、赠送余额、充值余额、可用状态和采集时间。首版不展示美元；缺失人民币数据时保持未知。不会发送模型请求。
+4. 添加 DeepSeek 时填写[官方平台](https://platform.deepseek.com/api_keys)生成的 API Key。名称是本地备注，余额接口不提供已验证邮箱。密钥只保存在当前用户可访问的本地档案，不发送到设备。页面只显示[官方余额接口](https://api-docs.deepseek.com/api/get-user-balance/)返回的一项人民币可用余额（`total_balance`，包含赠送和充值部分），以及可用状态和采集时间。不展开赠送/充值明细，也不展示美元；缺失人民币数据时保持未知。不会发送模型请求。
 5. 刷新设置可选 1、5、15、30 分钟；自动息屏可选 30 秒、1/2/5/10 分钟或“永不”，默认 2 分钟。
+
+截至 2026-10-02，DeepSeek 公开 API 文档没有提供账户累计/区间消费、请求次数或历史 Tokens 总量查询。[模型响应](https://api-docs.deepseek.com/api/create-chat-completion/)中的用量只对应单次请求，无法还原其他客户端产生的官网近 30 天统计。这些官网统计尚未实现；添加前需另行调查官网登录后的数据来源。
 
 ## 连接小屏
 
@@ -93,11 +95,11 @@ npm run dev
 | 本机 API、配对与存储 | `companion/server/index.mjs`、`pairing.mjs`、`protocol.mjs`、`storage.mjs` |
 | 主机测试 | `tests/test_quota_logic.c`、`tests/test_quota_fonts.py`、`tests/test_quota_refresh_runtime.py`、`tests/test_quota_storage_runtime.py`、`companion/test/*.test.mjs` |
 
-电脑端验证：**47/47 项测试通过**，正式构建通过。网页检查确认人民币余额、正确的额度填充比例、正式服务的设备状态保持未知、息屏时间保存。文档截图使用隔离示例。
+电脑端验证：**47/47 项测试通过**，正式构建通过。网页检查确认只显示一项人民币可用余额、不展开赠送/充值明细，正确的额度填充比例、正式服务的设备状态保持未知、息屏时间保存。文档截图使用隔离示例。
 
 **2026-10-02 固件验证状态**：完整检查通过，包括 ESP-IDF 构建、合并镜像/调试归档核验、全部主机检查、刷新状态测试、NVS 兼容测试和 135 个非 ASCII 字形覆盖。新增息屏、显示状态和 DeepSeek 的固件**尚未刷入或真机验收**。DeepSeek 尚未使用真实密钥及响应测试；余额测试使用模拟响应。
 
-当前调试归档为 `build/firmware/07225fb61fd6e6264f36c88be46fdf64fbe0b8120ca74692c166465e0b3d1050/`，ELF SHA-256 为 `c93feedbdc8378ebadc4c6a38ff063abd4b0588667b35073ebcff0be94c21ede`。该产物由提交前工作区（`c2bb775-dirty`）构建。分区表与此前实际刷入镜像一致，可按核验后的分段升级保留 NVS。刷机前确认当前设备及具体写入范围。
+当前调试归档为 `build/firmware/c0eb0a8988a819ae43a2cb4b3e388747e14e79c6a667d7916a2fb73a04123de4/`，ELF SHA-256 为 `4a87f07e1535d9ea084a811aeff055dbcf8fdc4ea3e5fb4ae2cee8ff42e18a8f`。该产物由提交前工作区（`5ef51a1-dirty`）构建。分区表与此前实际刷入镜像一致，可按核验后的分段升级保留 NVS。刷机前确认当前设备及具体写入范围。
 
 此前真机观察确认初始配对页中文清晰、两分钟窗口关闭正常、启动未见崩溃。一个真实 Codex 账户已提供周额度，其数据源没有提供 5 小时窗口。
 
