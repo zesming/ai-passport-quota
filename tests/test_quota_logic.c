@@ -65,6 +65,10 @@ static void test_urls_tokens_and_display(void)
     assert(!quota_pair_token_is_valid("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq/"));
 
     char display[32];
+    quota_copy_display_plan("pro", display, sizeof(display));
+    assert(strcmp(display, "Pro") == 0);
+    quota_copy_display_plan("max", display, 2);
+    assert(strcmp(display, "M") == 0);
     quota_copy_display_ascii("m你好@example.com", display, sizeof(display));
     assert(strcmp(display, "m??@example.com") == 0);
     quota_copy_display_ascii("你", display, 2);
@@ -300,7 +304,7 @@ static void test_freshness_and_reset_states(void)
 static void test_navigation(void)
 {
     quota_navigation_t navigation;
-    quota_navigation_init(&navigation, true, 300, true, 3);
+    quota_navigation_init(&navigation, true, 300, true, 120, 3);
     assert(navigation.screen == QUOTA_SCREEN_HOME);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_UP, 3) ==
            QUOTA_ACTION_PERSIST_SELECTION);
@@ -314,7 +318,7 @@ static void test_navigation(void)
            QUOTA_ACTION_NONE);
     assert(navigation.screen == QUOTA_SCREEN_SETTINGS);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_UP, 3) == QUOTA_ACTION_NONE);
-    assert(navigation.settings_focus == 3);
+    assert(navigation.settings_focus == 4);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 3) == QUOTA_ACTION_NONE);
     assert(navigation.screen == QUOTA_SCREEN_SETUP);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 3) == QUOTA_ACTION_NONE);
@@ -332,7 +336,7 @@ static void test_navigation(void)
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 3) == QUOTA_ACTION_NONE);
     assert(navigation.screen == QUOTA_SCREEN_HOME);
 
-    quota_navigation_init(&navigation, true, 300, true, 1);
+    quota_navigation_init(&navigation, true, 300, true, 120, 1);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 1) == QUOTA_ACTION_NONE);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_DOWN, 1) == QUOTA_ACTION_NONE);
     assert(navigation.settings_focus == 1);
@@ -351,7 +355,7 @@ static void test_navigation(void)
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 1) == QUOTA_ACTION_NONE);
     assert(navigation.screen == QUOTA_SCREEN_HOME);
 
-    quota_navigation_init(&navigation, false, 300, true, 0);
+    quota_navigation_init(&navigation, false, 300, true, 120, 0);
     assert(navigation.screen == QUOTA_SCREEN_SETUP);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 0) == QUOTA_ACTION_NONE);
     assert(navigation.screen == QUOTA_SCREEN_HOME);
@@ -360,34 +364,181 @@ static void test_navigation(void)
 static void test_navigation_after_external_settings_change(void)
 {
     quota_navigation_t navigation;
-    quota_navigation_init(&navigation, true, 300, true, 1);
+    quota_navigation_init(&navigation, true, 300, true, 120, 1);
     navigation.screen = QUOTA_SCREEN_INTERVAL;
     navigation.interval_focus = 0;
 
-    quota_navigation_sync_settings(&navigation, 900, false);
+    quota_navigation_sync_settings(&navigation, 900, false, 120);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 1) ==
            QUOTA_ACTION_APPLY_SETTINGS);
     assert(navigation.auto_refresh && navigation.refresh_seconds == 900);
 
     /* A later remote change must survive editing just the interval. */
-    quota_navigation_sync_settings(&navigation, 1800, false);
+    quota_navigation_sync_settings(&navigation, 1800, false, 120);
     navigation.screen = QUOTA_SCREEN_INTERVAL;
     navigation.interval_focus = 2;
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 1) ==
            QUOTA_ACTION_APPLY_SETTINGS);
     assert(!navigation.auto_refresh && navigation.refresh_seconds == 300);
 
-    quota_navigation_sync_settings(&navigation, 61, true);
+    quota_navigation_sync_settings(&navigation, 61, true, 120);
     assert(!navigation.auto_refresh && navigation.refresh_seconds == 300);
 }
 
-static void test_idle_display_and_pairing_visibility(void)
+static void test_display_sleep_and_wake_gestures(void)
 {
-    assert(!quota_display_should_dim(129999, 10000, false));
-    assert(quota_display_should_dim(130000, 10000, false));
-    assert(!quota_display_should_dim(130000, 10000, true));
-    assert(!quota_display_should_dim(130000, 130000, false));
-    assert(!quota_display_should_dim(10000, 130000, false));
+    quota_display_state_t display = {.last_input_ms = 10000};
+    quota_display_tick(&display, 129999, 120, false);
+    assert(!display.sleeping);
+    quota_display_tick(&display, 130000, 120, false);
+    assert(display.sleeping);
+    /* Wake PRESS plus CLICK must not trigger a quota refresh/navigation. */
+    assert(!quota_display_handle_key(&display, 130001, QUOTA_KEY_PRESS, false));
+    assert(!display.sleeping);
+    assert(!quota_display_handle_key(&display, 130010, QUOTA_KEY_CLICK, false));
+    assert(quota_display_handle_key(&display, 130100, QUOTA_KEY_CLICK, false));
+    assert(!quota_display_handle_key(&display, 130200, QUOTA_KEY_LONG, true));
+    assert(display.sleeping);
+    /* A held key wakes only: long DOWN cannot immediately switch it off again. */
+    assert(!quota_display_handle_key(&display, 130300, QUOTA_KEY_PRESS, true));
+    assert(!quota_display_handle_key(&display, 130900, QUOTA_KEY_LONG, true));
+    assert(!display.sleeping);
+    assert(!quota_display_handle_key(&display, 131000, QUOTA_KEY_PRESS, false));
+    assert(quota_display_handle_key(&display, 131600, QUOTA_KEY_LONG, false));
+
+    display = (quota_display_state_t){.last_input_ms = 10000};
+    quota_display_tick(&display, 1000000, 0, false);
+    assert(!display.sleeping);
+    quota_display_tick(&display, 1000000, 30, true);
+    assert(!display.sleeping && display.last_input_ms == 1000000);
+    quota_display_tick(&display, 1029999, 30, false);
+    assert(!display.sleeping);
+    quota_display_tick(&display, 1030000, 30, false);
+    assert(display.sleeping);
+    /* Terminal events still wake safely if their PRESS event was dropped. */
+    assert(!quota_display_handle_key(&display, 1030100, QUOTA_KEY_CLICK, false));
+    assert(!display.sleeping);
+    quota_display_tick(&display, 1, 30, false);
+    assert(!display.sleeping && display.last_input_ms == 1);
+
+    display.sleeping = true;
+    assert(!quota_display_handle_key(&display, 2, QUOTA_KEY_PRESS, false));
+    assert(!quota_display_handle_key(&display, 3, QUOTA_KEY_PRESS, false));
+    assert(!quota_display_handle_key(&display, 4, QUOTA_KEY_DOUBLE, false));
+    assert(!display.sleeping && !display.consume_wake_gesture);
+}
+
+static void test_screen_timeout_settings_compatibility(void)
+{
+    char json[1024];
+    quota_snapshot_t snapshot;
+    quota_settings_t settings;
+    size_t length = make_snapshot(json, sizeof(json), valid_account,
+        "{\"refresh_seconds\":300,\"auto_refresh\":true}");
+    assert(quota_parse_snapshot(json, length, &snapshot));
+    assert(!snapshot.has_screen_timeout_seconds);
+    for (size_t i = 0; i < QUOTA_SCREEN_TIMEOUT_COUNT; i++) {
+        char fields[128];
+        snprintf(fields, sizeof(fields), "{\"refresh_seconds\":300,\"auto_refresh\":true,"
+                 "\"screen_timeout_seconds\":%u}", (unsigned)quota_screen_timeouts[i]);
+        length = make_snapshot(json, sizeof(json), valid_account, fields);
+        assert(quota_parse_snapshot(json, length, &snapshot));
+        assert(snapshot.has_screen_timeout_seconds);
+        assert(snapshot.screen_timeout_seconds == quota_screen_timeouts[i]);
+        snprintf(json, sizeof(json), "{\"v\":1,\"settings\":%s}", fields);
+        assert(quota_parse_settings_ack(json, strlen(json), &settings));
+        assert(settings.has_screen_timeout_seconds);
+        assert(settings.screen_timeout_seconds == quota_screen_timeouts[i]);
+    }
+    const char *invalid[] = {"null", "true", "\"120\"", "-1", "31", "601", "30.5"};
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        char fields[128];
+        snprintf(fields, sizeof(fields), "{\"refresh_seconds\":300,\"auto_refresh\":true,"
+                 "\"screen_timeout_seconds\":%s}", invalid[i]);
+        length = make_snapshot(json, sizeof(json), valid_account, fields);
+        assert(!quota_parse_snapshot(json, length, &snapshot));
+        snprintf(json, sizeof(json), "{\"v\":1,\"settings\":%s}", fields);
+        assert(!quota_parse_settings_ack(json, strlen(json), &settings));
+    }
+    const char old_ack[] = "{\"v\":1,\"settings\":{\"refresh_seconds\":900,\"auto_refresh\":false}}";
+    assert(quota_parse_settings_ack(old_ack, strlen(old_ack), &settings));
+    assert(!settings.has_screen_timeout_seconds && settings.refresh_seconds == 900);
+    const char duplicate[] = "{\"v\":1,\"settings\":{\"refresh_seconds\":300,\"auto_refresh\":true,"
+        "\"screen_timeout_seconds\":30,\"screen_timeout_seconds\":60}}";
+    assert(!quota_parse_settings_ack(duplicate, strlen(duplicate), &settings));
+    assert(!quota_parse_settings_ack("{}junk", 6, &settings));
+
+    quota_navigation_t navigation;
+    quota_navigation_init(&navigation, true, 300, false, 120, 1);
+    navigation.screen = QUOTA_SCREEN_SETTINGS;
+    navigation.settings_focus = 3;
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 1) == QUOTA_ACTION_NONE);
+    assert(navigation.screen == QUOTA_SCREEN_SLEEP && navigation.sleep_focus == 3);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_UP, 1) == QUOTA_ACTION_NONE);
+    quota_navigation_sync_settings(&navigation, 900, true, 120);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 1) == QUOTA_ACTION_APPLY_SETTINGS);
+    assert(navigation.screen_timeout_seconds == 60 && navigation.refresh_seconds == 900 && navigation.auto_refresh);
+    navigation.screen = QUOTA_SCREEN_SLEEP;
+    navigation.sleep_focus = 0;
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_UP, 1) == QUOTA_ACTION_NONE);
+    assert(navigation.sleep_focus == 5);
+}
+
+static void test_deepseek_balance_contract(void)
+{
+    const char *account =
+        "{\"id\":\"0123456789abcdef0123456789abcdef\",\"provider\":\"deepseek\","
+        "\"email\":\"\",\"label\":\"My API\",\"plan\":\"API\",\"status\":\"ok\","
+        "\"observed_at\":1700000000,\"five_hour\":null,\"seven_day\":null,"
+        "\"balance\":{\"is_available\":false,\"balance_infos\":["
+        "{\"currency\":\"CNY\",\"total_balance\":\"-0.12345678\",\"granted_balance\":\"0\",\"topped_up_balance\":\"-0.12345678\"},"
+        "{\"currency\":\"USD\",\"total_balance\":\"1.23456789\",\"granted_balance\":\"1.23456789\",\"topped_up_balance\":\"0.00\"}]}}";
+    char json[8192];
+    size_t length = make_snapshot(json, sizeof(json), account,
+        "{\"refresh_seconds\":300,\"auto_refresh\":true,\"screen_timeout_seconds\":120}");
+    quota_snapshot_t snapshot;
+    assert(quota_parse_snapshot(json, length, &snapshot));
+    assert(snapshot.accounts[0].provider == QUOTA_PROVIDER_DEEPSEEK);
+    assert(!snapshot.accounts[0].five_hour.present && !snapshot.accounts[0].seven_day.present);
+    const quota_balance_t *balance = &snapshot.balances[0];
+    assert(balance->present && !balance->is_available && balance->currency_count == 2);
+    assert(strcmp(balance->label, "My API") == 0);
+    assert(strcmp(balance->balance_infos[0].total_balance, "-0.12345678") == 0);
+    assert(strcmp(balance->balance_infos[1].total_balance, "1.23456789") == 0);
+    assert(quota_balance_is_valid(balance));
+    assert(quota_balance_cny(balance) == &balance->balance_infos[0]);
+    quota_balance_t reordered = *balance;
+    reordered.balance_infos[0] = balance->balance_infos[1];
+    reordered.balance_infos[1] = balance->balance_infos[0];
+    assert(quota_balance_cny(&reordered) == &reordered.balance_infos[1]);
+    reordered.currency_count = 1;  /* USD alone must not become an RMB amount. */
+    assert(quota_balance_cny(&reordered) == NULL);
+    assert(quota_balance_cny(NULL) == NULL);
+    quota_balance_t invalid = *balance;
+    memcpy(invalid.balance_infos[1].currency, "CNY", 4);
+    assert(!quota_balance_is_valid(&invalid));
+    invalid = *balance;
+    strcpy(invalid.balance_infos[0].total_balance, "NaN");
+    assert(!quota_balance_is_valid(&invalid));
+    invalid = *balance;
+    memset(invalid.balance_infos[0].total_balance, '1', sizeof(invalid.balance_infos[0].total_balance));
+    assert(!quota_balance_is_valid(&invalid));
+    char *amount = strstr(json, "-0.12345678");
+    assert(amount != NULL); amount[0] = 'e';
+    assert(!quota_parse_snapshot(json, length, &snapshot));
+    const char *unknown =
+        "{\"id\":\"0123456789abcdef0123456789abcdef\",\"provider\":\"deepseek\","
+        "\"email\":\"\",\"plan\":\"API\",\"status\":\"waiting\","
+        "\"observed_at\":null,\"five_hour\":null,\"seven_day\":null,\"balance\":null}";
+    length = make_snapshot(json, sizeof(json), unknown,
+        "{\"refresh_seconds\":300,\"auto_refresh\":true}");
+    assert(quota_parse_snapshot(json, length, &snapshot));
+    assert(!snapshot.balances[0].present && snapshot.balances[0].currency_count == 0);
+    /* Old providers retain their quota windows and never gain a fabricated wallet. */
+    length = make_snapshot(json, sizeof(json), valid_account,
+        "{\"refresh_seconds\":300,\"auto_refresh\":true}");
+    assert(quota_parse_snapshot(json, length, &snapshot));
+    assert(snapshot.accounts[0].five_hour.present && !snapshot.balances[0].present);
 }
 
 int main(void)
@@ -402,7 +553,9 @@ int main(void)
     test_freshness_and_reset_states();
     test_navigation();
     test_navigation_after_external_settings_change();
-    test_idle_display_and_pairing_visibility();
+    test_display_sleep_and_wake_gestures();
+    test_screen_timeout_settings_compatibility();
+    test_deepseek_balance_contract();
     puts("quota logic tests passed");
     return 0;
 }

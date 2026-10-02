@@ -337,6 +337,9 @@ static bool parse_account(const cJSON *item, quota_account_t *account)
         account->provider = QUOTA_PROVIDER_CODEX;
     } else if (cJSON_IsString(provider) && strcmp(provider->valuestring, "claude") == 0) {
         account->provider = QUOTA_PROVIDER_CLAUDE;
+    } else if (cJSON_IsString(provider) && strcmp(provider->valuestring, "deepseek") == 0) {
+        account->provider = QUOTA_PROVIDER_DEEPSEEK;
+        if (account->five_hour.present || account->seven_day.present) return false;
     } else {
         return false;
     }
@@ -357,9 +360,140 @@ static bool parse_account(const cJSON *item, quota_account_t *account)
     return true;
 }
 
+static bool valid_balance_amount(const char *text)
+{
+    if (text == NULL) return false;
+    const char *end = memchr(text, '\0', QUOTA_BALANCE_AMOUNT_BYTES + 1);
+    if (end == NULL || end == text) return false;
+    const char *p = text;
+    if (*p == '-') p++;
+    if (*p < '0' || *p > '9') return false;
+    while (*p >= '0' && *p <= '9') p++;
+    if (*p == '.') {
+        p++;
+        if (*p < '0' || *p > '9') return false;
+        while (*p >= '0' && *p <= '9') p++;
+    }
+    return *p == '\0';
+}
+
+bool quota_balance_is_valid(const quota_balance_t *balance)
+{
+    if (balance == NULL || balance->currency_count > QUOTA_BALANCE_CURRENCIES ||
+        memchr(balance->label, '\0', sizeof(balance->label)) == NULL ||
+        !quota_utf8_is_valid(balance->label, strlen(balance->label)) ||
+        ascii_has_control(balance->label, strlen(balance->label))) return false;
+    if (!balance->present) return balance->currency_count == 0;
+    for (size_t i = 0; i < balance->currency_count; i++) {
+        const quota_currency_balance_t *entry = &balance->balance_infos[i];
+        if ((memcmp(entry->currency, "CNY", 4) != 0 && memcmp(entry->currency, "USD", 4) != 0) ||
+            !valid_balance_amount(entry->total_balance) ||
+            !valid_balance_amount(entry->granted_balance) ||
+            !valid_balance_amount(entry->topped_up_balance) ||
+            (i > 0 && memcmp(entry->currency, balance->balance_infos[0].currency, 4) == 0)) return false;
+    }
+    return true;
+}
+
+const quota_currency_balance_t *quota_balance_cny(const quota_balance_t *balance)
+{
+    if (balance == NULL || !balance->present ||
+        balance->currency_count > QUOTA_BALANCE_CURRENCIES) return NULL;
+    for (size_t i = 0; i < balance->currency_count; i++) {
+        if (memcmp(balance->balance_infos[i].currency, "CNY", 4) == 0) {
+            return &balance->balance_infos[i];
+        }
+    }
+    return NULL;
+}
+
+static bool parse_balance(const cJSON *account, quota_balance_t *balance)
+{
+    const cJSON *label = json_field(account, "label");
+    if (label != NULL && (!json_copy_string(label, QUOTA_PLAN_MAX_BYTES, true,
+                                            balance->label, sizeof(balance->label)) ||
+                           ascii_has_control(balance->label, strlen(balance->label)))) return false;
+    const cJSON *item = json_field(account, "balance");
+    if (item == NULL || cJSON_IsNull(item)) return true;
+    if (!object_has_unique_keys(item)) return false;
+    const cJSON *available = json_field(item, "is_available");
+    const cJSON *infos = json_field(item, "balance_infos");
+    if (!cJSON_IsBool(available) || !cJSON_IsArray(infos)) return false;
+    int count = cJSON_GetArraySize(infos);
+    if (count < 0 || count > QUOTA_BALANCE_CURRENCIES) return false;
+    balance->present = true;
+    balance->is_available = cJSON_IsTrue(available);
+    balance->currency_count = (uint8_t)count;
+    for (int i = 0; i < count; i++) {
+        const cJSON *entry = cJSON_GetArrayItem(infos, i);
+        quota_currency_balance_t *parsed = &balance->balance_infos[i];
+        if (!object_has_unique_keys(entry) ||
+            !json_copy_string(json_field(entry, "currency"), 3, false, parsed->currency, sizeof(parsed->currency)) ||
+            !json_copy_string(json_field(entry, "total_balance"), QUOTA_BALANCE_AMOUNT_BYTES,
+                              false, parsed->total_balance, sizeof(parsed->total_balance)) ||
+            !json_copy_string(json_field(entry, "granted_balance"), QUOTA_BALANCE_AMOUNT_BYTES,
+                              false, parsed->granted_balance, sizeof(parsed->granted_balance)) ||
+            !json_copy_string(json_field(entry, "topped_up_balance"), QUOTA_BALANCE_AMOUNT_BYTES,
+                              false, parsed->topped_up_balance, sizeof(parsed->topped_up_balance))) return false;
+    }
+    return quota_balance_is_valid(balance);
+}
+
 static bool valid_refresh_seconds(uint64_t seconds)
 {
     return seconds == 60 || seconds == 300 || seconds == 900 || seconds == 1800;
+}
+
+const uint16_t quota_screen_timeouts[QUOTA_SCREEN_TIMEOUT_COUNT] = {0, 30, 60, 120, 300, 600};
+
+bool quota_screen_timeout_is_valid(uint64_t seconds)
+{
+    for (size_t i = 0; i < QUOTA_SCREEN_TIMEOUT_COUNT; i++) {
+        if (seconds == quota_screen_timeouts[i]) return true;
+    }
+    return false;
+}
+
+void quota_copy_display_plan(const char *source, char *destination, size_t capacity)
+{
+    quota_copy_display_ascii(source, destination, capacity);
+    if (destination != NULL && capacity > 0 && destination[0] >= 'a' && destination[0] <= 'z') {
+        destination[0] = (char)(destination[0] - 'a' + 'A');
+    }
+}
+
+static bool parse_settings_object(const cJSON *settings, quota_settings_t *parsed)
+{
+    if (!object_has_unique_keys(settings)) return false;
+    const cJSON *refresh = json_field(settings, "refresh_seconds");
+    const cJSON *automatic = json_field(settings, "auto_refresh");
+    const cJSON *screen_timeout = json_field(settings, "screen_timeout_seconds");
+    uint64_t seconds = 0;
+    uint64_t timeout = 0;
+    if (!json_uint(refresh, 1800, &seconds) || !valid_refresh_seconds(seconds) ||
+        !cJSON_IsBool(automatic) ||
+        (screen_timeout != NULL && (!json_uint(screen_timeout, 600, &timeout) ||
+                                   !quota_screen_timeout_is_valid(timeout)))) return false;
+    parsed->refresh_seconds = (uint16_t)seconds;
+    parsed->auto_refresh = cJSON_IsTrue(automatic);
+    parsed->has_screen_timeout_seconds = screen_timeout != NULL;
+    parsed->screen_timeout_seconds = (uint16_t)timeout;
+    return true;
+}
+
+bool quota_parse_settings_ack(const char *json, size_t json_length, quota_settings_t *settings)
+{
+    if (settings == NULL || json_length > QUOTA_MAX_SNAPSHOT_BYTES) return false;
+    cJSON *root = NULL;
+    if (!json_whole_document(json, json_length, &root)) return false;
+    uint64_t version = 0;
+    quota_settings_t parsed = {0};
+    bool valid = object_has_unique_keys(root) &&
+        json_uint(json_field(root, "v"), 1, &version) && version == 1 &&
+        parse_settings_object(json_field(root, "settings"), &parsed);
+    cJSON_Delete(root);
+    if (valid) *settings = parsed;
+    return valid;
 }
 
 bool quota_parse_snapshot(const char *json, size_t json_length, quota_snapshot_t *snapshot)
@@ -371,7 +505,6 @@ bool quota_parse_snapshot(const char *json, size_t json_length, quota_snapshot_t
     bool valid = object_has_unique_keys(root);
     quota_snapshot_t parsed = {0};
     uint64_t version = 0;
-    uint64_t refresh_seconds = 0;
     const cJSON *version_field = json_field(root, "v");
     const cJSON *server_time = json_field(root, "server_time");
     const cJSON *revision = json_field(root, "revision");
@@ -383,14 +516,14 @@ bool quota_parse_snapshot(const char *json, size_t json_length, quota_snapshot_t
         !object_has_unique_keys(settings) || !cJSON_IsArray(accounts)) valid = false;
 
     if (valid) {
-        const cJSON *refresh = json_field(settings, "refresh_seconds");
-        const cJSON *auto_refresh = json_field(settings, "auto_refresh");
-        if (!json_uint(refresh, 1800, &refresh_seconds) ||
-            !valid_refresh_seconds(refresh_seconds) || !cJSON_IsBool(auto_refresh)) {
+        quota_settings_t parsed_settings = {0};
+        if (!parse_settings_object(settings, &parsed_settings)) {
             valid = false;
         } else {
-            parsed.refresh_seconds = (uint16_t)refresh_seconds;
-            parsed.auto_refresh = cJSON_IsTrue(auto_refresh);
+            parsed.refresh_seconds = parsed_settings.refresh_seconds;
+            parsed.auto_refresh = parsed_settings.auto_refresh;
+            parsed.has_screen_timeout_seconds = parsed_settings.has_screen_timeout_seconds;
+            parsed.screen_timeout_seconds = parsed_settings.screen_timeout_seconds;
         }
     }
 
@@ -403,6 +536,11 @@ bool quota_parse_snapshot(const char *json, size_t json_length, quota_snapshot_t
             for (int i = 0; i < count && valid; i++) {
                 const cJSON *entry = cJSON_GetArrayItem(accounts, i);
                 if (!parse_account(entry, &parsed.accounts[i])) {
+                    valid = false;
+                    break;
+                }
+                if (parsed.accounts[i].provider == QUOTA_PROVIDER_DEEPSEEK &&
+                    !parse_balance(entry, &parsed.balances[i])) {
                     valid = false;
                     break;
                 }
@@ -555,16 +693,43 @@ quota_metric_state_t quota_metric_state(const quota_window_t *window, uint64_t n
     return QUOTA_METRIC_VALUE;
 }
 
-bool quota_display_should_dim(uint64_t now_ms, uint64_t last_input_ms,
-                              bool pairing_active)
+void quota_display_tick(quota_display_state_t *display, uint64_t now_ms,
+                        uint16_t timeout_seconds, bool pairing_active)
 {
-    return !pairing_active && now_ms >= last_input_ms &&
-           now_ms - last_input_ms >= 120000;
+    if (display == NULL) return;
+    /* Start a fresh idle period when pairing closes, including on clock rollback. */
+    if (pairing_active || now_ms < display->last_input_ms) display->last_input_ms = now_ms;
+    if (!pairing_active && timeout_seconds != 0 &&
+        quota_screen_timeout_is_valid(timeout_seconds) &&
+        now_ms - display->last_input_ms >= (uint64_t)timeout_seconds * 1000) {
+        display->sleeping = true;
+    }
+}
+
+bool quota_display_handle_key(quota_display_state_t *display, uint64_t now_ms,
+                              quota_key_event_t event, bool down_key)
+{
+    if (display == NULL) return false;
+    display->last_input_ms = now_ms;
+    if (display->sleeping) {
+        display->sleeping = false;
+        display->consume_wake_gesture = event == QUOTA_KEY_PRESS;
+        return false;
+    }
+    if (display->consume_wake_gesture) {
+        if (event != QUOTA_KEY_PRESS) display->consume_wake_gesture = false;
+        return false;
+    }
+    if (event == QUOTA_KEY_LONG && down_key) {
+        display->sleeping = true;
+        return false;
+    }
+    return event != QUOTA_KEY_PRESS;
 }
 
 void quota_navigation_init(quota_navigation_t *navigation, bool configured,
                            uint16_t refresh_seconds, bool auto_refresh,
-                           uint8_t account_count)
+                           uint16_t screen_timeout_seconds, uint8_t account_count)
 {
     if (navigation == NULL) return;
     memset(navigation, 0, sizeof(*navigation));
@@ -572,17 +737,23 @@ void quota_navigation_init(quota_navigation_t *navigation, bool configured,
     navigation->refresh_seconds = valid_refresh_seconds(refresh_seconds)
                                 ? refresh_seconds : QUOTA_REFRESH_DEFAULT_SECONDS;
     navigation->auto_refresh = auto_refresh;
+    navigation->screen_timeout_seconds = quota_screen_timeout_is_valid(screen_timeout_seconds)
+        ? screen_timeout_seconds : QUOTA_SCREEN_TIMEOUT_DEFAULT_SECONDS;
     navigation->screen = configured ? QUOTA_SCREEN_HOME : QUOTA_SCREEN_SETUP;
     navigation->setup_return_screen = QUOTA_SCREEN_HOME;
     if (account_count == 0) navigation->selected_account = 0;
 }
 
 void quota_navigation_sync_settings(quota_navigation_t *navigation,
-                                     uint16_t refresh_seconds, bool auto_refresh)
+                                     uint16_t refresh_seconds, bool auto_refresh,
+                                     uint16_t screen_timeout_seconds)
 {
     if (navigation == NULL || !valid_refresh_seconds(refresh_seconds)) return;
     navigation->refresh_seconds = refresh_seconds;
     navigation->auto_refresh = auto_refresh;
+    if (quota_screen_timeout_is_valid(screen_timeout_seconds)) {
+        navigation->screen_timeout_seconds = screen_timeout_seconds;
+    }
 }
 
 static uint8_t wrap_index(uint8_t current, int direction, uint8_t count)
@@ -605,13 +776,16 @@ quota_action_t quota_navigation_handle(quota_navigation_t *navigation,
         }
         if (navigation->screen == QUOTA_SCREEN_SETTINGS) {
             navigation->settings_focus = wrap_index(navigation->settings_focus,
-                                                    direction, 4);
+                                                    direction, 5);
         } else if (navigation->screen == QUOTA_SCREEN_ACCOUNTS) {
             navigation->account_focus = wrap_index(navigation->account_focus,
                                                    direction, (uint8_t)(account_count + 1));
         } else if (navigation->screen == QUOTA_SCREEN_INTERVAL) {
             navigation->interval_focus = wrap_index(navigation->interval_focus,
                                                     direction, 5);
+        } else if (navigation->screen == QUOTA_SCREEN_SLEEP) {
+            navigation->sleep_focus = wrap_index(navigation->sleep_focus,
+                                                 direction, QUOTA_SCREEN_TIMEOUT_COUNT);
         }
         return QUOTA_ACTION_NONE;
     }
@@ -641,6 +815,15 @@ quota_action_t quota_navigation_handle(quota_navigation_t *navigation,
                 navigation->interval_focus = 0;
             } else if (navigation->settings_focus == 2) {
                 return QUOTA_ACTION_REFRESH;
+            } else if (navigation->settings_focus == 3) {
+                navigation->screen = QUOTA_SCREEN_SLEEP;
+                navigation->sleep_focus = 0;
+                for (size_t i = 0; i < QUOTA_SCREEN_TIMEOUT_COUNT; i++) {
+                    if (quota_screen_timeouts[i] == navigation->screen_timeout_seconds) {
+                        navigation->sleep_focus = (uint8_t)i;
+                        break;
+                    }
+                }
             } else {
                 navigation->setup_return_screen = QUOTA_SCREEN_SETTINGS;
                 navigation->screen = QUOTA_SCREEN_SETUP;
@@ -667,6 +850,11 @@ quota_action_t quota_navigation_handle(quota_navigation_t *navigation,
         }
         case QUOTA_SCREEN_SETUP:
             return QUOTA_ACTION_NONE;
+        case QUOTA_SCREEN_SLEEP:
+            if (navigation->sleep_focus >= QUOTA_SCREEN_TIMEOUT_COUNT) return QUOTA_ACTION_NONE;
+            navigation->screen_timeout_seconds = quota_screen_timeouts[navigation->sleep_focus];
+            navigation->screen = QUOTA_SCREEN_SETTINGS;
+            return QUOTA_ACTION_APPLY_SETTINGS;
         default:
             return QUOTA_ACTION_NONE;
     }

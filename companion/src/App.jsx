@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DeviceSerialError, serialErrorMessage, startDeviceSerial } from './serial.mjs';
+import { deepSeekRmbDisplay } from './deepseek-display.mjs';
 
 const REFRESH_OPTIONS = [60, 300, 900, 1800];
+const SCREEN_TIMEOUT_OPTIONS = [0, 30, 60, 120, 300, 600];
+const DEFAULT_SCREEN_TIMEOUT_SECONDS = 120;
 const MAX_ACCOUNTS = 8;
 const PREVIEW_SCREENS = [
   ['home', '主页面'],
@@ -12,14 +15,102 @@ const PREVIEW_SCREENS = [
 
 function Logo({ provider, size = 28 }) {
   const openAI = provider === 'codex';
+  const deepSeek = provider === 'deepseek';
   return (
     <img
-      className={`brand-logo ${openAI ? 'openai' : 'claude'}`}
-      src={openAI ? '/assets/openai.svg' : '/assets/claude.svg'}
-      alt={openAI ? 'OpenAI' : 'Claude'}
+      className={`brand-logo ${openAI ? 'openai' : deepSeek ? 'deepseek' : 'claude'}`}
+      src={openAI ? '/assets/openai.svg' : deepSeek ? '/assets/deepseek.svg' : '/assets/claude.svg'}
+      alt={openAI ? 'OpenAI' : deepSeek ? 'DeepSeek' : 'Claude'}
       width={size}
       height={size}
     />
+  );
+}
+
+function providerName(provider, label = '') {
+  if (provider === 'codex') return 'Codex';
+  if (provider === 'claude') return 'Claude';
+  if (provider === 'deepseek') return label || 'DeepSeek API';
+  return '账户';
+}
+
+function deviceSafeText(value) {
+  return Array.from(typeof value === 'string' ? value : '').map(character => /^[\x20-\x7e]$/.test(character) ? character : '?').join('');
+}
+
+function DeepSeekBalance({ balance, compact = false }) {
+  const { info, availability, tone } = deepSeekRmbDisplay(balance);
+  if (compact) {
+    return <div className="device-deepseek-balances">
+      <section>
+        <div className="balance-heading">人民币可用余额</div>
+        <div className={`balance-total ${info ? '' : 'unknown'}`} style={info ? { fontSize: info.total_balance.length > 16 ? 12 : info.total_balance.length > 12 ? 14 : 20 } : undefined}>{info?.total_balance || availability}</div>
+        {info && <>
+          <div className="balance-granted">赠送余额 {info.granted_balance}</div>
+          <div className="balance-topped-up">充值余额 {info.topped_up_balance}</div>
+        </>}
+      </section>
+    </div>;
+  }
+  return (
+    <div className={`deepseek-balance ${compact ? 'compact' : ''}`}>
+      <div className={`deepseek-availability ${tone}`}>{availability}</div>
+      {info && (
+        <section className="currency-balance">
+          <header><strong>人民币</strong><span>{info.total_balance}</span></header>
+          <div><span>赠送余额</span><strong>{info.granted_balance}</strong></div>
+          <div><span>充值余额</span><strong>{info.topped_up_balance}</strong></div>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function planLabel(plan) {
+  if (typeof plan !== 'string' || !plan.trim()) return '';
+  const value = plan.trim();
+  return `${value.charAt(0).toLocaleUpperCase()}${value.slice(1)}`;
+}
+
+function screenTimeoutLabel(seconds) {
+  if (seconds === 0) return '永不';
+  if (seconds < 60) return `${seconds} 秒`;
+  return `${seconds / 60} 分钟`;
+}
+
+function formatLocalClock(nowSeconds) {
+  return new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })
+    .format(new Date(nowSeconds * 1000));
+}
+
+function DeviceHeader({ title, info, nowSeconds, previewStatus }) {
+  const wifiConnected = typeof previewStatus?.wifi_connected === 'boolean' ? previewStatus.wifi_connected : null;
+  const batteryPercent = Number.isInteger(previewStatus?.battery_percent)
+    && previewStatus.battery_percent >= 0 && previewStatus.battery_percent <= 100
+    ? previewStatus.battery_percent : null;
+  const wifiLabel = wifiConnected === null ? '设备 Wi‑Fi 状态未知' : wifiConnected ? '设备 Wi‑Fi 已连接' : '设备 Wi‑Fi 未连接';
+  const batteryLabel = batteryPercent === null ? '设备电量未知' : `设备电量 ${batteryPercent}%`;
+  return (
+    <div className="device-header">
+      <strong>{title}</strong>
+      <span className="device-header-info">{info}</span>
+      <span className="device-clock" title="电脑本地时间预览；设备时钟状态未知" aria-label={`电脑本地时间预览 ${formatLocalClock(nowSeconds)}`}>{formatLocalClock(nowSeconds)}</span>
+      <span className={`device-wifi ${wifiConnected === null ? 'unknown' : wifiConnected ? 'available' : 'unavailable'}`} title={wifiLabel} aria-label={wifiLabel}>
+        <svg viewBox="0 0 18 14" aria-hidden="true" focusable="false">
+          <path d="M1.3 4.7a11 11 0 0 1 15.4 0M4.1 7.6a7 7 0 0 1 9.8 0M6.9 10.4a3 3 0 0 1 4.2 0" />
+          <circle cx="9" cy="12.3" r=".8" />
+          {wifiConnected === false && <path className="wifi-slash" d="M2 1.5 16 13" />}
+        </svg>
+      </span>
+      <span className={`device-battery ${batteryPercent === null ? 'unknown' : 'available'}`} title={batteryLabel} aria-label={batteryLabel}>
+        <svg viewBox="0 0 29 12" aria-hidden="true" focusable="false">
+          <rect className="battery-outline" x=".5" y=".5" width="25" height="11" rx="2" />
+          {batteryPercent !== null && <rect className="battery-fill" x="2" y="2" width={21 * batteryPercent / 100} height="8" rx="1" />}
+          <path className="battery-terminal" d="M27 4v4" />
+        </svg>
+        <small>{batteryPercent === null ? '—%' : `${batteryPercent}%`}</small>
+      </span>
+    </div>
   );
 }
 
@@ -41,11 +132,13 @@ function formatAge(epochSeconds, nowSeconds) {
 
 function accountStatus(account) {
   if (!account) return '无账户';
+  if (account.provider === 'deepseek' && account.status === 'expired') return 'API 密钥无效';
   if (account.status === 'expired') return '登录已过期';
   if (account.status === 'error') return '连接错误';
   if (account.status === 'unsupported') return '暂不支持';
+  if (account.provider === 'deepseek' && account.status === 'waiting') return '等待余额校验';
   if (!account.authenticated) return '等待登录';
-  if (account.status === 'waiting') return account.provider === 'claude' ? '等待首次额度数据' : '等待额度采集';
+  if (account.status === 'waiting') return account.provider === 'claude' ? '等待首次额度数据' : account.provider === 'deepseek' ? '等待余额校验' : '等待额度采集';
   return account.status === 'ok' ? '已连接' : account.status;
 }
 
@@ -64,6 +157,9 @@ function friendlyError(code) {
     invalid_interface: '所选地址已不可用，请重新选择本机网络。',
     pairing_address_active: '请先停止当前同步，再切换局域网地址。',
     invalid_settings: '设置值无效，请重新选择刷新间隔。',
+    invalid_api_key: 'DeepSeek API 密钥格式无效。',
+    invalid_account_label: '本机别名不能超过 32 个 UTF-8 字节或包含控制字符。',
+    account_busy: '此账户正在更新，请稍后重试。',
     invalid_login_code: '验证码无效或登录流程已结束，请重新开始官方登录。',
     account_limit: `最多可连接 ${MAX_ACCOUNTS} 个账户。`,
     cli_unavailable: '本机未发现该平台的官方命令行工具。',
@@ -160,6 +256,10 @@ export function App() {
   const [busyAction, setBusyAction] = useState('');
   const [providerDialog, setProviderDialog] = useState(false);
   const [providerChoice, setProviderChoice] = useState('codex');
+  const [newDeepSeekApiKey, setNewDeepSeekApiKey] = useState('');
+  const [newDeepSeekLabel, setNewDeepSeekLabel] = useState('DeepSeek API');
+  const [accountDeepSeekApiKey, setAccountDeepSeekApiKey] = useState('');
+  const [accountDeepSeekLabel, setAccountDeepSeekLabel] = useState('');
   const [loginSessions, setLoginSessions] = useState({});
   const [loginCode, setLoginCode] = useState('');
   const [scale, setScale] = useState(() => window.innerWidth < 440 ? 1 : 1.35);
@@ -178,6 +278,7 @@ export function App() {
   const currentAccountList = apiState?.accounts ?? [];
   const account = currentAccountList.find(item => item.id === selectedId) ?? currentAccountList[0] ?? null;
   const authenticatedAccounts = currentAccountList.filter(item => item.authenticated === true);
+  const refreshableAccounts = currentAccountList.filter(item => item.provider === 'deepseek' ? item.status !== 'expired' : item.authenticated === true);
   const previewAccount = account?.authenticated === true ? account : authenticatedAccounts[0] ?? null;
   const previewAccountIndex = previewAccount ? authenticatedAccounts.findIndex(item => item.id === previewAccount.id) : -1;
   const selectedPendingLogin = account
@@ -194,6 +295,8 @@ export function App() {
   }, [apiState?.interfaces]);
   const refreshSeconds = apiState?.settings?.refresh_seconds;
   const autoRefresh = apiState?.settings?.auto_refresh;
+  const screenTimeoutSeconds = apiState?.settings?.screen_timeout_seconds ?? DEFAULT_SCREEN_TIMEOUT_SECONDS;
+  const previewStatus = apiState?.preview_status;
   const stale = Boolean(account && Number.isFinite(account.observed_at)
     && nowSeconds - account.observed_at > Math.max(900, 2 * (refreshSeconds || 0)));
   const previewStale = Boolean(previewAccount && Number.isFinite(previewAccount.observed_at)
@@ -251,6 +354,15 @@ export function App() {
   useEffect(() => {
     setLoginCode('');
   }, [account?.id]);
+
+  useEffect(() => {
+    setAccountDeepSeekApiKey('');
+    setAccountDeepSeekLabel(account?.provider === 'deepseek' ? account.label || 'DeepSeek API' : '');
+  }, [account?.id, account?.label, account?.provider]);
+
+  useEffect(() => {
+    if (!providerDialog) setNewDeepSeekApiKey('');
+  }, [providerDialog]);
 
   useEffect(() => {
     if (!apiState?.pending_logins?.length) return;
@@ -318,35 +430,42 @@ export function App() {
   }
 
   async function refreshAccount(accountId) {
-    const refreshableAccount = currentAccountList.find(item => item.id === accountId && item.authenticated === true);
+    const refreshableAccount = currentAccountList.find(item => item.id === accountId && (item.authenticated === true || item.provider === 'deepseek'));
     if (!refreshableAccount) {
       setToast('完成官方登录后，才能刷新此账户的额度。');
       return;
     }
-    await mutate(`/api/accounts/${accountId}/refresh`, { success: '刷新请求已提交。额度会在本机采集完成后更新。' });
+    await mutate(`/api/accounts/${accountId}/refresh`, { success: refreshableAccount.provider === 'deepseek' ? '余额查询已提交。' : '刷新请求已提交。额度会在本机采集完成后更新。' });
   }
 
   async function refreshAll() {
-    if (!authenticatedAccounts.length) {
-      setToast('当前没有已授权账户。');
+    if (!refreshableAccounts.length) {
+      setToast('当前没有可刷新的账户。');
       return;
     }
     await mutate('/api/refresh', { success: '刷新请求已提交。' });
   }
 
   async function updateSettings(nextSettings, success) {
-    if (refreshSeconds === nextSettings.refresh_seconds && autoRefresh === nextSettings.auto_refresh) return;
-    await mutate('/api/settings', { method: 'PATCH', body: nextSettings, success });
+    const settings = {
+      refresh_seconds: refreshSeconds,
+      auto_refresh: Boolean(autoRefresh),
+      screen_timeout_seconds: screenTimeoutSeconds,
+      ...nextSettings,
+    };
+    if (refreshSeconds === settings.refresh_seconds && autoRefresh === settings.auto_refresh
+      && screenTimeoutSeconds === settings.screen_timeout_seconds) return;
+    await mutate('/api/settings', { method: 'PATCH', body: settings, success });
   }
 
-  async function startLogin(provider) {
+  async function startLogin(provider, options = {}) {
     if ((apiState?.accounts?.length ?? 0) >= MAX_ACCOUNTS) {
       setToast(`最多可连接 ${MAX_ACCOUNTS} 个账户。`);
       return;
     }
     const result = await mutate('/api/accounts', {
-      body: { provider },
-      success: '已创建登录流程。请在下方打开官方验证页并完成授权。',
+      body: { provider, ...options },
+      success: provider === 'deepseek' ? 'DeepSeek 余额账户已添加。本机只查询余额。' : '已创建登录流程。请在下方打开官方验证页并完成授权。',
     });
     if (result?.account_id) {
       pendingAccountSelection.current = result.account_id;
@@ -357,6 +476,32 @@ export function App() {
       setPreviewScreen('home');
       pollState();
     }
+  }
+
+  async function addDeepSeekAccount(event) {
+    event.preventDefault();
+    const apiKey = newDeepSeekApiKey;
+    const label = newDeepSeekLabel;
+    setNewDeepSeekApiKey('');
+    await startLogin('deepseek', { api_key: apiKey, label });
+  }
+
+  async function updateDeepSeekAccount(event, accountId) {
+    event.preventDefault();
+    const apiKey = accountDeepSeekApiKey;
+    const label = accountDeepSeekLabel;
+    const current = currentAccountList.find(item => item.id === accountId);
+    setAccountDeepSeekApiKey('');
+    if (!apiKey && label === (current?.label || 'DeepSeek API')) {
+      setToast('输入新的 API 密钥，或修改本机别名后保存。');
+      return;
+    }
+    const body = { label };
+    if (apiKey) body.api_key = apiKey;
+    await mutate(`/api/accounts/${accountId}/api-key`, {
+      body,
+      success: apiKey ? '已保存别名并开始验证新 API 密钥。' : '本机别名已更新。',
+    });
   }
 
   async function retryLogin(accountId) {
@@ -417,6 +562,8 @@ export function App() {
       if (settingFocus === 0) setPreviewScreen('accounts');
       if (settingFocus === 1) setPanel('refresh');
       if (settingFocus === 2) refreshAccount(previewAccount?.id);
+      if (settingFocus === 3) setPanel('refresh');
+      if (settingFocus === 4) setPanel('setup');
     } else if (previewScreen === 'accounts') {
       if (account) setPreviewScreen('home');
       else setPreviewScreen('add');
@@ -432,7 +579,7 @@ export function App() {
 
   function direction(delta) {
     if (previewScreen === 'home' || previewScreen === 'accounts') moveAccount(delta);
-    else if (previewScreen === 'settings') setSettingFocus(current => (current + delta + 3) % 3);
+    else if (previewScreen === 'settings') setSettingFocus(current => (current + delta + 5) % 5);
   }
 
   useEffect(() => {
@@ -598,44 +745,48 @@ export function App() {
             <div className="screen-wrapper" style={{ width: 240 * scale, height: 320 * scale }}>
               <div className="device-screen" style={{ transform: `scale(${scale})` }} aria-label="240 乘 320 的 AI Passport 设备屏幕预览">
                 {previewScreen === 'home' && <>
-                  <div className="device-header"><strong>AI 额度</strong><span>{previewAccount ? `${previewAccountIndex + 1} / ${authenticatedAccounts.length}` : '本地'}</span></div>
+                  <DeviceHeader title="AI 额度" info={previewAccount ? `${previewAccountIndex + 1}/${authenticatedAccounts.length}` : '0/0'} nowSeconds={nowSeconds} previewStatus={previewStatus} />
                   {previewAccount ? <>
-                    <div className="identity"><Logo provider={previewAccount.provider} size={38} /><div><h3>{previewAccount.provider === 'codex' ? 'Codex' : 'Claude'}</h3><p>{previewAccount.plan || '订阅信息未知'}</p><div className="email" title={previewAccount.email}>{previewAccount.email || '邮箱未知'}</div></div></div>
-                    <QuotaBar label="5 小时" windowValue={previewAccount.five_hour} nowSeconds={nowSeconds} stale={previewCached} compact />
-                    <QuotaBar label="7 天" windowValue={previewAccount.seven_day} nowSeconds={nowSeconds} stale={previewCached} compact />
-                    <div className={`device-update ${previewCached || previewAccount.status !== 'ok' ? 'warning-text' : ''}`}>{previewCached ? '缓存数据 · ' : ''}{accountStatus(previewAccount)} · {formatAge(previewAccount.observed_at, nowSeconds)}</div>
+                    <div className={`identity ${previewAccount.provider === 'deepseek' ? 'deepseek-identity' : ''}`}><Logo provider={previewAccount.provider} size={38} /><div><h3>{previewAccount.provider === 'deepseek' ? 'DeepSeek' : providerName(previewAccount.provider)}</h3><p>{previewAccount.provider === 'deepseek' ? '开放平台 · API' : planLabel(previewAccount.plan) || '订阅信息未知'}</p><div className="email" title={previewAccount.provider === 'deepseek' ? '本机别名' : previewAccount.email}>{previewAccount.provider === 'deepseek' ? deviceSafeText(previewAccount.label || 'DeepSeek API') : previewAccount.email || '邮箱未知'}</div></div></div>
+                    {previewAccount.provider === 'deepseek' ? <DeepSeekBalance balance={previewAccount.balance} compact /> : <>
+                      <QuotaBar label="5 小时" windowValue={previewAccount.five_hour} nowSeconds={nowSeconds} stale={previewCached} compact />
+                      <QuotaBar label="7 天" windowValue={previewAccount.seven_day} nowSeconds={nowSeconds} stale={previewCached} compact />
+                    </>}
+                    <div className={`device-update ${previewAccount.provider === 'deepseek' ? 'deepseek-update' : ''} ${previewCached || previewAccount.status !== 'ok' ? 'warning-text' : ''}`}>{previewCached ? '缓存数据 · ' : ''}{previewAccount.provider === 'deepseek' && deepSeekRmbDisplay(previewAccount.balance).info && previewAccount.status === 'ok' && previewAccount.balance?.is_available === false ? '人民币余额不可用' : accountStatus(previewAccount)} · {formatAge(previewAccount.observed_at, nowSeconds)}{previewAccount.provider === 'deepseek' && Number.isFinite(previewAccount.observed_at) ? ` · ${formatDate(previewAccount.observed_at)}` : ''}</div>
                   </> : <div className="empty-device"><strong>{apiState ? '尚无已授权账户' : '连接本机应用中'}</strong><span>{apiState ? '完成电脑端官方登录并采集到额度后，数据会显示在这里。' : '正在读取本机账户状态。'}</span></div>}
                   <div className="device-footer"><span>↑↓ 切换 · OK 刷新</span><span>长按设置</span></div>
                 </>}
 
                 {previewScreen === 'settings' && <>
-                  <div className="device-header"><strong>设置</strong><span className={apiError ? 'warning-text' : 'connected'}>{apiError ? '应用离线' : '本机应用'}</span></div>
+                  <DeviceHeader title="设置" info="" nowSeconds={nowSeconds} previewStatus={previewStatus} />
                   <div className="device-settings">
                     {[
                       ['账户管理', `${authenticatedAccounts.length} 个`],
                       ['自动刷新', apiState ? autoRefresh ? `${refreshSeconds / 60} 分钟` : '关闭' : '—'],
                       ['立即刷新', busyAction.includes('/refresh') ? '提交中' : ''],
-                    ].map(([label, value], index) => <button key={label} type="button" className={settingFocus === index ? 'focused' : ''} onClick={() => { setSettingFocus(index); if (index === 0) setPreviewScreen('accounts'); if (index === 1) setPanel('refresh'); if (index === 2) refreshAccount(previewAccount?.id); }}><span>{label}</span><span>{value}</span></button>)}
+                      ['息屏时间', apiState ? screenTimeoutLabel(screenTimeoutSeconds) : '—'],
+                      ['配对', '电脑端'],
+                    ].map(([label, value], index) => <button key={label} type="button" className={settingFocus === index ? 'focused' : ''} onClick={() => { setSettingFocus(index); if (index === 0) setPreviewScreen('accounts'); if (index === 1 || index === 3) setPanel('refresh'); if (index === 2) refreshAccount(previewAccount?.id); if (index === 4) setPanel('setup'); }}><span>{label}</span><span>{value}</span></button>)}
                   </div>
                   <div className="device-explanation">电脑完成账户授权<br />额度来自最近一次采集</div>
                   <div className="device-footer"><span>↑↓ 选择 · OK 确认</span><span>长按返回</span></div>
                 </>}
 
                 {previewScreen === 'accounts' && <>
-                  <div className="device-header"><strong>账户管理</strong><span>{authenticatedAccounts.length} 个</span></div>
+                  <DeviceHeader title="账户管理" info={String(authenticatedAccounts.length)} nowSeconds={nowSeconds} previewStatus={previewStatus} />
                   {authenticatedAccounts.length ? <div className="device-accounts">
-                    {authenticatedAccounts.map(item => <button key={item.id} type="button" className={previewAccount?.id === item.id ? 'focused' : ''} onClick={() => { setSelectedId(item.id); setPreviewScreen('home'); }}><Logo provider={item.provider} size={22} /><span><strong>{item.provider === 'codex' ? 'Codex' : 'Claude'}</strong><small>{item.email || accountStatus(item)}</small></span></button>)}
+                    {authenticatedAccounts.map(item => <button key={item.id} type="button" className={previewAccount?.id === item.id ? 'focused' : ''} onClick={() => { setSelectedId(item.id); setPreviewScreen('home'); }}><Logo provider={item.provider} size={22} /><span><strong>{providerName(item.provider, item.label)}</strong><small>{item.provider === 'deepseek' ? 'DeepSeek API' : item.email || accountStatus(item)}</small></span></button>)}
                   </div> : <div className="empty-device compact-empty"><span>尚无已授权账户</span><small>在电脑端完成官方登录</small></div>}
                   <button className="device-add" type="button" onClick={() => setPreviewScreen('add')}>在电脑上添加账户</button>
                   <div className="device-footer"><span>↑↓ 切换 · OK 查看</span><span>长按返回</span></div>
                 </>}
 
                 {previewScreen === 'add' && <>
-                  <div className="device-header"><strong>添加账户</strong><span>{currentAccountList.length}/{MAX_ACCOUNTS}</span></div>
-                  <div className="pairing-intro">请在电脑端开始<br />官方账户授权</div>
-                  <div className="device-providers"><div><Logo provider="codex" size={34} /><span>Codex</span></div><div><Logo provider="claude" size={34} /><span>Claude</span></div></div>
-                  <div className="pairing-code"><span>授权步骤</span><strong>电脑端</strong><small>此预览不模拟账户或额度</small></div>
-                  <div className="device-footer"><span>电脑上打开官方验证页</span><span>长按返回</span></div>
+                  <DeviceHeader title="添加账户" info={String(currentAccountList.length)} nowSeconds={nowSeconds} previewStatus={previewStatus} />
+                  <div className="pairing-intro">请在电脑设置页<br />添加账户并完成连接</div>
+                  <div className="device-providers"><div><Logo provider="codex" size={34} /><span>Codex</span></div><div><Logo provider="claude" size={34} /><span>Claude</span></div><div><Logo provider="deepseek" size={34} /><span>DeepSeek</span></div></div>
+                  <div className="pairing-code"><span>配置步骤</span><strong>电脑端</strong><small>此预览不模拟配对倒计时</small></div>
+                  <div className="device-footer"><span>请通过 USB 提交配置</span><span>长按返回</span></div>
                 </>}
               </div>
             </div>
@@ -668,25 +819,31 @@ export function App() {
           {!apiState && !apiError && <div className="loading-state"><span className="spinner" />正在连接本机应用…</div>}
 
           {apiState && panel === 'accounts' && <>
-            <div className="accounts-heading"><div><h3>本机账户</h3><p>最多 {MAX_ACCOUNTS} 个 · 由官方授权流程连接</p></div><button type="button" className="primary" onClick={() => { setProviderChoice('codex'); setProviderDialog(true); }} disabled={currentAccountList.length >= MAX_ACCOUNTS || Boolean(busyAction)}>＋ 添加账户</button></div>
+            <div className="accounts-heading"><div><h3>本机账户</h3><p>最多 {MAX_ACCOUNTS} 个 · 官方授权或 DeepSeek API 密钥</p></div><button type="button" className="primary" onClick={() => { setProviderChoice('codex'); setNewDeepSeekApiKey(''); setNewDeepSeekLabel('DeepSeek API'); setProviderDialog(true); }} disabled={currentAccountList.length >= MAX_ACCOUNTS || Boolean(busyAction)}>＋ 添加账户</button></div>
             <div className="cli-availability"><span><i className={apiState.cli?.codex ? 'available' : ''} />Codex CLI <strong>{apiState.cli?.codex ? '可用' : '未发现'}</strong></span><span><i className={apiState.cli?.claude ? 'available' : ''} />Claude CLI <strong>{apiState.cli?.claude ? '可用' : '未发现'}</strong></span></div>
             {currentAccountList.length ? <div className="account-list">
               {currentAccountList.map(item => <div className={`account-row ${account?.id === item.id ? 'selected' : ''}`} key={item.id}>
-                <button type="button" className="account-select" onClick={() => setSelectedId(item.id)} aria-pressed={account?.id === item.id} aria-label={`选择 ${item.provider === 'codex' ? 'Codex' : 'Claude'} 账户 ${item.email || ''}`}>
+                <button type="button" className="account-select" onClick={() => setSelectedId(item.id)} aria-pressed={account?.id === item.id} aria-label={`选择 ${providerName(item.provider, item.label)} 账户 ${item.provider === 'deepseek' ? '' : item.email || ''}`}>
                   <Logo provider={item.provider} size={34} />
-                  <span className="account-detail"><span><strong>{item.provider === 'codex' ? 'Codex' : 'Claude'}</strong><em className={`status-chip ${statusTone(item)}`}>{accountStatus(item)}</em></span><small>{item.email || '邮箱信息未提供'}{item.plan ? ` · ${item.plan}` : ''}</small></span>
-                  <span className="row-quotas"><span>{item.five_hour ? `${quotaView(item.five_hour, nowSeconds).value ?? '—'}%` : '—'}<small>5h</small></span><span>{item.seven_day ? `${quotaView(item.seven_day, nowSeconds).value ?? '—'}%` : '—'}<small>7d</small></span></span>
+                  <span className="account-detail"><span><strong>{providerName(item.provider, item.label)}</strong><em className={`status-chip ${statusTone(item)}`}>{accountStatus(item)}</em></span><small>{item.provider === 'deepseek' ? 'DeepSeek API · 本机别名' : `${item.email || '邮箱信息未提供'}${item.plan ? ` · ${planLabel(item.plan)}` : ''}`}</small></span>
+                  {item.provider === 'deepseek' ? <span className="row-balances"><span>{deepSeekRmbDisplay(item.balance).info?.total_balance ?? '—'}<small>人民币</small></span></span> : <span className="row-quotas"><span>{item.five_hour ? `${quotaView(item.five_hour, nowSeconds).value ?? '—'}%` : '—'}<small>5h</small></span><span>{item.seven_day ? `${quotaView(item.seven_day, nowSeconds).value ?? '—'}%` : '—'}<small>7d</small></span></span>}
                 </button>
-                <button type="button" className="remove-account" onClick={() => removeAccount(item.id)} disabled={Boolean(busyAction)} aria-label={`移除 ${item.email || '此账户'}`}>移除</button>
+                <button type="button" className="remove-account" onClick={() => removeAccount(item.id)} disabled={Boolean(busyAction)} aria-label={`移除 ${item.provider === 'deepseek' ? item.label || 'DeepSeek API' : item.email || '此账户'}`}>移除</button>
               </div>)}
-            </div> : <div className="empty-accounts"><div className="empty-icon">＋</div><strong>还没有连接的账户</strong><p>选择 Codex 或 Claude 后，将在官方登录页完成授权。邮箱、订阅信息和额度会由本机程序读取。</p><button type="button" className="primary" onClick={() => { setProviderChoice('codex'); setProviderDialog(true); }} disabled={Boolean(busyAction)}>连接第一个账户</button></div>}
+            </div> : <div className="empty-accounts"><div className="empty-icon">＋</div><strong>还没有连接的账户</strong><p>通过官方登录连接 Codex 或 Claude，也可以添加 DeepSeek API 密钥来只读查看账户余额。</p><button type="button" className="primary" onClick={() => { setProviderChoice('codex'); setNewDeepSeekApiKey(''); setNewDeepSeekLabel('DeepSeek API'); setProviderDialog(true); }} disabled={Boolean(busyAction)}>连接第一个账户</button></div>}
 
             {account && <div className="account-summary">
-              <div className="summary-heading"><div><strong>所选账户 · {account.provider === 'codex' ? 'Codex' : 'Claude'}</strong><small>{account.email || '邮箱信息未提供'}</small></div><span className={`status-chip ${statusTone(account)}`}>{accountStatus(account)}</span></div>
-              <div className="summary-bars"><QuotaBar label="5 小时" windowValue={account.five_hour} nowSeconds={nowSeconds} stale={selectedCached} /><QuotaBar label="7 天" windowValue={account.seven_day} nowSeconds={nowSeconds} stale={selectedCached} /></div>
+              <div className="summary-heading"><div><strong>所选账户 · {providerName(account.provider, account.label)}</strong><small>{account.provider === 'deepseek' ? 'DeepSeek API · 本机别名' : account.email || '邮箱信息未提供'}</small></div><span className={`status-chip ${statusTone(account)}`}>{accountStatus(account)}</span></div>
+              {account.provider === 'deepseek' ? <DeepSeekBalance balance={account.balance} /> : <div className="summary-bars"><QuotaBar label="5 小时" windowValue={account.five_hour} nowSeconds={nowSeconds} stale={selectedCached} /><QuotaBar label="7 天" windowValue={account.seven_day} nowSeconds={nowSeconds} stale={selectedCached} /></div>}
               <div className={`freshness ${selectedCached ? 'warning-text' : ''}`}><span className="freshness-dot" />{statusText}{Number.isFinite(account.observed_at) ? ` · ${formatDate(account.observed_at)}` : ''}</div>
-              {(account.status === 'expired' || (account.status === 'error' && account.authenticated)) && <div className="inline-callout warning-box"><strong>重新连接账户</strong><p>额度保留为最近一次采集结果。需要重新授权时，可在此开始官方登录。</p><button type="button" className="secondary" onClick={() => retryLogin(account.id)} disabled={Boolean(busyAction)}>重新连接</button></div>}
-              {((account.status === 'waiting' && !account.authenticated) || (account.status === 'error' && !account.authenticated)) && <div className="inline-callout"><strong>{account.status === 'waiting' ? '等待完成官方登录' : '账户授权需要重试'}</strong><p>按照登录流程打开官方验证页并完成授权。</p><button type="button" className="secondary" onClick={() => retryLogin(account.id)} disabled={Boolean(busyAction)}>继续官方登录</button></div>}
+              {account.provider === 'deepseek' && <><button type="button" className="secondary deepseek-refresh" onClick={() => refreshAccount(account.id)} disabled={Boolean(busyAction)}>{busyAction.includes(`/accounts/${account.id}/refresh`) ? '正在查询…' : '立即查询余额'}</button><form className="deepseek-key-form" onSubmit={event => updateDeepSeekAccount(event, account.id)}>
+                <label className="field"><span>本机别名 <small>{byteLength(accountDeepSeekLabel)} / 32 字节</small></span><input type="text" value={accountDeepSeekLabel} onChange={event => setAccountDeepSeekLabel(event.target.value)} disabled={Boolean(busyAction)} /></label>
+                <label className="field"><span>更换 API 密钥 <small>已保存密钥不会显示</small></span><input type="password" autoComplete="new-password" spellCheck="false" value={accountDeepSeekApiKey} onChange={event => setAccountDeepSeekApiKey(event.target.value)} disabled={Boolean(busyAction)} /></label>
+                <button type="submit" className="secondary" disabled={Boolean(busyAction) || byteLength(accountDeepSeekLabel) > 32 || (!accountDeepSeekApiKey && accountDeepSeekLabel === (account.label || 'DeepSeek API'))}>保存别名或验证新密钥</button>
+                <small>密钥只保存在此电脑的私有账户档案中；更换密钥会先清除旧余额，再验证新的账户。</small>
+              </form></>}
+              {account.provider !== 'deepseek' && (account.status === 'expired' || (account.status === 'error' && account.authenticated)) && <div className="inline-callout warning-box"><strong>重新连接账户</strong><p>额度保留为最近一次采集结果。需要重新授权时，可在此开始官方登录。</p><button type="button" className="secondary" onClick={() => retryLogin(account.id)} disabled={Boolean(busyAction)}>重新连接</button></div>}
+              {account.provider !== 'deepseek' && ((account.status === 'waiting' && !account.authenticated) || (account.status === 'error' && !account.authenticated)) && <div className="inline-callout"><strong>{account.status === 'waiting' ? '等待完成官方登录' : '账户授权需要重试'}</strong><p>按照登录流程打开官方验证页并完成授权。</p><button type="button" className="secondary" onClick={() => retryLogin(account.id)} disabled={Boolean(busyAction)}>继续官方登录</button></div>}
               {selectedPendingLogin && selectedPendingLogin.status === 'pending' && <div className="login-card">
                 <div className="login-card-title"><span className="eyebrow">官方登录流程</span><em className="status-chip muted">等待授权</em></div>
                 {selectedPendingLogin.code && <div className="verification-code"><span>一次性验证码</span><strong>{selectedPendingLogin.code}</strong><button type="button" className="text-button" onClick={() => copyText(selectedPendingLogin.code)}>复制验证码</button></div>}
@@ -702,11 +859,12 @@ export function App() {
           </>}
 
           {apiState && panel === 'refresh' && <div className="refresh-panel">
-            <div className="refresh-title"><div><h3>额度采集频率</h3><p>仅控制本机查询账户状态的间隔</p></div><button type="button" className={`toggle ${autoRefresh ? 'on' : ''}`} role="switch" aria-checked={Boolean(autoRefresh)} aria-label="自动刷新" onClick={() => updateSettings({ refresh_seconds: refreshSeconds, auto_refresh: !autoRefresh }, autoRefresh ? '自动刷新已关闭。' : '自动刷新已开启。')} disabled={Boolean(busyAction)}><span /></button></div>
+            <div className="refresh-title"><div><h3>刷新与显示设置</h3><p>设置账户查询间隔和设备息屏时间</p></div><button type="button" className={`toggle ${autoRefresh ? 'on' : ''}`} role="switch" aria-checked={Boolean(autoRefresh)} aria-label="自动刷新" onClick={() => updateSettings({ refresh_seconds: refreshSeconds, auto_refresh: !autoRefresh }, autoRefresh ? '自动刷新已关闭。' : '自动刷新已开启。')} disabled={Boolean(busyAction)}><span /></button></div>
             <label className="setting-row setting-select"><span><strong>自动刷新间隔</strong><small>仅当自动刷新开启时生效</small></span><select value={refreshSeconds ?? ''} onChange={event => updateSettings({ refresh_seconds: Number(event.target.value), auto_refresh: Boolean(autoRefresh) }, `刷新间隔已设为 ${Number(event.target.value) / 60} 分钟。`)} disabled={!autoRefresh || Boolean(busyAction)}><option value="" disabled>读取设置中</option>{REFRESH_OPTIONS.map(value => <option key={value} value={value}>{value / 60} 分钟</option>)}</select></label>
-            <div className="refresh-detail"><div><strong>所选账户</strong><span>{account ? account.email || (account.provider === 'codex' ? 'Codex' : 'Claude') : '未选择账户'}</span></div><div><strong>上次采集</strong><span>{account?.observed_at ? `${formatAge(account.observed_at, nowSeconds)} · ${formatDate(account.observed_at)}` : '尚无采集记录'}</span></div><div><strong>当前状态</strong><span className={selectedCached || (account && account.status !== 'ok') ? 'warning-text' : ''}>{account ? `${accountStatus(account)}${apiError ? ' · 显示缓存' : stale ? ' · 数据较旧' : ''}` : '等待添加账户'}</span></div></div>
-            <button type="button" className="primary wide" onClick={refreshAll} disabled={Boolean(busyAction) || !authenticatedAccounts.length}>{busyAction.includes('/refresh') ? '正在提交…' : '立即刷新全部账户'}</button>
-            <div className="info-note"><strong>额度数据的来源</strong><p>数据由本机程序从已授权的官方客户端或官方账户状态中采集。重置时间已到时，页面会显示“—”，直到下次采集提供新窗口。</p><p>Claude 数据可能要等该档案首次正常使用后才会出现。此工具不会发起付费模型请求。</p></div>
+            <label className="setting-row setting-select"><span><strong>设备息屏时间</strong><small>按键后等待多久关闭屏幕背光</small></span><select value={screenTimeoutSeconds} onChange={event => { const value = Number(event.target.value); updateSettings({ screen_timeout_seconds: value }, `设备息屏时间已设为${value === 0 ? '永不' : ` ${screenTimeoutLabel(value)}`}。`); }} disabled={Boolean(busyAction)}>{SCREEN_TIMEOUT_OPTIONS.map(value => <option key={value} value={value}>{screenTimeoutLabel(value)}</option>)}</select></label>
+            <div className="refresh-detail"><div><strong>所选账户</strong><span>{account ? account.provider === 'deepseek' ? account.label || 'DeepSeek API' : account.email || providerName(account.provider) : '未选择账户'}</span></div><div><strong>上次采集</strong><span>{account?.observed_at ? `${formatAge(account.observed_at, nowSeconds)} · ${formatDate(account.observed_at)}` : '尚无采集记录'}</span></div><div><strong>当前状态</strong><span className={selectedCached || (account && account.status !== 'ok') ? 'warning-text' : ''}>{account ? `${accountStatus(account)}${apiError ? ' · 显示缓存' : stale ? ' · 数据较旧' : ''}` : '等待添加账户'}</span></div></div>
+            <button type="button" className="primary wide" onClick={refreshAll} disabled={Boolean(busyAction) || !refreshableAccounts.length}>{busyAction.includes('/refresh') ? '正在提交…' : '立即刷新全部账户'}</button>
+            <div className="info-note"><strong>额度数据的来源</strong><p>数据由本机程序从已授权的官方客户端、官方账户状态或 DeepSeek 余额接口中采集。DeepSeek 使用余额查询接口，不会发起模型请求，也不会向设备发送 API 密钥。</p><p>Claude 数据可能要等该档案首次正常使用后才会出现。重置时间已到时，页面会等待数据源提供新额度。</p></div>
           </div>}
 
           {apiState && panel === 'setup' && <div className="setup-panel">
@@ -737,14 +895,21 @@ export function App() {
 
       {providerDialog && <div className="dialog-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busyAction) setProviderDialog(false); }}>
         <section className="connect-dialog" role="dialog" aria-modal="true" aria-labelledby="connect-title">
-          <div className="dialog-head"><div><span className="eyebrow">官方账户授权</span><h2 id="connect-title">连接一个订阅账户</h2></div><button type="button" className="text-button" onClick={() => setProviderDialog(false)} disabled={Boolean(busyAction)}>关闭</button></div>
-          <p className="muted">本机应用会为所选平台开启隔离的官方登录流程。密码仅在官方页面输入。</p>
+          <div className="dialog-head"><div><span className="eyebrow">账户连接</span><h2 id="connect-title">连接一个 AI 账户</h2></div><button type="button" className="text-button" onClick={() => { setProviderDialog(false); setNewDeepSeekApiKey(''); }} disabled={Boolean(busyAction)}>关闭</button></div>
+          <p className="muted">Codex 与 Claude 使用各自的官方登录流程；DeepSeek 使用只读余额 API。</p>
           <div className="provider-picker" role="group" aria-label="选择服务平台">
-            {['codex', 'claude'].map(provider => <button type="button" key={provider} className={providerChoice === provider ? 'selected' : ''} aria-pressed={providerChoice === provider} onClick={() => setProviderChoice(provider)} disabled={Boolean(busyAction)}><Logo provider={provider} size={31} /><strong>{provider === 'codex' ? 'Codex' : 'Claude'}</strong><small>{provider === 'codex' ? 'OpenAI 官方账户' : 'Anthropic 官方账户'}</small></button>)}
+            {['codex', 'claude', 'deepseek'].map(provider => <button type="button" key={provider} className={providerChoice === provider ? 'selected' : ''} aria-pressed={providerChoice === provider} onClick={() => { setProviderChoice(provider); setNewDeepSeekApiKey(''); }} disabled={Boolean(busyAction)}><Logo provider={provider} size={31} /><strong>{provider === 'deepseek' ? 'DeepSeek' : providerName(provider)}</strong><small>{provider === 'codex' ? 'OpenAI 官方账户' : provider === 'claude' ? 'Anthropic 官方账户' : '只读余额 API'}</small></button>)}
           </div>
           {providerChoice === 'claude' && <p className="dialog-note">Claude 的额度可能要到该档案首次正常使用后才会显示。此工具不会替你运行模型。</p>}
-          <button type="button" className="primary wide" onClick={() => startLogin(providerChoice)} disabled={Boolean(busyAction) || currentAccountList.length >= MAX_ACCOUNTS}>{busyAction === '/api/accounts' ? '正在准备官方登录…' : '继续到官方登录'}</button>
-          <p className="dialog-footnote">添加账户不会模拟或预填任何登录信息。官方客户端可能会引导打开登录页面；你也可以稍后点击提供的官方验证链接。</p>
+          {providerChoice === 'deepseek' ? <form className="deepseek-add-form" onSubmit={addDeepSeekAccount}>
+            <label className="field"><span>本机别名 <small>{byteLength(newDeepSeekLabel)} / 32 字节 · 不会发送给 DeepSeek</small></span><input type="text" value={newDeepSeekLabel} onChange={event => setNewDeepSeekLabel(event.target.value)} autoComplete="off" disabled={Boolean(busyAction)} /></label>
+            <label className="field"><span>DeepSeek API 密钥</span><input type="password" autoComplete="new-password" spellCheck="false" value={newDeepSeekApiKey} onChange={event => setNewDeepSeekApiKey(event.target.value)} required disabled={Boolean(busyAction)} /></label>
+            <p className="dialog-note">密钥只保存在此电脑的私有账户档案中，不会显示在账户状态、同步快照或设备上。</p>
+            <button type="submit" className="primary wide" disabled={Boolean(busyAction) || !newDeepSeekApiKey || byteLength(newDeepSeekLabel) > 32}>{busyAction === '/api/accounts' ? '正在查询 DeepSeek 余额…' : '添加余额账户'}</button>
+          </form> : <>
+            <button type="button" className="primary wide" onClick={() => startLogin(providerChoice)} disabled={Boolean(busyAction) || currentAccountList.length >= MAX_ACCOUNTS}>{busyAction === '/api/accounts' ? '正在准备官方登录…' : '继续到官方登录'}</button>
+            <p className="dialog-footnote">添加账户不会模拟或预填任何登录信息。官方客户端会引导你完成官方授权。</p>
+          </>}
         </section>
       </div>}
 

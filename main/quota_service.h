@@ -22,6 +22,7 @@ typedef struct {
     bool success;
     uint16_t refresh_seconds;
     bool auto_refresh;
+    uint16_t screen_timeout_seconds;
     uint32_t error_code;
 } quota_app_event_t;
 
@@ -35,8 +36,10 @@ typedef struct {
     bool pairing_active;
     uint32_t pairing_seconds_left;
     uint64_t now_epoch;
+    bool clock_synchronized;
     uint16_t refresh_seconds;
     bool auto_refresh;
+    uint16_t screen_timeout_seconds;
 } quota_service_view_t;
 
 bool quota_service_init(void);
@@ -46,7 +49,8 @@ void quota_service_send_button(bsp_btn_t button, bsp_btn_ev_t event);
 void quota_service_get_view(quota_service_view_t *view);
 void quota_service_get_selected_account_id(char account_id[QUOTA_ACCOUNT_ID_BYTES + 1]);
 void quota_service_request_refresh(void);
-void quota_service_request_settings(uint16_t refresh_seconds, bool auto_refresh);
+void quota_service_request_settings(uint16_t refresh_seconds, bool auto_refresh,
+                                    uint16_t screen_timeout_seconds);
 void quota_service_select_account(const char *account_id);
 void quota_service_open_pairing_window(void);
 void quota_service_close_pairing_window(void);

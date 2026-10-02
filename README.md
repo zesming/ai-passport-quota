@@ -2,15 +2,17 @@
 
 # AI Passport Quota
 
-An AI subscription quota dashboard for the FoloToy AI Passport (ESP32-C3, 240 x 320 screen), with a local desktop companion for account login and device settings. Supports up to eight independent ChatGPT/Codex and Claude subscription profiles, provider logos, verified emails, remaining 5-hour/weekly quotas, refresh timing and offline cache.
+An AI subscription quota dashboard for the FoloToy AI Passport (ESP32-C3, 240 x 320 screen), with a local desktop companion for account login and device settings. Supports up to eight independent ChatGPT/Codex, Claude and DeepSeek API accounts, provider logos, subscription quotas or API balances, refresh timing and offline cache.
 
 ## Screenshots
 
-These are captures of the running companion with isolated **documentation example accounts**. Emails and quotas are synthetic; no personal account data is included. The left panel is the web device preview, not a photograph of the physical screen.
+These are captures of the running companion with isolated **documentation example accounts**. Emails, quotas, balances and device indicators are synthetic; no personal account data is included. The left panel is the web device preview, not a photograph of the physical screen. Its clock uses the computer's local time; live board Wi-Fi/battery telemetry is not supplied to the companion.
 
 ![Account dashboard and device preview](docs/screenshots/dashboard.jpg)
 
 ![Refresh settings](docs/screenshots/settings.jpg)
+
+![DeepSeek balance and device preview](docs/screenshots/deepseek.jpg)
 
 ![USB device configuration](docs/screenshots/device-setup.jpg)
 
@@ -31,7 +33,8 @@ Open **http://127.0.0.1:4317/**. On macOS, `companion/start-dashboard.command` s
 1. In account management, add Codex or Claude and complete authorization on the official provider page. Each profile is isolated; existing CLI credentials are not imported.
 2. Codex quota is collected through the official app-server. It describes **Codex usage**, not every ordinary ChatGPT message limit. Missing windows display as unknown.
 3. For Claude, copy the account's session launch command from the page and use that profile normally. A statusline callback after a normal model response supplies its quota. Refreshing never sends a paid model prompt.
-4. Set automatic refresh and an interval of 1, 5, 15 or 30 minutes.
+4. Add DeepSeek with an API key from the [official portal](https://platform.deepseek.com/api_keys). The optional name is a local label; the balance API does not supply a verified email. Keys stay in owner-only local profiles and are never sent to the device. The page displays RMB total, granted and topped-up balances from the [official balance API](https://api-docs.deepseek.com/api/get-user-balance/), with availability and observation time. USD is not displayed in this version. Missing RMB data stays unknown. This check sends no model prompt.
+5. Set automatic refresh at 1, 5, 15 or 30 minutes and automatic screen off at 30 seconds, 1/2/5/10 minutes, or Never (default: 2 minutes).
 
 ## Connect the device
 
@@ -39,7 +42,7 @@ Flash a verified build first, then connect USB and open the physical pairing win
 
 In the web device configuration panel, choose the computer's private IPv4 address and enter **2.4 GHz Wi-Fi** details. Click Connect and configure, select the ESP32-C3 USB Serial/JTAG device, and wait for confirmation. Wi-Fi details travel directly from browser memory to USB. After pairing, the device connects to the selected computer's pinned HTTPS endpoint on port **4318**; port **4317** remains local-only. Re-pair if the computer's IP changes. Stopping sync revokes the token.
 
-On the device: up/down selects an account, short OK refreshes or confirms, and long OK opens settings or returns. Two idle minutes dim the backlight; a button wakes it. The active pairing window stays bright.
+On the device: up/down selects an account, short OK refreshes or confirms, and long OK opens settings or returns. Automatic screen off uses the selected timeout. The first function-key gesture wakes only; long DOWN while awake turns the screen off. The independent hardware power key retains its official long-press shutdown behavior. Pairing suppresses automatic screen off, and network sync continues while the screen is off.
 
 If USB configuration fails, refresh the web page, reopen the physical window and re-enter Wi-Fi details. Close other serial tools or pairing tabs. The page distinguishes no input, interrupted USB communication, an unmatched acknowledgment and explicit device rejection.
 
@@ -61,7 +64,7 @@ python3 tools/install_passport_skills.py --install
 # The complete delivery gate is ./tools/validate.sh
 ```
 
-The firmware gate produces `build/FoloToy-AI-Passport-full.bin` and a matching debug bundle under `build/firmware/<sha256>/`. Verify the bundle with `python3 tools/archive_firmware.py verify <bundle-directory>`. Flash the verified merged image at `0x0` only after approval for that device and data impact; a complete merged write can reset stored settings. Build files are not committed. See [environment setup](docs/development/engineering/environment-setup.md) and [build/flash policy](docs/development/engineering/build-and-test.md).
+The firmware gate produces `build/FoloToy-AI-Passport-full.bin` and a matching debug bundle under `build/firmware/<sha256>/`. Verify the bundle with `python3 tools/archive_firmware.py verify <bundle-directory>`. Flash only after approval for the exact device, artifact and data impact. To retain settings, confirm partition compatibility and write the verified bootloader, partition table and application at their recorded offsets. A complete merged write at `0x0` also writes the NVS gap and can reset settings. Build files are not committed. See [environment setup](docs/development/engineering/environment-setup.md) and [build/flash policy](docs/development/engineering/build-and-test.md).
 
 For frontend development, keep the companion API running, then use a separate terminal:
 
@@ -86,19 +89,27 @@ Start with [AGENTS.md](AGENTS.md), this README and the [application/protocol gui
 | Wi-Fi, pinned HTTPS, USB and NVS | `main/quota_service.c` |
 | Display/board drivers | `components/bsp/` |
 | React dashboard and USB transport | `companion/src/App.jsx`, `companion/src/serial.mjs`, `companion/src/styles.css` |
-| Official login and quota collection | `companion/server/accounts.mjs`, `clients.mjs`, `claude-feed.mjs`, `claude-session.mjs` |
+| Official login and quota collection | `companion/server/accounts.mjs`, `clients.mjs`, `claude-feed.mjs`, `claude-session.mjs`, `deepseek.mjs` |
 | Local API, pairing and storage | `companion/server/index.mjs`, `pairing.mjs`, `protocol.mjs`, `storage.mjs` |
-| Host tests | `tests/test_quota_logic.c`, `tests/test_quota_fonts.py`, `companion/test/*.test.mjs` |
+| Host tests | `tests/test_quota_logic.c`, `tests/test_quota_fonts.py`, `tests/test_quota_refresh_runtime.py`, `tests/test_quota_storage_runtime.py`, `companion/test/*.test.mjs` |
 
-Latest validation on **2026-10-02**: 28 companion tests and its production build passed; the firmware complete gate and font coverage passed. The exact firmware was flashed and booted without observed crashes. The user confirmed clear Chinese on the initial pairing page and the two-minute window expiry. One real Codex profile supplied weekly quota; its source omitted the 5-hour window.
+Companion validation: **47/47 tests PASS**, production build PASS. Browser checks confirmed RMB-only balances, proportional quota fills, unknown board telemetry in production, and saving the screen timeout. Documentation screenshots use isolated examples.
+
+Latest firmware validation on **2026-10-02**: the complete gate passed, including the ESP-IDF build, merged image/debug archive verification, all host checks, refresh-state tests, NVS compatibility tests and coverage for 135 non-ASCII glyphs. The new screen-off, display-status and DeepSeek firmware has **not** been flashed or physically accepted. A real DeepSeek key and response have not been tested; the balance tests use synthetic responses.
+
+The current debug bundle is `build/firmware/07225fb61fd6e6264f36c88be46fdf64fbe0b8120ca74692c166465e0b3d1050/`, with ELF SHA-256 `c93feedbdc8378ebadc4c6a38ff063abd4b0588667b35073ebcff0be94c21ede`. It was built from the working tree (`c2bb775-dirty`), before this change was committed. The partition table matches the previously flashed image, allowing a verified segmented upgrade to retain NVS. Confirm the detected device and exact write scope before flashing.
+
+Earlier hardware observations confirmed readable Chinese on the initial pairing page, normal two-minute window expiry and boot without observed crashes. One real Codex profile supplied weekly quota; its source omitted the 5-hour window.
 
 Hardware observations used the pre-consolidation full image `690229c2dca7ec2ee0a794d1c4f8625468e4feedab54507b7c3cae0448b1af7c`, with ELF SHA-256 `15a33663935734a7df19fd553db87e461f53d1a22e2984973342ca8df3bc0858`. Rebuilding this checkout creates a new artifact identity; its new build has not been flashed. Always match the actual image's ELF before decoding a crash.
 
 **Next acceptance task:** reproduce browser USB pairing on the actual board. A reported 15-second timeout prompted eager receive, a bounded startup wait, a 4096-byte stream buffer and specific errors; the host checks pass, but the real retry has not been confirmed. Safe short and production-sized invalid frames returned matching acknowledgments over native serial. Opening a serial monitor can reset the board, so avoid competing tools and distinguish a reset from pairing expiry.
 
+This iteration adds configurable screen off, wake-gesture suppression, real board Wi-Fi/battery indicators, a clock calibrated during the current boot, display-only plan capitalization, monochrome OpenAI marks, and DeepSeek balances. Passive cache polling no longer displays a source-refresh busy message. DeepSeek needs this new firmware; older firmware rejects that provider.
+
 The web low/critical quota preview also had a full-width colored number background; it is fixed and browser-checked. Keep the number background transparent and fill only the remaining proportion. Do not present stream simulations or web previews as physical acceptance.
 
-After successful pairing, verify Wi-Fi/HTTPS sync, Claude authorization and real quota, all screens/buttons/logos, settings round-trip, offline/reboot cache, dim/wake and runtime heap during TLS. Keep unknown/expired windows unknown, preserve source timestamps, and never invent fresh quotas.
+After successful pairing, verify Wi-Fi/HTTPS sync, Claude authorization and real quota, all screens/buttons/logos, settings round-trip, offline/reboot cache, automatic screen off/wake, DeepSeek balances and runtime heap during TLS. Keep unknown/expired windows unknown, preserve source timestamps, and never invent fresh quotas.
 
 Profiles and credentials live outside the repository in `~/.local/share/ai-passport-quota/` (or `AIQ_STATE_DIR`). Never commit auth files, Wi-Fi details, tokens, private keys, device identifiers or raw logs. UI changes should be captured with example accounts. Firmware code outside the LVGL task must use the BSP lock; networking/storage must not block button callbacks. Run the relevant tests and the full firmware gate for firmware delivery; flashing requires separate authorization.
 

@@ -22,14 +22,14 @@ async function readBody(request, max = 8192) {
 }
 function errorStatus(error) {
   if (error.message === 'account_not_found') return 404;
-  if (['invalid_provider', 'invalid_interface', 'invalid_settings', 'invalid_login_code', 'invalid_json', 'invalid_content_type', 'account_limit'].includes(error.message)) return 400;
+  if (['invalid_provider', 'invalid_interface', 'invalid_settings', 'invalid_login_code', 'invalid_api_key', 'invalid_account_label', 'invalid_json', 'invalid_content_type', 'account_limit', 'unsupported_account'].includes(error.message)) return 400;
   if (error.message === 'request_too_large') return 413;
   if (error.message === 'cli_unavailable') return 503;
-  if (error.message === 'pairing_address_active') return 409;
+  if (['pairing_address_active', 'account_busy'].includes(error.message)) return 409;
   return 500;
 }
-const visibleErrors = new Set(['account_not_found', 'invalid_provider', 'invalid_interface', 'invalid_settings', 'invalid_login_code', 'invalid_json', 'invalid_content_type', 'account_limit', 'request_too_large', 'cli_unavailable', 'unsupported_account', 'pairing_address_active']);
-export async function createApplication({ directory = process.env.AIQ_STATE_DIR ?? path.join(os.homedir(), '.local/share/ai-passport-quota'), adminPort = 4317, dataPort = 4318, executables, managerFactory, interfaces = availableInterfaces, autoRestore = true } = {}) {
+const visibleErrors = new Set(['account_not_found', 'invalid_provider', 'invalid_interface', 'invalid_settings', 'invalid_login_code', 'invalid_api_key', 'invalid_account_label', 'invalid_json', 'invalid_content_type', 'account_limit', 'request_too_large', 'cli_unavailable', 'unsupported_account', 'pairing_address_active', 'account_busy']);
+export async function createApplication({ directory = process.env.AIQ_STATE_DIR ?? path.join(os.homedir(), '.local/share/ai-passport-quota'), adminPort = 4317, dataPort = 4318, executables, managerFactory, interfaces = availableInterfaces, autoRestore = true, previewStatus } = {}) {
   directory = path.resolve(directory);
   const store = new StateStore(directory, await loadState(directory));
   const cli = executables ?? { codex: await findCLI('codex'), claude: await findCLI('claude') };
@@ -37,7 +37,8 @@ export async function createApplication({ directory = process.env.AIQ_STATE_DIR 
   const csrf = randomBytes(32).toString('base64url');
   let pairing; let refreshTimer;
   const beginTimer = () => {
-    clearInterval(refreshTimer);
+    if (refreshTimer) clearInterval(refreshTimer);
+    refreshTimer = null;
     if (store.state.settings.auto_refresh) {
       refreshTimer = setInterval(() => manager.schedule(), store.state.settings.refresh_seconds * 1000);
       refreshTimer.unref();
@@ -45,7 +46,15 @@ export async function createApplication({ directory = process.env.AIQ_STATE_DIR 
   };
   const settings = async body => {
     if (!validSettings(body)) throw new Error('invalid_settings');
-    store.state.settings = { refresh_seconds: body.refresh_seconds, auto_refresh: body.auto_refresh }; await store.changed(); beginTimer();
+    const previous = store.state.settings;
+    const sourceSettingsChanged = previous.refresh_seconds !== body.refresh_seconds || previous.auto_refresh !== body.auto_refresh;
+    store.state.settings = {
+      refresh_seconds: body.refresh_seconds,
+      auto_refresh: body.auto_refresh,
+      screen_timeout_seconds: body.screen_timeout_seconds ?? previous.screen_timeout_seconds,
+    };
+    await store.changed();
+    if (sourceSettingsChanged) beginTimer();
     return { v: 1, settings: { ...store.state.settings } };
   };
   const dataHandler = async (request, response) => {
@@ -72,18 +81,24 @@ export async function createApplication({ directory = process.env.AIQ_STATE_DIR 
       if (request.url.startsWith('/api/')) {
         if (!['GET', 'HEAD'].includes(request.method) && !constantToken(request.headers['x-aiq-csrf'], csrf)) { json(response, 403, { error: 'invalid_csrf' }); return; }
         if (request.method === 'GET' && request.url === '/api/state') {
-          json(response, 200, { accounts: manager.publicAccounts(), settings: store.state.settings, cli: { codex: !!cli.codex, claude: !!cli.claude }, interfaces: interfaces(), device: pairing.publicState(), pending_logins: manager.publicJobs(), csrf_token: csrf }); return;
+          const state = { accounts: manager.publicAccounts(), settings: store.state.settings, cli: { codex: !!cli.codex, claude: !!cli.claude }, interfaces: interfaces(), device: pairing.publicState(), pending_logins: manager.publicJobs(), csrf_token: csrf };
+          if (previewStatus) state.preview_status = {
+            wifi_connected: typeof previewStatus.wifi_connected === 'boolean' ? previewStatus.wifi_connected : null,
+            battery_percent: Number.isInteger(previewStatus.battery_percent) && previewStatus.battery_percent >= 0 && previewStatus.battery_percent <= 100 ? previewStatus.battery_percent : null,
+          };
+          json(response, 200, state); return;
         }
-        if (request.method === 'POST' && request.url === '/api/accounts') { const body = await readBody(request); json(response, 201, await manager.add(body.provider)); return; }
+        if (request.method === 'POST' && request.url === '/api/accounts') { const body = await readBody(request); json(response, 201, await manager.add(body.provider, body)); return; }
         if (request.method === 'POST' && request.url === '/api/refresh') { await readBody(request); manager.schedule(); json(response, 202, { accepted: true }); return; }
         if (request.method === 'PATCH' && request.url === '/api/settings') { json(response, 200, await settings(await readBody(request))); return; }
         if (request.method === 'POST' && request.url === '/api/pairing') { const body = await readBody(request); json(response, 200, await pairing.start(body.address ?? body.listen_address)); return; }
         if (request.method === 'POST' && request.url === '/api/pairing/abort') { const body = await readBody(request); await pairing.abort(body.session_id); json(response, 200, { ok: true }); return; }
         if (['POST', 'DELETE'].includes(request.method) && ['/api/pairing/stop', '/api/pairing'].includes(request.url) && !(request.method === 'POST' && request.url === '/api/pairing')) { await pairing.stop(); json(response, 200, { ok: true }); return; }
-        const match = request.url.match(/^\/api\/accounts\/([a-f0-9]{32})(?:\/(login|refresh|launch|login-code))?$/);
+        const match = request.url.match(/^\/api\/accounts\/([a-f0-9]{32})(?:\/(login|refresh|launch|login-code|api-key))?$/);
         if (match) {
           const [, id, action] = match;
           if (request.method === 'DELETE' && !action) { await manager.remove(id); json(response, 200, { ok: true }); return; }
+          if (request.method === 'POST' && action === 'api-key') { const body = await readBody(request, 8192); json(response, 200, await manager.updateDeepSeekApiKey(id, body)); return; }
           if (request.method === 'POST' && action === 'login') { await readBody(request); json(response, 200, { account_id: id, login: await manager.login(id) }); return; }
           if (request.method === 'POST' && action === 'refresh') { await readBody(request); manager.account(id); manager.schedule(id); json(response, 202, { accepted: true }); return; }
           if (request.method === 'POST' && action === 'login-code') { const body = await readBody(request); manager.loginCode(id, body.code); json(response, 202, { accepted: true }); return; }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, stat, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
@@ -26,6 +26,116 @@ async function fixture(t) {
   t.after(() => rm(directory, { recursive: true, force: true }));
   return new StateStore(directory, await loadState(directory));
 }
+const cnyUsdBalance = {
+  is_available: true,
+  balance_infos: [
+    { currency: 'CNY', total_balance: '128.50', granted_balance: '10.00', topped_up_balance: '118.50' },
+    { currency: 'USD', total_balance: '17.25', granted_balance: '2.00', topped_up_balance: '15.25' },
+  ],
+};
+const balanceResponse = value => new Response(JSON.stringify(value), { status: 200, headers: { 'content-type': 'application/json' } });
+
+test('DeepSeek account keeps its key in a private profile and reloads only safe account fields', async t => {
+  const store = await fixture(t); const calls = [];
+  const manager = new AccountManager(store, { codex: null, claude: null }, { deepSeekFetch: async (url, options) => { calls.push({ url, options }); return balanceResponse(cnyUsdBalance); } });
+  t.after(() => manager.close());
+  const secret = 'sk-private-test-key';
+  const { account_id: id } = await manager.add('deepseek', { api_key: secret, label: 'Team API' });
+  const account = store.state.accounts[0]; const publicAccount = manager.publicAccounts()[0];
+  assert.equal(account.id, id); assert.equal(account.provider, 'deepseek'); assert.equal(Object.hasOwn(account, 'api_key'), false);
+  assert.equal(publicAccount.email, ''); assert.equal(publicAccount.plan, 'API'); assert.equal(publicAccount.label, 'Team API');
+  assert.deepEqual(publicAccount.balance, cnyUsdBalance); assert.equal(publicAccount.five_hour, null); assert.equal(publicAccount.seven_day, null);
+  assert.equal(publicAccount.authenticated, true); assert.equal(publicAccount.status, 'ok');
+  assert.equal(calls[0].url, 'https://api.deepseek.com/user/balance'); assert.equal(calls[0].options.method, 'GET');
+  assert.equal(calls[0].options.headers.Authorization, `Bearer ${secret}`); assert.equal(calls[0].options.redirect, 'error');
+
+  const keyDirectory = path.join(store.profile(id), 'deepseek'); const keyFile = path.join(keyDirectory, 'api-key.json');
+  assert.deepEqual(await readJSON(keyFile), { v: 1, api_key: secret });
+  assert.equal(statMode(await stat(keyDirectory)), 0o700); assert.equal(statMode(await stat(keyFile)), 0o600);
+  const saved = await readFile(path.join(store.directory, 'accounts.json'), 'utf8');
+  assert.equal(saved.includes(secret), false); assert.equal(JSON.stringify(publicAccount).includes(secret), false);
+  assert.equal(JSON.stringify(manager.publicJobs()).includes(secret), false);
+
+  const restartedStore = new StateStore(store.directory, await loadState(store.directory));
+  const restarted = new AccountManager(restartedStore, { codex: null, claude: null }, { deepSeekFetch: async (url, options) => { calls.push({ url, options }); return balanceResponse(cnyUsdBalance); } });
+  t.after(() => restarted.close());
+  assert.deepEqual(restarted.publicAccounts()[0].balance, cnyUsdBalance);
+  await restarted.refresh(id);
+  assert.equal(calls[1].options.headers.Authorization, `Bearer ${secret}`);
+  assert.equal(JSON.stringify(restarted.publicAccounts()).includes(secret), false);
+
+  await manager.remove(id);
+  await assert.rejects(stat(keyFile), error => error.code === 'ENOENT');
+});
+
+function statMode(info) { return info.mode & 0o777; }
+
+test('DeepSeek 401 retains cached balances, alias edits preserve them, and key replacement clears before verification', async t => {
+  const store = await fixture(t); let requestCount = 0; let stateAtNewKeyRequest;
+  const nextBalance = { is_available: false, balance_infos: [{ currency: 'USD', total_balance: '-0.25', granted_balance: '1.00', topped_up_balance: '0' }] };
+  const manager = new AccountManager(store, { codex: null, claude: null }, { deepSeekFetch: async () => {
+    requestCount += 1;
+    if (requestCount === 1) return balanceResponse(cnyUsdBalance);
+    if (requestCount === 2) return new Response('PRIVATE_PROVIDER_ERROR_BODY', { status: 403 });
+    stateAtNewKeyRequest = { ...store.state.accounts[0], balance: store.state.accounts[0].balance && structuredClone(store.state.accounts[0].balance) };
+    return balanceResponse(nextBalance);
+  } });
+  t.after(() => manager.close());
+  const { account_id: id } = await manager.add('deepseek', { api_key: 'sk-old-key', label: 'Old wallet' });
+  const account = store.state.accounts[0]; const previousObservedAt = account.observed_at;
+  await manager.refresh(id);
+  assert.equal(account.status, 'expired'); assert.equal(account.authenticated, true); assert.equal(account.observed_at, previousObservedAt);
+  assert.deepEqual(account.balance, cnyUsdBalance);
+  assert.equal(JSON.stringify(manager.publicAccounts()).includes('PRIVATE_PROVIDER_ERROR_BODY'), false);
+
+  await manager.updateDeepSeekApiKey(id, { label: 'Renamed wallet' });
+  assert.equal(requestCount, 2); assert.equal(account.authenticated, true); assert.equal(account.status, 'expired');
+  assert.equal(account.observed_at, previousObservedAt); assert.deepEqual(account.balance, cnyUsdBalance);
+
+  await manager.updateDeepSeekApiKey(id, { api_key: 'sk-new-key', label: 'New wallet' });
+  assert.equal(stateAtNewKeyRequest.balance, null); assert.equal(stateAtNewKeyRequest.authenticated, false);
+  assert.equal(stateAtNewKeyRequest.observed_at, null); assert.equal(stateAtNewKeyRequest.label, 'New wallet');
+  assert.equal(account.status, 'ok'); assert.equal(account.authenticated, true); assert.deepEqual(account.balance, nextBalance);
+  assert.equal(await readJSON(path.join(store.profile(id), 'deepseek', 'api-key.json')).then(file => file.api_key), 'sk-new-key');
+  const saved = await readFile(path.join(store.directory, 'accounts.json'), 'utf8');
+  assert.equal(saved.includes('sk-old-key'), false); assert.equal(saved.includes('sk-new-key'), false);
+  assert.equal(JSON.stringify(manager.publicAccounts()).includes('sk-new-key'), false);
+  await manager.remove(id);
+});
+
+test('DeepSeek first network failure recovers automatically and never starts Claude login', async t => {
+  const store = await fixture(t); let online = false; let claudeRuns = 0;
+  const manager = new AccountManager(store, { codex: null, claude: '/fake/claude' }, {
+    claudeRun: async () => { claudeRuns += 1; throw new Error('must not be called'); },
+    deepSeekFetch: async () => online ? balanceResponse(cnyUsdBalance) : new Response('upstream unavailable', { status: 503 }),
+  });
+  t.after(() => manager.close());
+  const { account_id: id } = await manager.add('deepseek', { api_key: 'sk-recover-test' });
+  assert.equal(manager.publicAccounts()[0].status, 'error'); assert.equal(manager.publicAccounts()[0].authenticated, false);
+  await assert.rejects(manager.login(id), /unsupported_account/); assert.equal(claudeRuns, 0);
+
+  online = true;
+  manager.schedule();
+  const retry = manager.refreshes.get(id);
+  assert.ok(retry);
+  await retry;
+  assert.equal(manager.publicAccounts()[0].status, 'ok'); assert.equal(manager.publicAccounts()[0].authenticated, true);
+  assert.deepEqual(manager.publicAccounts()[0].balance, cnyUsdBalance);
+});
+
+test('concurrent DeepSeek account creation cannot exceed the account cap', async t => {
+  const store = await fixture(t);
+  store.state.accounts.push(...Array.from({ length: 7 }, (_, index) => ({ id: String(index + 1).repeat(32), provider: 'codex', authenticated: false, status: 'waiting' })));
+  const manager = new AccountManager(store, { codex: null, claude: null }, { deepSeekFetch: async () => balanceResponse(cnyUsdBalance) });
+  t.after(() => manager.close());
+  const results = await Promise.allSettled([
+    manager.add('deepseek', { api_key: 'sk-concurrent-a' }),
+    manager.add('deepseek', { api_key: 'sk-concurrent-b' }),
+  ]);
+  assert.equal(store.state.accounts.length, 8);
+  assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+  assert.equal(results.filter(result => result.status === 'rejected' && result.reason.message === 'account_limit').length, 1);
+});
 test('subscription login uses unique owned profiles and device-code contract', async t => {
   const store = await fixture(t); const clients = [];
   const manager = new AccountManager(store, { codex: '/fake/codex', claude: null }, { codexFactory: (_, directory) => { const client = new FakeCodex(directory); clients.push(client); return client; } });

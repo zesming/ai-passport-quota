@@ -2,7 +2,7 @@
 
 # AI subscription quota monitor
 
-This application replaces the demo UI with a portrait quota dashboard for the 240 × 320 AI Passport. A local computer companion manages up to eight separate Codex and Claude subscription profiles. The device receives only email, plan, quota windows, settings and observation times.
+This application replaces the demo UI with a portrait quota dashboard for the 240 × 320 AI Passport. A local computer companion manages up to eight separate Codex/Claude subscription profiles and DeepSeek API accounts. The device receives only display identity, quotas or balances, settings and observation times.
 
 ## Computer companion
 
@@ -14,6 +14,12 @@ Codex uses the official app-server device-code login and `account/rateLimits/rea
 
 Claude uses official subscription login and a status-line callback. After login, copy the session launch command from the page and use that isolated Claude profile normally. Its first normal model response may supply quota data. The helper strips ambient provider credentials and binds the callback to the verified account identity. This monitor never sends model prompts to obtain quotas. Repeated callbacks and refresh timers do not manufacture a new observation time.
 
+DeepSeek uses a user-supplied API key and only `GET https://api.deepseek.com/user/balance`. Add or replace the key from the local page; it is stored separately at `profiles/<id>/deepseek/api-key.json` with owner-only file/directory permissions, never in the public account state or device payload. The API supplies no email: an optional local label identifies the account. Amounts remain decimal strings, CNY/USD wallets stay separate, unavailable/missing amounts are not replaced with zero, and grants have no invented expiry countdown. A failed normal refresh retains labelled cached balances; replacing a key clears the previous wallet before verification. Removal clears the local DeepSeek key; remote revocation remains in the provider portal.
+
+The current desktop and device views show RMB only, using Chinese labels. They select the CNY wallet explicitly, preserve its decimal strings and show unknown if CNY is missing. They never fall back to USD or convert currencies. The source/parser/cache retain the official currency entries for compatibility; a future USD view needs its own product change.
+
+The browser retains UTF-8 labels. The device's subset font covers the fixed UI text; arbitrary non-ASCII identity characters use `?` as a display fallback. Use an ASCII label for an exact device rendering, or extend font coverage before changing this rule.
+
 ## USB pairing
 
 Use desktop Chrome or Edge, connect a data-capable USB cable, and open the device's pairing screen. In Device configuration, choose the computer's private IPv4 address and enter Wi-Fi details. Click Connect and configure, select the serial port, and wait for the result. Wi-Fi credentials pass directly from browser memory to USB; the companion API never receives them. The device accepts configuration only during a physical 120-second pairing window. Already configured devices boot with the window closed.
@@ -22,11 +28,11 @@ The device sync endpoint is `https://<selected-private-ip>:4318`. Pairing provis
 
 ## Display and persistence
 
-The dashboard shows the provider logo, verified email, and remaining 5-hour and 7-day percentages. Short OK requests a refresh; up/down selects an account; long OK opens settings or returns. Settings allow account selection, refresh interval, automatic refresh and pairing. Network and storage work run outside button callbacks and the LVGL lock.
+The dashboard shows the provider logo, verified email, and remaining 5-hour and 7-day percentages. Short OK requests a refresh; up/down selects an account; long OK opens settings or returns. Settings allow account selection, refresh interval, automatic refresh, screen timeout and pairing. DeepSeek has balance rows instead of quota percentage bars. Network and storage work run outside button callbacks and the LVGL lock.
 
-After two minutes without button input, the backlight dims to 15%; any button restores brightness. An active pairing window keeps the display bright. Quota synchronization continues while dimmed. Brightness transitions, runtime free heap, largest free block during Wi-Fi/TLS, and battery use require device validation.
+Screen timeout accepts 0 (Never), 30, 60, 120, 300 or 600 seconds, default 120. At timeout the backlight becomes 0%; networking and function-key sensing continue. The whole first waking gesture is consumed, including its CLICK/DOUBLE/LONG event. Long DOWN while awake switches the screen off. The independent hardware power key has no supported software short-press signal and retains hardware long-press shutdown. Pairing suppresses automatic screen off and restarts the idle countdown when closing. A bounded one-second event wait updates idle state and the clock; battery reads are cached for thirty seconds. Wi-Fi icons show actual connection, not fabricated RSSI. The clock shows `--:--` after cold boot until a current-boot pairing or pinned HTTPS snapshot calibrates time. Screen rendering, wake behavior, runtime heap and battery use require device validation.
 
-Unknown data is shown as a dash. When a reset time passes, the window stays unknown until new source data arrives; it is never assumed to be 100%. Old data and offline/expired states remain labelled. Service settings are canonical and persisted on the device only after acknowledgment. The device stores pairing details and a sanitized quota cache in NVS; cached snapshots are written at most every fifteen minutes.
+Unknown data is shown as a dash. When a reset time passes, the window stays unknown until new source data arrives; it is never assumed to be 100%. Old data and offline/expired states remain labelled. Service settings are canonical and persisted on the device only after acknowledgment. The device stores pairing details and a sanitized quota cache in NVS; cached snapshots are written at most every fifteen minutes. Screen timeout uses a separate `screen_to` NVS key; legacy pairing and quota-cache layouts remain unchanged. DeepSeek balances use a separate CRC-protected `balance_cache` sidecar matched to the quota cache revision, configuration identity and saved time.
 
 ## Validation
 
@@ -34,8 +40,10 @@ Run the companion's `npm test` and `npm run build`. Firmware delivery requires t
 
 ## Protocol
 
-Device requests carry `Authorization: Bearer <pair-token>` and do not follow redirects. `GET /v1/snapshot` returns schema version 1, server time, revision, settings and authenticated accounts only. `POST /v1/refresh` coalesces refresh requests. `PATCH /v1/settings` accepts intervals 60, 300, 900 or 1800 seconds and a Boolean automatic-refresh flag. Maximum snapshot size is 8192 bytes and account count is eight.
+Device requests carry `Authorization: Bearer <pair-token>` and do not follow redirects. `GET /v1/snapshot` returns schema version 1, server time, revision, settings and authenticated accounts only. `POST /v1/refresh` coalesces refresh requests. `PATCH /v1/settings` accepts intervals 60, 300, 900 or 1800 seconds and a Boolean automatic-refresh flag. Optional `screen_timeout_seconds` accepts the six display timeout values; omission preserves the existing setting. Legacy state files default to 120, and a new firmware retains its saved timeout when old snapshots/ACKs omit the field. Changing only the timeout does not reset the companion quota timer. Passive snapshot reads do not display source refresh progress.
+
+DeepSeek accounts have `provider: "deepseek"`, empty `email`, `plan: "API"`, a local `label` (up to 32 UTF-8 bytes), null quota windows and nullable `balance: {is_available, balance_infos}`. Each of at most two unique CNY/USD source entries contains string `total_balance`, `granted_balance`, `topped_up_balance` (up to 20 decimal characters, signed values supported). The current view displays only CNY; amounts are never combined between currencies. Older firmware rejects DeepSeek, so update it before adding that provider. Maximum snapshot size is 8192 bytes and account count is eight.
 
 USB frames begin with `@AIQ:` and end with a newline, with at most 4096 bytes. A version-1 `configure` frame contains an eight-digit hexadecimal request ID, Wi-Fi fields, private HTTPS base URL, pair token, certificate and initial trusted time. `result` acknowledgments match the request ID and never echo credentials.
 
-Source contracts: [Codex authentication](https://learn.chatgpt.com/codex/auth), [Codex app-server](https://learn.chatgpt.com/codex/app-server), [Claude status line](https://code.claude.com/docs/en/statusline), [Claude authentication](https://code.claude.com/docs/en/authentication).
+Source contracts: [Codex authentication](https://learn.chatgpt.com/codex/auth), [Codex app-server](https://learn.chatgpt.com/codex/app-server), [Claude status line](https://code.claude.com/docs/en/statusline), [Claude authentication](https://code.claude.com/docs/en/authentication), [DeepSeek balance API](https://api-docs.deepseek.com/api/get-user-balance/).

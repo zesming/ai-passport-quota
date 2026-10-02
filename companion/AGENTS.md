@@ -7,6 +7,7 @@ Start with the root README and the firmware application/protocol guide.
 
 - Keep the settings API on loopback and credentials in isolated user-private profiles. Never import the user's existing provider credentials or print raw auth/USB payloads.
 - Official Codex app-server and Claude authentication/statusline are the quota sources. Do not send model prompts for quota polling, manufacture timestamps, or treat missing/expired windows as full quota.
+- DeepSeek uses only the official read-only balance endpoint with a private API key. Never expose that key in public state, device snapshots or USB. Preserve source decimal strings and currencies; the current UI displays CNY only, with no USD fallback or conversion. A local account label is not a verified email. Recovery uses balance retry or key replacement, never a Codex/Claude login flow.
 - Wi-Fi input goes from browser memory directly to Web Serial; the local API must never receive it. Preserve request-ID acknowledgment matching and safe failure messages.
 - The device preview is 240 by 320 pixels. Its native bar is 216 by 8 pixels. Low/critical styling colors number text and bar fill separately; the full-width number container must stay transparent.
 - Run the local app when verification requires it. Use example accounts for shareable captures (`npm run preview:readme`); do not publish personal emails, quota data or device configuration.

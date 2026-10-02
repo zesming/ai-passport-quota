@@ -26,6 +26,11 @@ typedef struct {
     lv_obj_t *title;
     lv_obj_t *header_info;
     lv_obj_t *battery;
+    lv_obj_t *battery_fill;
+    lv_obj_t *clock;
+    lv_obj_t *wifi_lines[2];
+    lv_obj_t *wifi_dot;
+    lv_obj_t *wifi_slash;
     lv_obj_t *home_logo;
     lv_obj_t *home_provider;
     lv_obj_t *home_plan;
@@ -34,11 +39,15 @@ typedef struct {
     lv_obj_t *metric_reset[2];
     lv_obj_t *metric_value[2];
     lv_obj_t *metric_bar[2];
+    lv_obj_t *balance_heading[QUOTA_BALANCE_CURRENCIES];
+    lv_obj_t *balance_total[QUOTA_BALANCE_CURRENCIES];
+    lv_obj_t *balance_granted[QUOTA_BALANCE_CURRENCIES];
+    lv_obj_t *balance_topped_up[QUOTA_BALANCE_CURRENCIES];
     lv_obj_t *home_status;
-    lv_obj_t *setting_rows[4];
-    lv_obj_t *setting_markers[4];
-    lv_obj_t *setting_labels[4];
-    lv_obj_t *setting_values[4];
+    lv_obj_t *setting_rows[5];
+    lv_obj_t *setting_markers[5];
+    lv_obj_t *setting_labels[5];
+    lv_obj_t *setting_values[5];
     lv_obj_t *account_rows[QUOTA_MAX_ACCOUNTS + 1];
     lv_obj_t *account_markers[QUOTA_MAX_ACCOUNTS + 1];
     lv_obj_t *account_primary[QUOTA_MAX_ACCOUNTS + 1];
@@ -47,8 +56,12 @@ typedef struct {
     lv_obj_t *interval_markers[5];
     lv_obj_t *interval_labels[5];
     lv_obj_t *interval_values[5];
+    lv_obj_t *sleep_rows[QUOTA_SCREEN_TIMEOUT_COUNT];
+    lv_obj_t *sleep_markers[QUOTA_SCREEN_TIMEOUT_COUNT];
+    lv_obj_t *sleep_values[QUOTA_SCREEN_TIMEOUT_COUNT];
     lv_obj_t *setup_openai_logo;
     lv_obj_t *setup_claude_logo;
+    lv_obj_t *setup_deepseek_logo;
     lv_obj_t *setup_openai_name;
     lv_obj_t *setup_claude_name;
     lv_obj_t *setup_countdown;
@@ -113,12 +126,39 @@ static lv_obj_t *create_logo(lv_obj_t *parent, const lv_image_dsc_t *image,
 
 static void create_header(const char *title, const char *info)
 {
-    s_ui.title = create_label(s_page, 12, 9, 130, 22, &quota_font_16,
+    s_ui.title = create_label(s_page, 12, 9, 70, 22, &quota_font_16,
                               UI_INK, LV_TEXT_ALIGN_LEFT, title);
-    s_ui.header_info = create_label(s_page, 142, 11, 48, 18, &quota_font_12,
+    s_ui.header_info = create_label(s_page, 86, 11, 28, 18, &quota_font_12,
                                     UI_MUTED, LV_TEXT_ALIGN_RIGHT, info);
-    s_ui.battery = create_label(s_page, 194, 11, 34, 18, &quota_font_12,
-                                UI_MINT, LV_TEXT_ALIGN_RIGHT, "");
+    s_ui.clock = create_label(s_page, 122, 11, 40, 18, &lv_font_montserrat_12,
+                              UI_MUTED, LV_TEXT_ALIGN_CENTER, "--:--");
+    static const lv_point_precise_t wifi_points[][7] = {
+        {{0, 5}, {2, 3}, {5, 1}, {8, 0}, {11, 1}, {14, 3}, {16, 5}},
+        {{4, 9}, {6, 7}, {8, 6}, {10, 7}, {12, 9}},
+    };
+    for (size_t i = 0; i < 2; i++) {
+        s_ui.wifi_lines[i] = lv_line_create(s_page);
+        lv_obj_remove_style_all(s_ui.wifi_lines[i]);
+        lv_obj_set_pos(s_ui.wifi_lines[i], 170, 12);
+        lv_line_set_points(s_ui.wifi_lines[i], wifi_points[i], i == 0 ? 7 : 5);
+        lv_obj_set_style_line_width(s_ui.wifi_lines[i], 2, 0);
+        lv_obj_set_style_line_rounded(s_ui.wifi_lines[i], true, 0);
+    }
+    s_ui.wifi_dot = create_rect(s_page, 177, 24, 3, 3, UI_MUTED, 2);
+    static const lv_point_precise_t slash[] = {{0, 0}, {16, 16}};
+    s_ui.wifi_slash = lv_line_create(s_page);
+    lv_obj_remove_style_all(s_ui.wifi_slash);
+    lv_obj_set_pos(s_ui.wifi_slash, 170, 10);
+    lv_line_set_points(s_ui.wifi_slash, slash, 2);
+    lv_obj_set_style_line_width(s_ui.wifi_slash, 2, 0);
+    lv_obj_set_style_line_color(s_ui.wifi_slash, color(UI_MUTED), 0);
+    lv_obj_t *shell = create_rect(s_page, 197, 7, 26, 12, UI_BG, 2);
+    lv_obj_set_style_border_color(shell, color(UI_MUTED), 0);
+    lv_obj_set_style_border_width(shell, 1, 0);
+    create_rect(s_page, 223, 10, 3, 6, UI_MUTED, 1);
+    s_ui.battery_fill = create_rect(s_page, 199, 9, 22, 8, UI_INK, 1);
+    s_ui.battery = create_label(s_page, 195, 20, 33, 14, &lv_font_montserrat_12,
+                                UI_MUTED, LV_TEXT_ALIGN_CENTER, "");
     create_rect(s_page, 12, 35, 216, 1, UI_LINE, 0);
 }
 
@@ -164,6 +204,17 @@ static void create_home_page(void)
         lv_obj_set_style_bg_opa(s_ui.metric_bar[i], LV_OPA_COVER, LV_PART_INDICATOR);
         lv_obj_set_style_radius(s_ui.metric_bar[i], 4, LV_PART_INDICATOR);
     }
+    for (size_t i = 0; i < QUOTA_BALANCE_CURRENCIES; i++) {
+        int y = i == 0 ? 107 : 183;
+        s_ui.balance_heading[i] = create_label(s_page, 12, y, 216, 18,
+                                               &quota_font_12, UI_MUTED, LV_TEXT_ALIGN_LEFT, "");
+        s_ui.balance_total[i] = create_label(s_page, 12, y + 17, 216, 26,
+                                             &lv_font_montserrat_20, UI_INK, LV_TEXT_ALIGN_LEFT, "");
+        s_ui.balance_granted[i] = create_label(s_page, 12, y + 41, 216, 18,
+                                               &quota_font_12, UI_MUTED, LV_TEXT_ALIGN_LEFT, "");
+        s_ui.balance_topped_up[i] = create_label(s_page, 12, y + 58, 216, 18,
+                                                 &quota_font_12, UI_MUTED, LV_TEXT_ALIGN_LEFT, "");
+    }
     s_ui.home_status = create_label(s_page, 12, 254, 216, 18, &quota_font_12,
                                     UI_MUTED, LV_TEXT_ALIGN_LEFT, "等待电脑数据");
     create_footer("UP/DOWN 切换  OK 刷新  长按设置");
@@ -179,21 +230,39 @@ static void create_focus_row(lv_obj_t **background, lv_obj_t **marker,
 
 static void create_settings_page(void)
 {
-    create_header("设置", "未连接");
-    static const char *const labels[] = {"账户管理", "刷新间隔", "立即刷新", "电脑配对"};
-    for (size_t i = 0; i < 4; i++) {
-        int y = 48 + (int)i * 48;
-        create_focus_row(&s_ui.setting_rows[i], &s_ui.setting_markers[i], y, 40);
-        s_ui.setting_labels[i] = create_label(s_page, 22, y + 8, 118, 24,
+    create_header("设置", "");
+    static const char *const labels[] = {"账户管理", "刷新间隔", "立即刷新", "自动息屏", "电脑配对"};
+    for (size_t i = 0; i < 5; i++) {
+        int y = 44 + (int)i * 39;
+        create_focus_row(&s_ui.setting_rows[i], &s_ui.setting_markers[i], y, 34);
+        s_ui.setting_labels[i] = create_label(s_page, 22, y + 5, 118, 24,
                                              &quota_font_16, UI_INK,
                                              LV_TEXT_ALIGN_LEFT, labels[i]);
-        s_ui.setting_values[i] = create_label(s_page, 140, y + 10, 82, 20,
+        s_ui.setting_values[i] = create_label(s_page, 140, y + 7, 82, 20,
                                              &quota_font_12, UI_MUTED,
                                              LV_TEXT_ALIGN_RIGHT, "");
     }
     create_label(s_page, 16, 244, 212, 30, &quota_font_12, UI_MUTED,
                  LV_TEXT_ALIGN_LEFT, "离线时保留最近数据\n账户登录由电脑端管理");
     create_footer("UP/DOWN 选择  OK 确认  长按返回");
+}
+
+static void create_sleep_page(void)
+{
+    create_header("自动息屏", "");
+    static const char *const labels[] = {"从不", "30 秒", "1 分钟", "2 分钟", "5 分钟", "10 分钟"};
+    for (size_t i = 0; i < QUOTA_SCREEN_TIMEOUT_COUNT; i++) {
+        int y = 43 + (int)i * 35;
+        create_focus_row(&s_ui.sleep_rows[i], &s_ui.sleep_markers[i], y, 32);
+        create_label(s_page, 22, y + 4, 146, 24, &quota_font_16, UI_INK,
+                     LV_TEXT_ALIGN_LEFT, labels[i]);
+        s_ui.sleep_values[i] = create_label(s_page, 170, y + 6, 48, 19,
+                                            &quota_font_12, UI_MUTED,
+                                            LV_TEXT_ALIGN_RIGHT, "");
+    }
+    create_label(s_page, 16, 253, 212, 23, &quota_font_12, UI_MUTED,
+                 LV_TEXT_ALIGN_LEFT, "任意键亮屏  长按 DOWN 息屏");
+    create_footer("UP/DOWN 选择  OK 保存  长按返回");
 }
 
 static void create_accounts_page(void)
@@ -237,14 +306,16 @@ static void create_setup_page(void)
     create_label(s_page, 20, 51, 200, 22, &quota_font_16, UI_INK,
                  LV_TEXT_ALIGN_CENTER, "请在电脑设置页");
     create_label(s_page, 20, 74, 200, 22, &quota_font_16, UI_INK,
-                 LV_TEXT_ALIGN_CENTER, "选择平台并完成登录");
-    s_ui.setup_openai_logo = create_logo(s_page, &quota_openai_logo, 58, 109, 36, 36);
-    s_ui.setup_claude_logo = create_logo(s_page, &quota_claude_logo, 146, 109, 36, 36);
-    s_ui.setup_openai_name = create_label(s_page, 26, 149, 100, 22, &quota_font_12,
-                                         UI_INK, LV_TEXT_ALIGN_CENTER, "ChatGPT / Codex");
-    s_ui.setup_claude_name = create_label(s_page, 124, 149, 90, 22, &quota_font_12,
-                                         UI_INK, LV_TEXT_ALIGN_CENTER, "Claude Code");
-    create_rect(s_page, 119, 108, 1, 65, UI_LINE, 0);
+                 LV_TEXT_ALIGN_CENTER, "添加账户并完成连接");
+    s_ui.setup_openai_logo = create_logo(s_page, &quota_openai_logo, 30, 109, 36, 36);
+    s_ui.setup_claude_logo = create_logo(s_page, &quota_claude_logo, 102, 109, 36, 36);
+    s_ui.setup_deepseek_logo = create_logo(s_page, &quota_deepseek_logo, 174, 109, 36, 36);
+    s_ui.setup_openai_name = create_label(s_page, 12, 149, 72, 22, &quota_font_12,
+                                         UI_INK, LV_TEXT_ALIGN_CENTER, "Codex");
+    s_ui.setup_claude_name = create_label(s_page, 84, 149, 72, 22, &quota_font_12,
+                                         UI_INK, LV_TEXT_ALIGN_CENTER, "Claude");
+    create_label(s_page, 156, 149, 72, 22, &quota_font_12,
+                  UI_INK, LV_TEXT_ALIGN_CENTER, "DeepSeek");
     s_ui.setup_countdown = create_label(s_page, 15, 190, 210, 25, &quota_font_16,
                                         UI_MINT, LV_TEXT_ALIGN_CENTER, "配对窗口 02:00");
     s_ui.setup_hint = create_label(s_page, 16, 220, 208, 44, &quota_font_12,
@@ -264,6 +335,7 @@ static void create_page(quota_screen_t screen)
         case QUOTA_SCREEN_SETTINGS: create_settings_page(); break;
         case QUOTA_SCREEN_ACCOUNTS: create_accounts_page(); break;
         case QUOTA_SCREEN_INTERVAL: create_interval_page(); break;
+        case QUOTA_SCREEN_SLEEP: create_sleep_page(); break;
         case QUOTA_SCREEN_SETUP: create_setup_page(); break;
         default: create_home_page(); break;
     }
@@ -298,7 +370,7 @@ static void set_account_row_visible(size_t index, bool visible)
 static void battery_text(int battery_percent, char output[8])
 {
     if (battery_percent < 0 || battery_percent > 100) {
-        output[0] = '\0';
+        snprintf(output, 8, "--");
         return;
     }
     snprintf(output, 8, "%d%%", battery_percent);
@@ -308,7 +380,7 @@ static void format_clock(uint64_t epoch, bool include_date, char *output, size_t
 {
     time_t value = (time_t)epoch;
     struct tm local = {0};
-    if (localtime_r(&value, &local) == NULL ||
+    if (epoch < 1577836800ULL || localtime_r(&value, &local) == NULL ||
         strftime(output, capacity, include_date ? "%m/%d %H:%M" : "%H:%M", &local) == 0) {
         snprintf(output, capacity, "--:--");
     }
@@ -370,6 +442,20 @@ static void render_home(const quota_navigation_t *navigation,
     snprintf(count, sizeof(count), "%u/%u", (unsigned)(navigation->selected_account + 1),
              (unsigned)service->snapshot.account_count);
     set_label_text(s_ui.header_info, count);
+    bool deepseek = service->snapshot.account_count > 0 &&
+        service->snapshot.accounts[navigation->selected_account < service->snapshot.account_count
+                                    ? navigation->selected_account : 0].provider == QUOTA_PROVIDER_DEEPSEEK;
+    for (size_t i = 0; i < QUOTA_BALANCE_CURRENCIES; i++) {
+        lv_obj_t *balance_objects[] = {s_ui.balance_heading[i], s_ui.balance_total[i],
+            s_ui.balance_granted[i], s_ui.balance_topped_up[i]};
+        for (size_t j = 0; j < 4; j++) lv_obj_add_flag(balance_objects[j], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_t *quota_objects[] = {s_ui.metric_name[i], s_ui.metric_reset[i], s_ui.metric_value[i], s_ui.metric_bar[i]};
+        for (size_t j = 0; j < 4; j++) {
+            if (deepseek) lv_obj_add_flag(quota_objects[j], LV_OBJ_FLAG_HIDDEN);
+            else lv_obj_clear_flag(quota_objects[j], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    lv_obj_set_y(s_ui.home_status, deepseek ? 262 : 254);
     if (service->snapshot.account_count == 0) {
         lv_obj_add_flag(s_ui.home_logo, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_style_text_font(s_ui.home_provider, &quota_font_16, 0);
@@ -392,24 +478,61 @@ static void render_home(const quota_navigation_t *navigation,
     const quota_account_t *account = &service->snapshot.accounts[selected];
     bool is_claude = account->provider == QUOTA_PROVIDER_CLAUDE;
     lv_obj_set_style_text_font(s_ui.home_provider, &lv_font_montserrat_20, 0);
-    lv_image_set_src(s_ui.home_logo, is_claude ? &quota_claude_logo : &quota_openai_logo);
+    lv_image_set_src(s_ui.home_logo, deepseek ? &quota_deepseek_logo
+                                            : is_claude ? &quota_claude_logo : &quota_openai_logo);
     lv_obj_clear_flag(s_ui.home_logo, LV_OBJ_FLAG_HIDDEN);
-    set_label_text(s_ui.home_provider, is_claude ? "Claude" : "ChatGPT");
+    set_label_text(s_ui.home_provider, deepseek ? "DeepSeek" : is_claude ? "Claude" : "ChatGPT");
     char plan[QUOTA_PLAN_MAX_BYTES + 1];
-    quota_copy_display_ascii(account->plan, plan, sizeof(plan));
+    quota_copy_display_plan(account->plan, plan, sizeof(plan));
     char source_and_plan[QUOTA_PLAN_MAX_BYTES + 20];
     snprintf(source_and_plan, sizeof(source_and_plan), "%s · %s",
              is_claude ? "Claude Code" : "Codex", plan[0] == '\0' ? "" : plan);
     set_label_text(s_ui.home_plan, source_and_plan);
+    if (deepseek) set_label_text(s_ui.home_plan, "开放平台 · API");
     char email[QUOTA_EMAIL_MAX_BYTES + 1];
     quota_copy_display_ascii(account->email, email, sizeof(email));
     set_label_text(s_ui.home_email, email);
+    if (deepseek) {
+        quota_copy_display_ascii(service->snapshot.balances[selected].label, email, sizeof(email));
+        set_label_text(s_ui.home_email, email[0] == '\0' ? "DeepSeek API" : email);
+    }
 
     bool stale = quota_data_is_stale(service->now_epoch, account->has_observed_at,
                                      account->observed_at, service->refresh_seconds) ||
                  account->status != QUOTA_STATUS_OK;
-    render_metric(0, &account->five_hour, service->now_epoch, stale, false);
-    render_metric(1, &account->seven_day, service->now_epoch, stale, true);
+    const quota_balance_t *balance = &service->snapshot.balances[selected];
+    if (deepseek) {
+        const quota_currency_balance_t *entry = quota_balance_cny(balance);
+        if (entry != NULL) {
+            size_t i = 0;
+            char heading[32], granted[64], topped[64];
+            snprintf(heading, sizeof(heading), "人民币可用余额");
+            snprintf(granted, sizeof(granted), "赠送余额 %s", entry->granted_balance);
+            snprintf(topped, sizeof(topped), "充值余额 %s", entry->topped_up_balance);
+            set_label_text(s_ui.balance_heading[i], heading);
+            set_label_text(s_ui.balance_total[i], entry->total_balance);
+            lv_obj_set_style_text_font(s_ui.balance_total[i], strlen(entry->total_balance) > 16
+                ? &lv_font_montserrat_12 : strlen(entry->total_balance) > 12
+                ? &lv_font_montserrat_14 : &lv_font_montserrat_20, 0);
+            lv_obj_set_style_text_color(s_ui.balance_total[i], color(stale ? UI_DIM : UI_INK), 0);
+            set_label_text(s_ui.balance_granted[i], granted);
+            set_label_text(s_ui.balance_topped_up[i], topped);
+            lv_obj_clear_flag(s_ui.balance_heading[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(s_ui.balance_total[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(s_ui.balance_granted[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(s_ui.balance_topped_up[i], LV_OBJ_FLAG_HIDDEN);
+        }
+        if (entry == NULL) {
+            set_label_text(s_ui.balance_heading[0], "人民币可用余额");
+            set_label_text(s_ui.balance_total[0], "未提供");
+            lv_obj_set_style_text_font(s_ui.balance_total[0], &quota_font_16, 0);
+            lv_obj_clear_flag(s_ui.balance_heading[0], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(s_ui.balance_total[0], LV_OBJ_FLAG_HIDDEN);
+        }
+    } else {
+        render_metric(0, &account->five_hour, service->now_epoch, stale, false);
+        render_metric(1, &account->seven_day, service->now_epoch, stale, true);
+    }
 
     char status[48];
     if (!service->connected) {
@@ -426,6 +549,8 @@ static void render_home(const quota_navigation_t *navigation,
         snprintf(status, sizeof(status), "数据源错误 · 保留缓存");
     } else if (account->status == QUOTA_STATUS_UNSUPPORTED) {
         snprintf(status, sizeof(status), "数据源暂不支持");
+    } else if (deepseek && balance->present && !balance->is_available) {
+        snprintf(status, sizeof(status), "余额不可用");
     } else if (account->has_observed_at) {
         char clock_text[16];
         format_clock(account->observed_at, false, clock_text, sizeof(clock_text));
@@ -441,20 +566,26 @@ static void render_home(const quota_navigation_t *navigation,
 static void render_settings(const quota_navigation_t *navigation,
                            const quota_service_view_t *service)
 {
-    static const char *const labels[] = {"账户管理", "刷新间隔", "立即刷新", "电脑配对"};
-    char values[4][24];
+    static const char *const labels[] = {"账户管理", "刷新间隔", "立即刷新", "自动息屏", "电脑配对"};
+    char values[5][24];
     snprintf(values[0], sizeof(values[0]), "%u 个", (unsigned)service->snapshot.account_count);
     if (!service->auto_refresh) snprintf(values[1], sizeof(values[1]), "手动");
     else snprintf(values[1], sizeof(values[1]), "%u 分钟", (unsigned)(service->refresh_seconds / 60));
     snprintf(values[2], sizeof(values[2]), "%s", service->refreshing ? "同步中" : "");
-    snprintf(values[3], sizeof(values[3]), "%s", service->pairing_active ? "已打开" : "");
-    for (size_t i = 0; i < 4; i++) {
+    if (service->screen_timeout_seconds == 0) snprintf(values[3], sizeof(values[3]), "从不");
+    else if (service->screen_timeout_seconds < 60) {
+        snprintf(values[3], sizeof(values[3]), "%u 秒", (unsigned)service->screen_timeout_seconds);
+    } else {
+        snprintf(values[3], sizeof(values[3]), "%u 分钟", (unsigned)(service->screen_timeout_seconds / 60));
+    }
+    snprintf(values[4], sizeof(values[4]), "%s", service->pairing_active ? "已打开" : "");
+    for (size_t i = 0; i < 5; i++) {
         set_row_focus(s_ui.setting_rows[i], s_ui.setting_markers[i],
                       i == navigation->settings_focus);
         set_label_text(s_ui.setting_labels[i], labels[i]);
         set_label_text(s_ui.setting_values[i], values[i]);
     }
-    set_label_text(s_ui.header_info, service->connected ? "已连接" : "离线");
+    set_label_text(s_ui.header_info, "");
 }
 
 static void render_accounts(const quota_navigation_t *navigation,
@@ -480,10 +611,12 @@ static void render_accounts(const quota_navigation_t *navigation,
             bool claude = account->provider == QUOTA_PROVIDER_CLAUDE;
             char title[QUOTA_PLAN_MAX_BYTES + 20];
             char plan[QUOTA_PLAN_MAX_BYTES + 1];
-            quota_copy_display_ascii(account->plan, plan, sizeof(plan));
-            snprintf(title, sizeof(title), "%s · %s", claude ? "Claude" : "ChatGPT", plan);
+            quota_copy_display_plan(account->plan, plan, sizeof(plan));
+            bool deepseek = account->provider == QUOTA_PROVIDER_DEEPSEEK;
+            snprintf(title, sizeof(title), "%s · %s", deepseek ? "DeepSeek" : claude ? "Claude" : "ChatGPT", plan);
             char email[QUOTA_EMAIL_MAX_BYTES + 1];
             quota_copy_display_ascii(account->email, email, sizeof(email));
+            if (deepseek) quota_copy_display_ascii(service->snapshot.balances[i].label, email, sizeof(email));
             set_label_text(s_ui.account_primary[i], title);
             set_label_text(s_ui.account_secondary[i], email);
         }
@@ -529,6 +662,16 @@ static void render_setup(const quota_service_view_t *service)
     set_label_text(s_ui.setup_countdown, countdown);
 }
 
+static void render_sleep(const quota_navigation_t *navigation,
+                          const quota_service_view_t *service)
+{
+    for (size_t i = 0; i < QUOTA_SCREEN_TIMEOUT_COUNT; i++) {
+        set_row_focus(s_ui.sleep_rows[i], s_ui.sleep_markers[i], i == navigation->sleep_focus);
+        set_label_text(s_ui.sleep_values[i], quota_screen_timeouts[i] == service->screen_timeout_seconds
+                                             ? "选中" : "");
+    }
+}
+
 void quota_ui_init(void)
 {
     s_root = lv_obj_create(NULL);
@@ -553,6 +696,22 @@ void quota_ui_render(const quota_navigation_t *navigation,
     char battery[8];
     battery_text(battery_percent, battery);
     set_label_text(s_ui.battery, battery);
+    bool battery_known = battery_percent >= 0 && battery_percent <= 100;
+    int fill_width = battery_known ? (22 * battery_percent + 50) / 100 : 0;
+    lv_obj_set_width(s_ui.battery_fill, fill_width);
+    lv_obj_set_style_bg_color(s_ui.battery_fill, color(battery_percent <= 20 ? UI_RED : UI_INK), 0);
+    if (fill_width == 0) lv_obj_add_flag(s_ui.battery_fill, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_clear_flag(s_ui.battery_fill, LV_OBJ_FLAG_HIDDEN);
+    char clock_text[16];
+    format_clock(service->clock_synchronized ? service->now_epoch : 0,
+                 false, clock_text, sizeof(clock_text));
+    set_label_text(s_ui.clock, clock_text);
+    for (size_t i = 0; i < 2; i++) {
+        lv_obj_set_style_line_color(s_ui.wifi_lines[i], color(service->connected ? UI_INK : UI_DIM), 0);
+    }
+    lv_obj_set_style_bg_color(s_ui.wifi_dot, color(service->connected ? UI_INK : UI_DIM), 0);
+    if (service->connected) lv_obj_add_flag(s_ui.wifi_slash, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_clear_flag(s_ui.wifi_slash, LV_OBJ_FLAG_HIDDEN);
 
     switch (navigation->screen) {
         case QUOTA_SCREEN_HOME:
@@ -566,6 +725,9 @@ void quota_ui_render(const quota_navigation_t *navigation,
             break;
         case QUOTA_SCREEN_INTERVAL:
             render_interval(navigation, service);
+            break;
+        case QUOTA_SCREEN_SLEEP:
+            render_sleep(navigation, service);
             break;
         case QUOTA_SCREEN_SETUP:
             render_setup(service);

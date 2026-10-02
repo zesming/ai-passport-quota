@@ -34,6 +34,8 @@ static const char *TAG = "quota_service";
 #define NVS_NAMESPACE "ai_quota"
 #define NVS_CONFIG_KEY "device_cfg"
 #define NVS_SNAPSHOT_KEY "quota_cache"
+#define NVS_SCREEN_TIMEOUT_KEY "screen_to"
+#define NVS_BALANCE_KEY "balance_cache"
 #define SNAPSHOT_POLL_MS 10000
 #define SNAPSHOT_RETRY_MS 30000
 #define SERVER_TIME_PERSIST_MS 900000
@@ -45,6 +47,7 @@ static const char *TAG = "quota_service";
 #define STORED_CONFIG_VERSION 1U
 #define STORED_SNAPSHOT_MAGIC 0x41515331U
 #define STORED_SNAPSHOT_VERSION 1U
+#define STORED_BALANCE_MAGIC 0x41514231U
 
 typedef struct {
     uint32_t magic;
@@ -69,6 +72,15 @@ typedef struct {
     cached_snapshot_t snapshot;
     uint32_t crc32;
 } stored_snapshot_t;
+
+typedef struct {
+    uint32_t magic;
+    uint32_t config_identity;
+    uint64_t revision;
+    uint64_t stored_at;
+    quota_balance_t balances[QUOTA_MAX_ACCOUNTS];
+    uint32_t crc32;
+} stored_balance_t;
 
 typedef struct {
     char bytes[HTTP_BODY_BYTES + 1];
@@ -101,6 +113,8 @@ static bool s_refresh_requested;
 static bool s_settings_pending;
 static uint16_t s_pending_refresh_seconds;
 static bool s_pending_auto_refresh;
+static uint16_t s_pending_screen_timeout_seconds;
+static uint16_t s_saved_screen_timeout_seconds = QUOTA_SCREEN_TIMEOUT_DEFAULT_SECONDS;
 static bool s_selection_pending;
 static char s_pending_account_id[QUOTA_ACCOUNT_ID_BYTES + 1];
 static bool s_pairing_screen_open;
@@ -121,6 +135,8 @@ static quota_snapshot_t s_snapshot_work;
 static stored_config_t s_stored_config;
 static stored_snapshot_t s_stored_snapshot;
 static cached_snapshot_t s_snapshot_cache_candidate;
+static stored_balance_t s_stored_balances;
+static bool s_balance_cache_present;
 static quota_frame_decoder_t s_frame_decoder;
 
 static void mutex_lock(void)
@@ -248,6 +264,40 @@ static bool nvs_load_config(void)
     return true;
 }
 
+/* Separate key: never change the existing device_cfg size/version/CRC contract. */
+static uint16_t nvs_load_screen_timeout(void)
+{
+    uint16_t seconds = QUOTA_SCREEN_TIMEOUT_DEFAULT_SECONDS;
+    nvs_handle_t handle;
+    if (s_nvs_ready && nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) == ESP_OK) {
+        uint16_t saved = 0;
+        if (nvs_get_u16(handle, NVS_SCREEN_TIMEOUT_KEY, &saved) == ESP_OK &&
+            quota_screen_timeout_is_valid(saved)) seconds = saved;
+        nvs_close(handle);
+    }
+    s_saved_screen_timeout_seconds = seconds;
+    return seconds;
+}
+
+static bool nvs_save_screen_timeout_locked(uint16_t seconds)
+{
+    if (!s_nvs_ready || !quota_screen_timeout_is_valid(seconds)) return false;
+    if (seconds == s_saved_screen_timeout_seconds) return true;
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err == ESP_OK) {
+        err = nvs_set_u16(handle, NVS_SCREEN_TIMEOUT_KEY, seconds);
+        if (err == ESP_OK) err = nvs_commit(handle);
+        nvs_close(handle);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "screen timeout save failed (%s)", esp_err_to_name(err));
+        return false;
+    }
+    s_saved_screen_timeout_seconds = seconds;
+    return true;
+}
+
 static uint32_t config_cache_identity(const quota_device_config_t *config)
 {
     uint32_t crc = UINT32_MAX;
@@ -270,7 +320,10 @@ static bool cached_snapshot_is_well_formed(const cached_snapshot_t *snapshot)
             !quota_utf8_is_valid(account->email, strlen(account->email)) ||
             !quota_utf8_is_valid(account->plan, strlen(account->plan)) ||
             (account->provider != QUOTA_PROVIDER_CODEX &&
-             account->provider != QUOTA_PROVIDER_CLAUDE) ||
+             account->provider != QUOTA_PROVIDER_CLAUDE &&
+             account->provider != QUOTA_PROVIDER_DEEPSEEK) ||
+            (account->provider == QUOTA_PROVIDER_DEEPSEEK &&
+             (account->five_hour.present || account->seven_day.present)) ||
             (account->status != QUOTA_STATUS_OK &&
              account->status != QUOTA_STATUS_WAITING &&
              account->status != QUOTA_STATUS_EXPIRED &&
@@ -300,6 +353,10 @@ static bool nvs_erase_snapshot(void)
     if (err == ESP_OK) {
         err = nvs_erase_key(handle, NVS_SNAPSHOT_KEY);
         if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+        if (err == ESP_OK) {
+            err = nvs_erase_key(handle, NVS_BALANCE_KEY);
+            if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+        }
         if (err == ESP_OK) err = nvs_commit(handle);
         nvs_close(handle);
     }
@@ -343,6 +400,32 @@ static bool nvs_load_snapshot(const quota_device_config_t *config)
     return true;
 }
 
+static void nvs_load_balance_snapshot(const quota_device_config_t *config)
+{
+    s_balance_cache_present = false;
+    memset(&s_stored_balances, 0, sizeof(s_stored_balances));
+    nvs_handle_t handle;
+    if (!s_nvs_ready || nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return;
+    size_t length = sizeof(s_stored_balances);
+    esp_err_t err = nvs_get_blob(handle, NVS_BALANCE_KEY, &s_stored_balances, &length);
+    nvs_close(handle);
+    bool valid = err == ESP_OK && length == sizeof(s_stored_balances) &&
+        s_stored_balances.magic == STORED_BALANCE_MAGIC &&
+        s_stored_balances.config_identity == config_cache_identity(config) &&
+        s_stored_balances.revision == s_stored_snapshot.snapshot.revision &&
+        s_stored_balances.stored_at == s_stored_snapshot.stored_at &&
+        s_stored_balances.crc32 == crc32_bytes(&s_stored_balances, offsetof(stored_balance_t, crc32));
+    for (size_t i = 0; valid && i < QUOTA_MAX_ACCOUNTS; i++) {
+        valid = quota_balance_is_valid(&s_stored_balances.balances[i]);
+    }
+    if (valid) {
+        memcpy(s_view.snapshot.balances, s_stored_balances.balances, sizeof(s_stored_balances.balances));
+        s_balance_cache_present = true;
+    } else {
+        memset(&s_stored_balances, 0, sizeof(s_stored_balances));
+    }
+}
+
 static void prepare_cached_snapshot(const quota_snapshot_t *snapshot,
                                     cached_snapshot_t *cached)
 {
@@ -364,7 +447,8 @@ static bool nvs_maybe_save_snapshot_locked(const quota_device_config_t *config,
     if (!cached_snapshot_is_well_formed(&s_snapshot_cache_candidate)) return false;
     if (s_snapshot_cache_present && !s_snapshot_cache_dirty &&
         memcmp(&s_snapshot_cache_candidate, &s_stored_snapshot.snapshot,
-               sizeof(s_snapshot_cache_candidate)) == 0) {
+               sizeof(s_snapshot_cache_candidate)) == 0 && s_balance_cache_present &&
+        memcmp(snapshot->balances, s_stored_balances.balances, sizeof(snapshot->balances)) == 0) {
         return true;
     }
 
@@ -391,12 +475,21 @@ static bool nvs_maybe_save_snapshot_locked(const quota_device_config_t *config,
     s_stored_snapshot.snapshot = s_snapshot_cache_candidate;
     s_stored_snapshot.crc32 = crc32_bytes(&s_stored_snapshot,
                                           offsetof(stored_snapshot_t, crc32));
+    memset(&s_stored_balances, 0, sizeof(s_stored_balances));
+    s_stored_balances.magic = STORED_BALANCE_MAGIC;
+    s_stored_balances.config_identity = s_stored_snapshot.config_identity;
+    s_stored_balances.revision = snapshot->revision;
+    s_stored_balances.stored_at = snapshot->server_time;
+    memcpy(s_stored_balances.balances, snapshot->balances, sizeof(snapshot->balances));
+    s_stored_balances.crc32 = crc32_bytes(&s_stored_balances, offsetof(stored_balance_t, crc32));
 
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err == ESP_OK) {
         err = nvs_set_blob(handle, NVS_SNAPSHOT_KEY, &s_stored_snapshot,
                            sizeof(s_stored_snapshot));
+        if (err == ESP_OK) err = nvs_set_blob(handle, NVS_BALANCE_KEY, &s_stored_balances,
+                                            sizeof(s_stored_balances));
         if (err == ESP_OK) err = nvs_commit(handle);
         nvs_close(handle);
     }
@@ -406,6 +499,7 @@ static bool nvs_maybe_save_snapshot_locked(const quota_device_config_t *config,
         return false;
     }
     s_snapshot_cache_present = true;
+    s_balance_cache_present = true;
     s_snapshot_cache_dirty = false;
     s_snapshot_cache_saved_at = snapshot->server_time;
     return true;
@@ -686,33 +780,6 @@ static bool parse_refresh_ack(const http_body_t *body)
     return valid;
 }
 
-static bool parse_settings_ack(const http_body_t *body, uint16_t *seconds_out,
-                               bool *auto_refresh_out)
-{
-    if (body == NULL || body->length == 0 || seconds_out == NULL ||
-        auto_refresh_out == NULL) return false;
-    cJSON *root = cJSON_ParseWithLength(body->bytes, body->length);
-    const cJSON *version = root != NULL ? cJSON_GetObjectItemCaseSensitive(root, "v") : NULL;
-    const cJSON *settings = root != NULL ? cJSON_GetObjectItemCaseSensitive(root, "settings") : NULL;
-    const cJSON *refresh = settings != NULL
-                         ? cJSON_GetObjectItemCaseSensitive(settings, "refresh_seconds") : NULL;
-    const cJSON *automatic = settings != NULL
-                           ? cJSON_GetObjectItemCaseSensitive(settings, "auto_refresh") : NULL;
-    uint16_t seconds = cJSON_IsNumber(refresh) && refresh->valuedouble >= 0 &&
-                       refresh->valuedouble <= UINT16_MAX &&
-                       refresh->valuedouble == (double)(uint16_t)refresh->valuedouble
-                     ? (uint16_t)refresh->valuedouble : 0;
-    bool valid = json_has_unique_keys(root) && json_has_unique_keys(settings) &&
-                 cJSON_IsNumber(version) && version->valuedouble == 1 &&
-                 valid_refresh_seconds(seconds) && cJSON_IsBool(automatic);
-    if (valid) {
-        *seconds_out = seconds;
-        *auto_refresh_out = cJSON_IsTrue(automatic);
-    }
-    cJSON_Delete(root);
-    return valid;
-}
-
 static bool fetch_snapshot(const quota_device_config_t *config, quota_snapshot_t *snapshot)
 {
     if (!http_request(config, "/v1/snapshot", HTTP_METHOD_GET, NULL, 200, &s_http_body) ||
@@ -732,15 +799,16 @@ static bool request_refresh(const quota_device_config_t *config)
 }
 
 static bool apply_settings(const quota_device_config_t *config, uint16_t seconds,
-                           bool auto_refresh, uint16_t *applied_seconds,
-                           bool *applied_auto_refresh)
+                           bool auto_refresh, uint16_t screen_timeout_seconds,
+                           quota_settings_t *applied)
 {
-    char request[96];
-    snprintf(request, sizeof(request), "{\"refresh_seconds\":%u,\"auto_refresh\":%s}",
-             (unsigned)seconds, auto_refresh ? "true" : "false");
+    char request[128];
+    snprintf(request, sizeof(request), "{\"refresh_seconds\":%u,\"auto_refresh\":%s,"
+             "\"screen_timeout_seconds\":%u}", (unsigned)seconds,
+             auto_refresh ? "true" : "false", (unsigned)screen_timeout_seconds);
     return http_request(config, "/v1/settings", HTTP_METHOD_PATCH, request, 200,
                         &s_http_body) &&
-           parse_settings_ack(&s_http_body, applied_seconds, applied_auto_refresh);
+           quota_parse_settings_ack(s_http_body.bytes, s_http_body.length, applied);
 }
 
 static bool config_generation_is_current(uint32_t generation)
@@ -763,8 +831,15 @@ static bool publish_snapshot(const quota_snapshot_t *snapshot, uint32_t generati
     s_view.snapshot_valid = true;
     s_view.refresh_seconds = snapshot->refresh_seconds;
     s_view.auto_refresh = snapshot->auto_refresh;
+    if (snapshot->has_screen_timeout_seconds) {
+        s_view.screen_timeout_seconds = snapshot->screen_timeout_seconds;
+        if (!nvs_save_screen_timeout_locked(snapshot->screen_timeout_seconds)) {
+            ESP_LOGW(TAG, "unable to persist screen timeout");
+        }
+    }
     s_view.now_epoch = current_epoch();
     s_view.request_failed = false;
+    s_view.clock_synchronized = snapshot->server_time >= 1577836800ULL;
 
     if (s_has_config) {
         bool config_changed = false;
@@ -837,13 +912,9 @@ static void perform_refresh(const quota_device_config_t *config, uint32_t genera
     finish_refresh(success);
 }
 
-static void perform_initial_fetch(const quota_device_config_t *config, uint32_t generation)
+static void perform_snapshot_fetch(const quota_device_config_t *config, uint32_t generation)
 {
-    mutex_lock();
-    s_view.refreshing = true;
-    s_view.request_failed = false;
-    mutex_unlock();
-    post_simple_event(QUOTA_APP_EVENT_SNAPSHOT);
+    /* GET only reads cached data. It does not start a provider quota refresh. */
     bool success = fetch_snapshot(config, &s_snapshot_work);
     if (success && config_generation_is_current(generation)) {
         success = publish_snapshot(&s_snapshot_work, generation);
@@ -857,12 +928,12 @@ static void perform_initial_fetch(const quota_device_config_t *config, uint32_t 
 static void perform_settings_update(const quota_device_config_t *config,
                                     uint32_t generation,
                                     uint16_t requested_seconds,
-                                    bool requested_auto_refresh)
+                                    bool requested_auto_refresh,
+                                    uint16_t requested_screen_timeout)
 {
-    uint16_t applied_seconds = 0;
-    bool applied_auto_refresh = false;
+    quota_settings_t applied = {0};
     bool success = apply_settings(config, requested_seconds, requested_auto_refresh,
-                                  &applied_seconds, &applied_auto_refresh);
+                                  requested_screen_timeout, &applied);
 
     if (!config_generation_is_current(generation)) return;
 
@@ -872,25 +943,31 @@ static void perform_settings_update(const quota_device_config_t *config,
         return;
     }
     if (success) {
-        s_config.refresh_seconds = applied_seconds;
-        s_config.auto_refresh = applied_auto_refresh;
-        s_view.refresh_seconds = applied_seconds;
-        s_view.auto_refresh = applied_auto_refresh;
+        s_config.refresh_seconds = applied.refresh_seconds;
+        s_config.auto_refresh = applied.auto_refresh;
+        s_view.refresh_seconds = applied.refresh_seconds;
+        s_view.auto_refresh = applied.auto_refresh;
+        if (applied.has_screen_timeout_seconds) {
+            s_view.screen_timeout_seconds = applied.screen_timeout_seconds;
+            if (!nvs_save_screen_timeout_locked(applied.screen_timeout_seconds)) success = false;
+        }
         if (!nvs_save_config_locked(&s_config)) success = false;
     }
     s_view.request_failed = !success;
     s_view.now_epoch = current_epoch();
     if (!success) {
-        applied_seconds = s_config.refresh_seconds;
-        applied_auto_refresh = s_config.auto_refresh;
+        applied.refresh_seconds = s_config.refresh_seconds;
+        applied.auto_refresh = s_config.auto_refresh;
     }
+    applied.screen_timeout_seconds = s_view.screen_timeout_seconds;
     mutex_unlock();
 
     quota_app_event_t event = {
         .kind = QUOTA_APP_EVENT_SETTINGS_RESULT,
         .success = success,
-        .refresh_seconds = applied_seconds,
-        .auto_refresh = applied_auto_refresh,
+        .refresh_seconds = applied.refresh_seconds,
+        .auto_refresh = applied.auto_refresh,
+        .screen_timeout_seconds = applied.screen_timeout_seconds,
         .error_code = success ? 0 : 1,
     };
     post_event(&event, 0);
@@ -919,6 +996,7 @@ static void network_task(void *arg)
         uint16_t refresh_seconds;
         uint16_t pending_seconds;
         bool pending_auto;
+        uint16_t pending_screen_timeout;
         bool selection_pending;
         char selected_account_id[QUOTA_ACCOUNT_ID_BYTES + 1];
         uint32_t config_generation;
@@ -1011,12 +1089,12 @@ static void network_task(void *arg)
             }
             pending_seconds = s_pending_refresh_seconds;
             pending_auto = s_pending_auto_refresh;
+            pending_screen_timeout = s_pending_screen_timeout_seconds;
             /* Consume the latest request atomically; requests during HTTP remain queued. */
             s_settings_pending = false;
             mutex_unlock();
             perform_settings_update(&s_network_config, config_generation,
-                                    pending_seconds, pending_auto);
-            next_provider_refresh_ms = now_ms + (uint64_t)pending_seconds * 1000;
+                                    pending_seconds, pending_auto, pending_screen_timeout);
             continue;
         }
 
@@ -1037,16 +1115,16 @@ static void network_task(void *arg)
             perform_refresh(&s_network_config, config_generation);
             next_provider_refresh_ms = now_ms + (uint64_t)refresh_seconds * 1000;
             next_snapshot_poll_ms = now_ms + SNAPSHOT_POLL_MS;
-        } else if (fetch_after_connect || now_ms >= next_snapshot_poll_ms) {
-            perform_initial_fetch(&s_network_config, config_generation);
-            mutex_lock();
-            bool failed = s_view.request_failed;
-            mutex_unlock();
-            next_snapshot_poll_ms = now_ms + (failed ? SNAPSHOT_RETRY_MS : SNAPSHOT_POLL_MS);
         } else if (automatic && now_ms >= next_provider_refresh_ms) {
             perform_refresh(&s_network_config, config_generation);
             next_provider_refresh_ms = now_ms + (uint64_t)refresh_seconds * 1000;
             next_snapshot_poll_ms = now_ms + SNAPSHOT_POLL_MS;
+        } else if (fetch_after_connect || now_ms >= next_snapshot_poll_ms) {
+            perform_snapshot_fetch(&s_network_config, config_generation);
+            mutex_lock();
+            bool failed = s_view.request_failed;
+            mutex_unlock();
+            next_snapshot_poll_ms = now_ms + (failed ? SNAPSHOT_RETRY_MS : SNAPSHOT_POLL_MS);
         }
     }
 }
@@ -1126,6 +1204,8 @@ static void handle_serial_frame(const char *frame, size_t length)
         (void)nvs_erase_snapshot();
         memset(&s_stored_snapshot, 0, sizeof(s_stored_snapshot));
         s_snapshot_cache_present = false;
+        s_balance_cache_present = false;
+        memset(&s_stored_balances, 0, sizeof(s_stored_balances));
         s_snapshot_cache_dirty = false;
         s_snapshot_cache_attempted = false;
         s_snapshot_cache_last_attempt_ms = 0;
@@ -1147,6 +1227,7 @@ static void handle_serial_frame(const char *frame, size_t length)
         s_view.refresh_seconds = s_provision_config.refresh_seconds;
         s_view.auto_refresh = s_provision_config.auto_refresh;
         s_view.request_failed = false;
+        s_view.clock_synchronized = s_provision_config.server_time >= 1577836800ULL;
         s_pairing_screen_open = false;
         s_last_server_time_persist_ms = monotonic_ms();
         s_view.pairing_active = false;
@@ -1204,6 +1285,7 @@ bool quota_service_init(void)
         ESP_LOGE(TAG, "NVS init failed (%s); stored credentials are unavailable", esp_err_to_name(err));
     }
     s_has_config = nvs_load_config();
+    s_view.screen_timeout_seconds = nvs_load_screen_timeout();
     if (s_has_config) {
         s_config_generation = 1;
         s_view.configured = true;
@@ -1220,6 +1302,7 @@ bool quota_service_init(void)
             memcpy(s_view.snapshot.accounts, s_stored_snapshot.snapshot.accounts,
                    (size_t)s_view.snapshot.account_count *
                        sizeof(s_view.snapshot.accounts[0]));
+            nvs_load_balance_snapshot(&s_config);
             s_view.snapshot_valid = true;
             s_view.now_epoch = current_epoch();
             set_system_time_if_newer(s_snapshot_cache_saved_at);
@@ -1305,13 +1388,16 @@ void quota_service_request_refresh(void)
     if (s_network_task != NULL) xTaskNotifyGive(s_network_task);
 }
 
-void quota_service_request_settings(uint16_t refresh_seconds, bool auto_refresh)
+void quota_service_request_settings(uint16_t refresh_seconds, bool auto_refresh,
+                                    uint16_t screen_timeout_seconds)
 {
-    if (!valid_refresh_seconds(refresh_seconds)) return;
+    if (!valid_refresh_seconds(refresh_seconds) ||
+        !quota_screen_timeout_is_valid(screen_timeout_seconds)) return;
     mutex_lock();
     s_settings_pending = true;
     s_pending_refresh_seconds = refresh_seconds;
     s_pending_auto_refresh = auto_refresh;
+    s_pending_screen_timeout_seconds = screen_timeout_seconds;
     mutex_unlock();
     if (s_network_task != NULL) xTaskNotifyGive(s_network_task);
 }

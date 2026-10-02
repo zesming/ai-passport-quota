@@ -5,14 +5,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CodexClient, claudeCommand, profileEnvironment, shellQuote, officialLoginURL } from './clients.mjs';
 import { privateDirectory, atomicJSON, readJSON } from './storage.mjs';
-import { MAX_ACCOUNTS, codexWindows, publicAccount, publicWindow, safeText, epoch } from './protocol.mjs';
+import { MAX_ACCOUNTS, codexWindows, publicAccount, publicWindow, safeText, normalizeDeepSeekLabel, epoch } from './protocol.mjs';
+import { requestDeepSeekBalance, validateDeepSeekApiKey } from './deepseek.mjs';
 
 const feedScript = fileURLToPath(new URL('./claude-feed.mjs', import.meta.url));
 const sessionScript = fileURLToPath(new URL('./claude-session.mjs', import.meta.url));
 export class AccountManager {
-  constructor(store, executables, { codexFactory = (executable, directory) => new CodexClient(executable, directory), claudeRun = claudeCommand, loginTimeout = 5 * 60 * 1000 } = {}) {
-    Object.assign(this, { store, executables, codexFactory, claudeRun, loginTimeout });
-    this.clients = new Map(); this.clientOpenings = new Map(); this.jobs = new Map(); this.refreshes = new Map(); this.claudeLogins = new Map(); this.loginStarts = new Map(); this.closed = false;
+  constructor(store, executables, { codexFactory = (executable, directory) => new CodexClient(executable, directory), claudeRun = claudeCommand, deepSeekFetch = globalThis.fetch, loginTimeout = 5 * 60 * 1000 } = {}) {
+    Object.assign(this, { store, executables, codexFactory, claudeRun, deepSeekFetch, loginTimeout });
+    this.clients = new Map(); this.clientOpenings = new Map(); this.jobs = new Map(); this.refreshes = new Map(); this.claudeLogins = new Map(); this.loginStarts = new Map(); this.deepSeekKeyUpdates = new Map(); this.deepSeekGenerations = new Map(); this.closed = false;
   }
   live(account) { return !this.closed && this.store.state.accounts.includes(account); }
   account(id) { const account = this.store.state.accounts.find(item => item.id === id); if (!account || this.closed) throw new Error('account_not_found'); return account; }
@@ -75,7 +76,8 @@ export class AccountManager {
     if (!this.live(account)) throw new Error('account_not_found');
     return client;
   }
-  async add(provider) {
+  async add(provider, options = {}) {
+    if (provider === 'deepseek') return this.addDeepSeek(options);
     if (!['codex', 'claude'].includes(provider)) throw new Error('invalid_provider');
     if (!this.executables[provider]) throw new Error('cli_unavailable');
     if (this.store.state.accounts.length >= MAX_ACCOUNTS) throw new Error('account_limit');
@@ -84,18 +86,72 @@ export class AccountManager {
     await this.login(account.id);
     return { account_id: account.id, login: this.publicJob(account.id) };
   }
+  async addDeepSeek(options) {
+    const apiKey = validateDeepSeekApiKey(options?.api_key);
+    const label = normalizeDeepSeekLabel(options?.label);
+    if (this.store.state.accounts.length >= MAX_ACCOUNTS) throw new Error('account_limit');
+    const account = { id: randomBytes(16).toString('hex'), provider: 'deepseek', email: '', plan: 'API', label, balance: null, status: 'waiting', observed_at: null, five_hour: null, seven_day: null, authenticated: false };
+    const keyFile = path.join(this.store.profile(account.id), 'deepseek', 'api-key.json');
+    await atomicJSON(keyFile, { v: 1, api_key: apiKey });
+    if (this.store.state.accounts.length >= MAX_ACCOUNTS) {
+      await rm(path.dirname(keyFile), { recursive: true, force: true });
+      throw new Error('account_limit');
+    }
+    this.store.state.accounts.push(account);
+    try { await this.store.changed(); }
+    catch (error) { this.store.state.accounts = this.store.state.accounts.filter(item => item !== account); await rm(path.dirname(keyFile), { recursive: true, force: true }); throw error; }
+    await this.refresh(account.id);
+    return { account_id: account.id };
+  }
+  updateDeepSeekApiKey(id, options = {}) {
+    if (this.deepSeekKeyUpdates.has(id)) return Promise.reject(new Error('account_busy'));
+    if (options?.api_key === undefined) {
+      try {
+        const account = this.account(id);
+        if (account.provider !== 'deepseek') throw new Error('unsupported_account');
+        account.label = normalizeDeepSeekLabel(options?.label);
+        return this.store.changed().then(() => ({ account_id: id }));
+      } catch (error) { return Promise.reject(error); }
+    }
+    const operation = this.replaceDeepSeekApiKey(id, options).finally(() => {
+      if (this.deepSeekKeyUpdates.get(id) === operation) this.deepSeekKeyUpdates.delete(id);
+    });
+    this.deepSeekKeyUpdates.set(id, operation);
+    return operation;
+  }
+  async replaceDeepSeekApiKey(id, options) {
+    const account = this.account(id);
+    if (account.provider !== 'deepseek') throw new Error('unsupported_account');
+    const apiKey = validateDeepSeekApiKey(options?.api_key);
+    const label = options?.label === undefined ? normalizeDeepSeekLabel(account.label) : normalizeDeepSeekLabel(options.label);
+    const generation = (this.deepSeekGenerations.get(id) ?? 0) + 1;
+    this.deepSeekGenerations.set(id, generation);
+    account.label = label; account.balance = null; account.five_hour = null; account.seven_day = null;
+    account.observed_at = null; account.authenticated = false; account.status = 'waiting';
+    await this.store.changed();
+    await Promise.allSettled([this.refreshes.get(id)].filter(Boolean));
+    if (!this.live(account) || this.deepSeekGenerations.get(id) !== generation) throw new Error('account_not_found');
+    const keyFile = path.join(this.store.profile(id), 'deepseek', 'api-key.json');
+    await rm(keyFile, { force: true });
+    await atomicJSON(keyFile, { v: 1, api_key: apiKey });
+    if (!this.live(account) || this.deepSeekGenerations.get(id) !== generation) throw new Error('account_not_found');
+    await this.refresh(id, { allowKeyUpdate: true });
+    return { account_id: id };
+  }
   publicJob(id) {
     const job = this.jobs.get(id); if (!job) return null;
     return { account_id: id, provider: job.provider, status: job.status, url: job.url ?? null, code: job.code ?? null, error: job.error ?? null, requires_code: job.requires_code === true };
   }
   login(id) {
     const account = this.account(id);
+    if (account.provider === 'deepseek') return Promise.reject(new Error('unsupported_account'));
     if (this.loginStarts.has(id)) return this.loginStarts.get(id);
     if (this.jobs.get(id)?.status === 'pending') return Promise.resolve(this.publicJob(id));
     const start = this.startLogin(account).finally(() => this.loginStarts.delete(id));
     this.loginStarts.set(id, start); return start;
   }
   async startLogin(account) {
+    if (account.provider === 'deepseek') throw new Error('unsupported_account');
     const id = account.id; const job = { provider: account.provider, status: 'pending', url: null, code: null, error: null, initialIdentity: { authenticated: account.authenticated === true, email: safeText(account.email, 128) } };
     this.jobs.set(id, job);
     job.timer = setTimeout(() => {
@@ -143,12 +199,13 @@ export class AccountManager {
   }
   schedule(id) {
     if (this.closed) return;
-    const ids = id ? [id] : this.store.state.accounts.filter(account => account.authenticated).map(account => account.id);
+    const ids = id ? [id] : this.store.state.accounts.filter(account => (account.authenticated && !(account.provider === 'deepseek' && account.status === 'expired'))
+      || (account.provider === 'deepseek' && ['waiting', 'error'].includes(account.status))).map(account => account.id);
     for (const accountId of ids) this.refresh(accountId).catch(() => {});
   }
-  refresh(id) {
+  refresh(id, { allowKeyUpdate = false } = {}) {
     if (this.refreshes.has(id)) return this.refreshes.get(id);
-    const refresh = this.readQuota(id).finally(() => this.refreshes.delete(id));
+    const refresh = this.readQuota(id, { allowKeyUpdate }).finally(() => this.refreshes.delete(id));
     this.refreshes.set(id, refresh); return refresh;
   }
   async setIdentity(account, identity, directory) {
@@ -163,10 +220,21 @@ export class AccountManager {
     account.authenticated = true; account.email = email; account.plan = safeText(identity.planType ?? identity.subscriptionType, 32);
     return true;
   }
-  async readQuota(id) {
+  async readQuota(id, { allowKeyUpdate = false } = {}) {
     const account = this.account(id);
+    const deepSeekGeneration = this.deepSeekGenerations.get(id) ?? 0;
+    if (account.provider === 'deepseek' && this.deepSeekKeyUpdates.has(id) && !allowKeyUpdate) return;
     try {
-      if (account.provider === 'codex') {
+      if (account.provider === 'deepseek') {
+        const keyFile = path.join(this.store.profile(id), 'deepseek', 'api-key.json');
+        const credentials = await readJSON(keyFile);
+        if (!credentials || credentials.v !== 1) throw new Error('deepseek_key_missing');
+        const apiKey = validateDeepSeekApiKey(credentials.api_key);
+        const balance = await requestDeepSeekBalance(apiKey, { fetchImpl: this.deepSeekFetch });
+        if (!this.live(account) || (this.deepSeekGenerations.get(id) ?? 0) !== deepSeekGeneration) return;
+        account.balance = balance; account.email = ''; account.plan = 'API'; account.authenticated = true;
+        account.status = 'ok'; account.observed_at = epoch();
+      } else if (account.provider === 'codex') {
         const client = await this.codex(account);
         const loginJob = this.jobs.get(id);
         const identity = await client.request('account/read', { refreshToken: false });
@@ -196,15 +264,22 @@ export class AccountManager {
           } else account.status = 'waiting';
         }
       }
-    } catch { if (this.live(account)) account.status = this.executables[account.provider] ? 'error' : 'unsupported'; }
-    if (this.live(account)) await this.store.changed();
+    } catch (error) {
+      if (!this.live(account)) return;
+      if (account.provider === 'deepseek') {
+        if ((this.deepSeekGenerations.get(id) ?? 0) !== deepSeekGeneration) return;
+        account.status = error.message === 'deepseek_unauthorized' ? 'expired' : 'error';
+      } else account.status = this.executables[account.provider] ? 'error' : 'unsupported';
+    }
+    if (this.live(account) && (account.provider !== 'deepseek' || (this.deepSeekGenerations.get(id) ?? 0) === deepSeekGeneration)) await this.store.changed();
   }
   async remove(id) {
     const account = this.account(id); const job = this.jobs.get(id);
+    if (account.provider === 'deepseek') this.deepSeekGenerations.set(id, (this.deepSeekGenerations.get(id) ?? 0) + 1);
     this.store.state.accounts = this.store.state.accounts.filter(item => item !== account);
     clearTimeout(job?.timer); this.jobs.delete(id); this.claudeLogins.get(id)?.kill('SIGTERM');
     await this.store.changed();
-    await Promise.allSettled([this.loginStarts.get(id), this.refreshes.get(id), this.clientOpenings.get(id)].filter(Boolean));
+    await Promise.allSettled([this.loginStarts.get(id), this.refreshes.get(id), this.clientOpenings.get(id), this.deepSeekKeyUpdates.get(id)].filter(Boolean));
     const client = this.clients.get(id);
     if (client) {
       if (job?.loginId && job.status === 'pending') await client.request('account/login/cancel', { loginId: job.loginId }).catch(() => {});
@@ -214,6 +289,7 @@ export class AccountManager {
       const directory = path.join(this.store.profile(id), 'claude');
       await this.claudeRun(this.executables.claude, directory, ['auth', 'logout']).catch(() => {});
     }
+    if (account.provider === 'deepseek') await rm(path.join(this.store.profile(id), 'deepseek'), { recursive: true, force: true });
     // Detached profiles are retained; official logout is attempted without deleting files.
   }
   async launchCommand(id) {

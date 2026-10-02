@@ -20,8 +20,10 @@ static const char *TAG = "ai_quota";
 static quota_navigation_t s_navigation;
 static quota_service_view_t s_view_work;
 static TaskHandle_t s_application_task;
-static uint64_t s_last_input_ms;
+static quota_display_state_t s_display;
 static uint8_t s_backlight_percent = 100;
+static int s_battery_percent = -1;
+static uint64_t s_battery_read_ms;
 
 static quota_input_t map_input(bsp_btn_t button, bsp_btn_ev_t event)
 {
@@ -67,23 +69,37 @@ static void render_application(void)
 {
     quota_service_get_view(&s_view_work);
     uint64_t now_ms = (uint64_t)(esp_timer_get_time() / 1000);
-    uint8_t brightness = quota_display_should_dim(now_ms, s_last_input_ms,
-                                                s_view_work.pairing_active) ? 15 : 100;
+    quota_display_tick(&s_display, now_ms, s_view_work.screen_timeout_seconds,
+                        s_view_work.pairing_active);
+    uint8_t brightness = s_display.sleeping ? 0 : 100;
     if (brightness != s_backlight_percent) {
         bsp_display_backlight(brightness);
         s_backlight_percent = brightness;
     }
-    int battery = bsp_battery_soc();
+    if (s_display.sleeping) return;
+    if (now_ms - s_battery_read_ms >= 30000) {
+        s_battery_percent = bsp_battery_soc();
+        s_battery_read_ms = now_ms;
+    }
     if (!bsp_lvgl_lock(500)) return;
-    quota_ui_render(&s_navigation, &s_view_work, battery);
+    quota_ui_render(&s_navigation, &s_view_work, s_battery_percent);
     bsp_lvgl_unlock();
 }
 
 static void process_button(const quota_app_event_t *event, quota_service_view_t *view)
 {
-    s_last_input_ms = (uint64_t)(esp_timer_get_time() / 1000);
+    quota_key_event_t key_event;
+    switch (event->button_event) {
+        case BSP_BTN_PRESS: key_event = QUOTA_KEY_PRESS; break;
+        case BSP_BTN_CLICK: key_event = QUOTA_KEY_CLICK; break;
+        case BSP_BTN_DOUBLE: key_event = QUOTA_KEY_DOUBLE; break;
+        case BSP_BTN_LONG: key_event = QUOTA_KEY_LONG; break;
+        default: return;
+    }
+    if (!quota_display_handle_key(&s_display, (uint64_t)(esp_timer_get_time() / 1000),
+                                  key_event, event->button == BSP_BTN_DOWN)) return;
     quota_navigation_sync_settings(&s_navigation, view->refresh_seconds,
-                                   view->auto_refresh);
+                                   view->auto_refresh, view->screen_timeout_seconds);
     quota_screen_t previous_screen = s_navigation.screen;
     quota_action_t action = quota_navigation_handle(&s_navigation,
         map_input(event->button, event->button_event), view->snapshot.account_count);
@@ -101,10 +117,12 @@ static void process_button(const quota_app_event_t *event, quota_service_view_t 
     } else if (action == QUOTA_ACTION_APPLY_SETTINGS) {
         if (view->configured) {
             quota_service_request_settings(s_navigation.refresh_seconds,
-                                           s_navigation.auto_refresh);
+                                           s_navigation.auto_refresh,
+                                           s_navigation.screen_timeout_seconds);
         } else {
             s_navigation.refresh_seconds = view->refresh_seconds;
             s_navigation.auto_refresh = view->auto_refresh;
+            s_navigation.screen_timeout_seconds = view->screen_timeout_seconds;
         }
     } else if (action == QUOTA_ACTION_PERSIST_SELECTION) {
         persist_current_selection(view);
@@ -124,6 +142,7 @@ static void process_event(const quota_app_event_t *event)
         case QUOTA_APP_EVENT_SETTINGS_RESULT:
             s_navigation.refresh_seconds = event->refresh_seconds;
             s_navigation.auto_refresh = event->auto_refresh;
+            s_navigation.screen_timeout_seconds = event->screen_timeout_seconds;
             break;
         case QUOTA_APP_EVENT_CONFIGURATION_RESULT:
             if (event->success) {
@@ -147,8 +166,10 @@ static void application_task(void *arg)
     QueueHandle_t events = quota_service_event_queue();
     quota_app_event_t event;
     for (;;) {
-        if (xQueueReceive(events, &event, portMAX_DELAY) == pdTRUE) {
+        if (xQueueReceive(events, &event, pdMS_TO_TICKS(1000)) == pdTRUE) {
             process_event(&event);
+        } else {
+            render_application();
         }
     }
 }
@@ -171,8 +192,10 @@ void app_main(void)
         return;
     }
     bsp_display_backlight(100);
-    s_last_input_ms = (uint64_t)(esp_timer_get_time() / 1000);
+    s_display.last_input_ms = (uint64_t)(esp_timer_get_time() / 1000);
     (void)bsp_battery_init();
+    s_battery_percent = bsp_battery_soc();
+    s_battery_read_ms = s_display.last_input_ms;
 
     if (!quota_service_init()) {
         ESP_LOGE(TAG, "quota service initialization failed");
@@ -181,6 +204,7 @@ void app_main(void)
     quota_service_get_view(&s_view_work);
     quota_navigation_init(&s_navigation, s_view_work.configured,
                          s_view_work.refresh_seconds, s_view_work.auto_refresh,
+                         s_view_work.screen_timeout_seconds,
                          s_view_work.snapshot.account_count);
     reconcile_account_selection(&s_view_work);
     if (!s_view_work.configured) quota_service_open_pairing_window();
@@ -190,7 +214,7 @@ void app_main(void)
         return;
     }
     quota_ui_init();
-    quota_ui_render(&s_navigation, &s_view_work, bsp_battery_soc());
+    quota_ui_render(&s_navigation, &s_view_work, s_battery_percent);
     bsp_lvgl_unlock();
 
     esp_err_t button_result = bsp_button_init(on_button, NULL);

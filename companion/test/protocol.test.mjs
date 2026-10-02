@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { codexWindows, claudeWindows, makeSnapshot, safeText, privateIPv4, constantToken } from '../server/protocol.mjs';
+import { codexWindows, claudeWindows, makeSnapshot, safeText, privateIPv4, constantToken, validSettings, SCREEN_TIMEOUT_SECONDS, DEFAULT_SCREEN_TIMEOUT_SECONDS } from '../server/protocol.mjs';
 
 test('Codex maps duration, not primary/secondary position, and chooses Codex bucket', () => {
   const result = codexWindows({ rateLimits: { primary: { usedPercent: 99, windowDurationMins: 300 } }, rateLimitsByLimitId: { other: { primary: { usedPercent: 99, windowDurationMins: 300 } }, codex: { primary: { usedPercent: 58, windowDurationMins: 10080, resetsAt: 2000 }, secondary: { usedPercent: 32, windowDurationMins: 300, resetsAt: 1000 } } } });
@@ -10,11 +10,37 @@ test('missing duration and malformed values remain unknown; zero is real exhaust
   assert.deepEqual(codexWindows({ rateLimits: { primary: { usedPercent: 1 }, secondary: { usedPercent: 'bad', windowDurationMins: 300 } } }), { five_hour: null, seven_day: null });
   assert.deepEqual(claudeWindows({ rate_limits: { five_hour: { used_percentage: 100, resets_at: 2000 } } }), { five_hour: { remaining_percent: 0, resets_at: 2000 }, seven_day: null });
 });
+test('screen timeout accepts only supported values and stays optional for legacy settings', () => {
+  const legacy = { refresh_seconds: 300, auto_refresh: true };
+  assert.equal(validSettings(legacy), true);
+  for (const value of SCREEN_TIMEOUT_SECONDS) assert.equal(validSettings({ ...legacy, screen_timeout_seconds: value }), true);
+  assert.equal(validSettings({ ...legacy, screen_timeout_seconds: 90 }), false);
+  assert.equal(validSettings({ ...legacy, screen_timeout_seconds: null }), false);
+  assert.equal(validSettings({ refresh_seconds: 300, screen_timeout_seconds: 120 }), false);
+  assert.equal(DEFAULT_SCREEN_TIMEOUT_SECONDS, 120);
+});
 test('device snapshots are whitelisted and exclude pending identities and internal metadata', () => {
   const state = { revision: 3, settings: { refresh_seconds: 300, auto_refresh: true }, accounts: [{ id: 'a'.repeat(32), provider: 'codex', email: 'one@example.com', authenticated: true, plan: 'Plus', status: 'ok', observed_at: 2000, token: 'SECRET_NEVER_SENT', profile: '/private/path', five_hour: null, seven_day: null }, { id: 'b'.repeat(32), provider: 'claude', authenticated: false }] };
   const snapshot = makeSnapshot(state, 3000);
   assert.equal(snapshot.accounts.length, 1); assert.equal(snapshot.server_time, 3000);
+  assert.deepEqual(snapshot.settings, { refresh_seconds: 300, auto_refresh: true, screen_timeout_seconds: DEFAULT_SCREEN_TIMEOUT_SECONDS });
   assert.equal(JSON.stringify(snapshot).includes('SECRET'), false); assert.equal(JSON.stringify(snapshot).includes('/private/path'), false);
+});
+test('DeepSeek public snapshots keep the local alias and raw currency balances without API keys or quota windows', () => {
+  const balance = { is_available: true, balance_infos: [
+    { currency: 'CNY', total_balance: '-0.50', granted_balance: '0', topped_up_balance: '128.50' },
+    { currency: 'USD', total_balance: '17.25', granted_balance: '2.00', topped_up_balance: '15.25' },
+  ] };
+  const snapshot = makeSnapshot({ revision: 7, settings: { refresh_seconds: 300, auto_refresh: true }, accounts: [{
+    id: 'c'.repeat(32), provider: 'deepseek', email: 'must-not-leak@example.com', plan: 'unknown', label: '工作 API', status: 'ok', observed_at: 2000,
+    authenticated: true, balance, five_hour: { remaining_percent: 30 }, seven_day: { remaining_percent: 20 }, api_key: 'SECRET_API_KEY',
+  }] }, 3000);
+  assert.deepEqual(snapshot.accounts[0], {
+    id: 'c'.repeat(32), provider: 'deepseek', email: '', plan: 'API', status: 'ok', observed_at: 2000,
+    five_hour: null, seven_day: null, label: '工作 API', balance,
+  });
+  assert.equal(JSON.stringify(snapshot).includes('SECRET_API_KEY'), false);
+  assert.equal(JSON.stringify(snapshot).includes('must-not-leak'), false);
 });
 test('UTF-8 bounds preserve complete characters and remove control text', () => {
   assert.equal(safeText('中中\nabc', 7), '中中a');

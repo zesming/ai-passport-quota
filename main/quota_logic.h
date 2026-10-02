@@ -16,11 +16,16 @@
 #define QUOTA_PAIR_TOKEN_BYTES 43
 #define QUOTA_CERT_MAX_BYTES 1536
 #define QUOTA_REFRESH_DEFAULT_SECONDS 300
+#define QUOTA_SCREEN_TIMEOUT_DEFAULT_SECONDS 120
+#define QUOTA_SCREEN_TIMEOUT_COUNT 6
+#define QUOTA_BALANCE_AMOUNT_BYTES 20
+#define QUOTA_BALANCE_CURRENCIES 2
 #define QUOTA_PAIRING_WINDOW_MS 120000
 
 typedef enum {
     QUOTA_PROVIDER_CODEX = 0,
     QUOTA_PROVIDER_CLAUDE,
+    QUOTA_PROVIDER_DEEPSEEK,
 } quota_provider_t;
 
 typedef enum {
@@ -51,13 +56,39 @@ typedef struct {
 } quota_account_t;
 
 typedef struct {
+    char currency[4];
+    char total_balance[QUOTA_BALANCE_AMOUNT_BYTES + 1];
+    char granted_balance[QUOTA_BALANCE_AMOUNT_BYTES + 1];
+    char topped_up_balance[QUOTA_BALANCE_AMOUNT_BYTES + 1];
+} quota_currency_balance_t;
+
+/* Sidecar leaves the legacy account and NVS quota-cache layouts unchanged. */
+typedef struct {
+    bool present;
+    bool is_available;
+    uint8_t currency_count;
+    char label[QUOTA_PLAN_MAX_BYTES + 1];
+    quota_currency_balance_t balance_infos[QUOTA_BALANCE_CURRENCIES];
+} quota_balance_t;
+
+typedef struct {
     uint64_t server_time;
     uint64_t revision;
     uint16_t refresh_seconds;
     bool auto_refresh;
+    bool has_screen_timeout_seconds;
+    uint16_t screen_timeout_seconds;
     uint8_t account_count;
     quota_account_t accounts[QUOTA_MAX_ACCOUNTS];
+    quota_balance_t balances[QUOTA_MAX_ACCOUNTS];
 } quota_snapshot_t;
+
+typedef struct {
+    uint16_t refresh_seconds;
+    bool auto_refresh;
+    bool has_screen_timeout_seconds;
+    uint16_t screen_timeout_seconds;
+} quota_settings_t;
 
 typedef struct {
     char request_id[9];
@@ -83,6 +114,7 @@ typedef enum {
     QUOTA_SCREEN_SETTINGS,
     QUOTA_SCREEN_ACCOUNTS,
     QUOTA_SCREEN_INTERVAL,
+    QUOTA_SCREEN_SLEEP,
     QUOTA_SCREEN_SETUP,
 } quota_screen_t;
 
@@ -108,10 +140,27 @@ typedef struct {
     uint8_t account_focus;
     uint8_t settings_focus;
     uint8_t interval_focus;
+    uint8_t sleep_focus;
     uint16_t refresh_seconds;
     bool auto_refresh;
+    uint16_t screen_timeout_seconds;
     bool configured;
 } quota_navigation_t;
+
+typedef enum {
+    QUOTA_KEY_PRESS = 0,
+    QUOTA_KEY_CLICK,
+    QUOTA_KEY_DOUBLE,
+    QUOTA_KEY_LONG,
+} quota_key_event_t;
+
+typedef struct {
+    uint64_t last_input_ms;
+    bool sleeping;
+    bool consume_wake_gesture;
+} quota_display_state_t;
+
+extern const uint16_t quota_screen_timeouts[QUOTA_SCREEN_TIMEOUT_COUNT];
 
 typedef struct {
     char bytes[QUOTA_MAX_PROVISION_FRAME_BYTES + 1];
@@ -130,12 +179,17 @@ bool quota_id_is_valid(const char *id);
 bool quota_url_is_private_ipv4(const char *url, char host_out[16]);
 bool quota_pair_token_is_valid(const char *token);
 void quota_copy_display_ascii(const char *source, char *destination, size_t capacity);
+void quota_copy_display_plan(const char *source, char *destination, size_t capacity);
+bool quota_screen_timeout_is_valid(uint64_t seconds);
+bool quota_balance_is_valid(const quota_balance_t *balance);
+const quota_currency_balance_t *quota_balance_cny(const quota_balance_t *balance);
 void quota_frame_decoder_init(quota_frame_decoder_t *decoder);
 quota_frame_result_t quota_frame_decoder_feed(quota_frame_decoder_t *decoder, char byte,
                                               const char **frame_out,
                                               size_t *frame_length_out);
 
 bool quota_parse_snapshot(const char *json, size_t json_length, quota_snapshot_t *snapshot);
+bool quota_parse_settings_ack(const char *json, size_t json_length, quota_settings_t *settings);
 bool quota_parse_provision_frame(const char *frame, size_t frame_length,
                                  quota_device_config_t *config,
                                  char request_id_out[9], const char **error_code_out);
@@ -144,14 +198,18 @@ bool quota_data_is_stale(uint64_t now, bool has_observed_at, uint64_t observed_a
                          uint16_t refresh_seconds);
 bool quota_pairing_window_active(bool setup_screen_open, uint64_t now_ms,
                                  uint64_t opened_at_ms);
-bool quota_display_should_dim(uint64_t now_ms, uint64_t last_input_ms,
-                              bool pairing_active);
+void quota_display_tick(quota_display_state_t *display, uint64_t now_ms,
+                        uint16_t timeout_seconds, bool pairing_active);
+/* True permits navigation; the entire first waking gesture is consumed. */
+bool quota_display_handle_key(quota_display_state_t *display, uint64_t now_ms,
+                              quota_key_event_t event, bool down_key);
 quota_metric_state_t quota_metric_state(const quota_window_t *window, uint64_t now);
 quota_action_t quota_navigation_handle(quota_navigation_t *navigation,
                                        quota_input_t input, uint8_t account_count);
 void quota_navigation_init(quota_navigation_t *navigation, bool configured,
                            uint16_t refresh_seconds, bool auto_refresh,
-                           uint8_t account_count);
+                           uint16_t screen_timeout_seconds, uint8_t account_count);
 void quota_navigation_sync_settings(quota_navigation_t *navigation,
-                                     uint16_t refresh_seconds, bool auto_refresh);
+                                     uint16_t refresh_seconds, bool auto_refresh,
+                                     uint16_t screen_timeout_seconds);
 int quota_find_account_by_id(const quota_snapshot_t *snapshot, const char *id);

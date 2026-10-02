@@ -1,4 +1,4 @@
-// Documentation-only preview: no real providers, profiles, USB or LAN listener.
+// Documentation-only preview: synthetic accounts and device indicators; no real providers, profiles, USB or LAN listener.
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,10 +8,12 @@ const now = Math.floor(Date.now() / 1000);
 const accounts = [
   { id: '1'.repeat(32), provider: 'codex', email: 'codex@example.com', plan: 'Plus', authenticated: true, status: 'ok', observed_at: now, five_hour: { remaining_percent: 16, resets_at: now + 7200 }, seven_day: { remaining_percent: 42, resets_at: now + 172800 } },
   { id: '2'.repeat(32), provider: 'claude', email: 'claude@example.com', plan: 'Pro', authenticated: true, status: 'ok', observed_at: now, five_hour: { remaining_percent: 68, resets_at: now + 10800 }, seven_day: { remaining_percent: 72, resets_at: now + 259200 } },
+  { id: '3'.repeat(32), provider: 'deepseek', email: '', plan: 'API', label: 'DeepSeek API', authenticated: true, status: 'ok', observed_at: now, balance: { is_available: true, balance_infos: [{ currency: 'CNY', total_balance: '128.50', granted_balance: '10.00', topped_up_balance: '118.50' }] }, five_hour: null, seven_day: null },
 ];
 const directory = await mkdtemp(path.join(os.tmpdir(), 'aiq-readme-preview-'));
 const application = await createApplication({
   directory, adminPort: 4327, autoRestore: false, interfaces: () => [],
+  previewStatus: { wifi_connected: true, battery_percent: 76 },
   executables: { codex: 'documentation-only', claude: 'documentation-only' },
   managerFactory: () => ({
     publicAccounts: () => accounts, publicJobs: () => [], schedule() {}, close() {},
@@ -20,6 +22,7 @@ const application = await createApplication({
     loginCode() { throw new Error('unsupported_account'); },
     remove() { throw new Error('unsupported_account'); },
     account() { throw new Error('unsupported_account'); },
+    updateDeepSeekApiKey() { throw new Error('unsupported_account'); },
     launchCommand() { throw new Error('unsupported_account'); },
   }),
 });

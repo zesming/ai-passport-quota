@@ -43,8 +43,8 @@
 ## 额度看板资源
 
 - `fonts/quota_font_12.c`、`fonts/quota_font_16.c`：Noto Sans SC Regular 的 LVGL 9、4-bpp 字体子集，分别为 12 和 16 像素。输入为固定 LVGL 组件的 `tests/src/test_files/fonts/noto/NotoSansSC-Regular.ttf`；SIL OFL 1.1 许可证保存在 `fonts/NotoSansSC-OFL.txt`。使用 `lv_font_conv@1.5.3` 生成，覆盖 ASCII U+0020–U+007E 及 `fonts/quota-font-glyphs.txt`；精确非 ASCII 字码记录在 `fonts/quota-font-codepoints.txt`。界面中文使用这些字体；账户提供的非 ASCII 邮箱和订阅名称采用明确的 ASCII 回退，避免缺字。字体源只读链接到 Flash，不在 RAM 加载完整中文字库，仍需真机验证显示。
-- `images/openai-quota.svg`、`images/claude-quota.svg`：已批准设计采用的平台标识，来源为 [Lobe Icons OpenAI](https://github.com/lobehub/lobe-icons/blob/master/packages/static-svg/icons/openai.svg) 和 [Lobe Icons Claude](https://github.com/lobehub/lobe-icons/blob/master/packages/static-svg/icons/claude-color.svg)。图标包采用 MIT 许可；平台商标权仍归原权利人。仅用于标识订阅平台，不代表官方背书。
-- `images/openai-quota.png`、`images/claude-quota.png`：36 × 36 RGBA PNG，使用 `@resvg/resvg-js@2.6.2` 从 SVG 确定性渲染。生成的 RGB565 LVGL 描述符位于 `main/quota_brand_assets.c`，用于主页和账户列表；透明像素合成到看板背景色。
+- `images/openai-quota.svg`、`images/claude-quota.svg`、`images/deepseek-quota.svg`：已批准设计采用的平台标识，来源为 [Lobe Icons OpenAI](https://github.com/lobehub/lobe-icons/blob/master/packages/static-svg/icons/openai.svg) 和 [Lobe Icons Claude](https://github.com/lobehub/lobe-icons/blob/master/packages/static-svg/icons/claude-color.svg)。DeepSeek 来源为 [Lobe Icons DeepSeek](https://github.com/lobehub/lobe-icons/blob/master/packages/static-svg/icons/deepseek-color.svg)。图标包采用 MIT 许可；平台商标权仍归原权利人。仅用于标识订阅平台，不代表官方背书。
+- `images/openai-quota.png`、`images/claude-quota.png`、`images/deepseek-quota.png`：36 × 36 RGBA PNG，使用 `@resvg/resvg-js@2.6.2` 从 SVG 确定性渲染。生成的 RGB565 LVGL 描述符位于 `main/quota_brand_assets.c`，用于主页和账户列表；OpenAI 的 `currentColor` 替换为 `#EDF1F4` 白灰色，其他平台保持各自颜色；透明像素合成到 `#11181F` 背景后转换为小端 RGB565。
 
 修改界面文本后，先更新两份字形列表，在仓库根目录运行以下命令；16 像素字体使用对应尺寸、字体名和输出路径：
 

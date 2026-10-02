@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile, rename, chmod } from 'node:fs/promises';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { MAX_ACCOUNTS, validId, validSettings, publicAccount } from './protocol.mjs';
+import { MAX_ACCOUNTS, validId, validSettings, settingsWithDefaults, publicAccount } from './protocol.mjs';
 
 export async function privateDirectory(directory) {
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -22,7 +22,8 @@ export async function loadState(directory) {
   await privateDirectory(directory);
   const saved = await readJSON(path.join(directory, 'accounts.json'));
   const state = saved ?? { v: 1, revision: 1, settings: { refresh_seconds: 300, auto_refresh: true }, accounts: [] };
-  if (state.v !== 1 || !validSettings(state.settings) || !Array.isArray(state.accounts) || state.accounts.length > MAX_ACCOUNTS || !Number.isSafeInteger(state.revision) || state.accounts.some(account => !validId(account.id) || !['codex', 'claude'].includes(account.provider)) || new Set(state.accounts.map(account => account.id)).size !== state.accounts.length) throw new Error('local_state_invalid');
+  if (state.v !== 1 || !validSettings(state.settings) || !Array.isArray(state.accounts) || state.accounts.length > MAX_ACCOUNTS || !Number.isSafeInteger(state.revision) || state.accounts.some(account => !validId(account.id) || !['codex', 'claude', 'deepseek'].includes(account.provider)) || new Set(state.accounts.map(account => account.id)).size !== state.accounts.length) throw new Error('local_state_invalid');
+  state.settings = settingsWithDefaults(state.settings);
   state.accounts = state.accounts.map(account => ({ ...publicAccount(account), authenticated: account.authenticated === true }));
   return state;
 }
