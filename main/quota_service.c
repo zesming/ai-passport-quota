@@ -89,11 +89,32 @@ typedef struct {
     bool redirect;
 } http_body_t;
 
+typedef struct {
+    bool sleeping;
+    bool wake_refresh_pending;
+    bool wake_fetch_pending;
+    uint32_t generation;
+} display_scheduler_t;
+
+typedef struct {
+    bool sleeping;
+    uint32_t generation;
+} display_state_t;
+
+typedef enum {
+    HTTP_REQUEST_NOT_ADMITTED,
+    HTTP_REQUEST_ADMITTED,
+    HTTP_REQUEST_DEFERRED,
+} http_request_outcome_t;
+
 static QueueHandle_t s_events;
 static SemaphoreHandle_t s_mutex;
 static TaskHandle_t s_network_task;
 static TaskHandle_t s_serial_task;
+static portMUX_TYPE s_display_state_mux = portMUX_INITIALIZER_UNLOCKED;
+static display_scheduler_t s_display_scheduler = {.generation = 1};
 static quota_service_view_t s_view;
+static uint32_t s_refreshing_display_generation;
 static quota_device_config_t s_config;
 static bool s_nvs_ready;
 static bool s_has_config;
@@ -158,6 +179,61 @@ static uint64_t current_epoch(void)
 static uint64_t monotonic_ms(void)
 {
     return (uint64_t)(esp_timer_get_time() / 1000);
+}
+
+static display_state_t display_state_snapshot(void)
+{
+    display_state_t state;
+    portENTER_CRITICAL(&s_display_state_mux);
+    state.sleeping = s_display_scheduler.sleeping;
+    state.generation = s_display_scheduler.generation;
+    portEXIT_CRITICAL(&s_display_state_mux);
+    return state;
+}
+
+static bool display_generation_is_current(uint32_t generation)
+{
+    bool current;
+    portENTER_CRITICAL(&s_display_state_mux);
+    current = !s_display_scheduler.sleeping &&
+              s_display_scheduler.generation == generation;
+    portEXIT_CRITICAL(&s_display_state_mux);
+    return current;
+}
+
+static void restore_wake_refresh(uint32_t generation)
+{
+    bool restored = false;
+    portENTER_CRITICAL(&s_display_state_mux);
+    if (!s_display_scheduler.sleeping &&
+        s_display_scheduler.generation == generation &&
+        !s_display_scheduler.wake_fetch_pending) {
+        s_display_scheduler.wake_refresh_pending = true;
+        restored = true;
+    }
+    portEXIT_CRITICAL(&s_display_state_mux);
+    if (restored && s_network_task != NULL) xTaskNotifyGive(s_network_task);
+}
+
+static void mark_wake_fetch_pending(uint32_t generation)
+{
+    portENTER_CRITICAL(&s_display_state_mux);
+    if (!s_display_scheduler.sleeping &&
+        s_display_scheduler.generation == generation) {
+        s_display_scheduler.wake_fetch_pending = true;
+    }
+    portEXIT_CRITICAL(&s_display_state_mux);
+}
+
+static void finish_wake_fetch(uint32_t generation, bool connection_current)
+{
+    if (!connection_current) return;
+    portENTER_CRITICAL(&s_display_state_mux);
+    if (!s_display_scheduler.sleeping &&
+        s_display_scheduler.generation == generation) {
+        s_display_scheduler.wake_fetch_pending = false;
+    }
+    portEXIT_CRITICAL(&s_display_state_mux);
 }
 
 static bool valid_refresh_seconds(uint16_t seconds)
@@ -652,8 +728,10 @@ failed:
     return false;
 }
 
-static bool apply_wifi_config(const quota_device_config_t *config)
+static bool apply_wifi_config(const quota_device_config_t *config,
+                              uint32_t display_generation)
 {
+    if (!display_generation_is_current(display_generation)) return false;
     wifi_config_t wifi_config = {0};
     size_t ssid_length = strlen(config->ssid);
     size_t password_length = strlen(config->password);
@@ -665,17 +743,20 @@ static bool apply_wifi_config(const quota_device_config_t *config)
                                       ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK;
     wifi_config.sta.pmf_cfg.capable = true;
     wifi_config.sta.pmf_cfg.required = false;
+    if (!display_generation_is_current(display_generation)) return false;
     esp_err_t err = esp_wifi_disconnect();
     (void)err;
     mutex_lock();
     s_view.connected = false;
     mutex_unlock();
     post_simple_event(QUOTA_APP_EVENT_CONNECTION);
+    if (!display_generation_is_current(display_generation)) return false;
     err = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Wi-Fi config failed (%s)", esp_err_to_name(err));
         return false;
     }
+    if (!display_generation_is_current(display_generation)) return false;
     err = esp_wifi_connect();
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Wi-Fi connect request failed (%s)", esp_err_to_name(err));
@@ -708,10 +789,19 @@ static esp_err_t http_event_handler(esp_http_client_event_t *event)
     return ESP_OK;
 }
 
+static bool operation_is_current(uint32_t config_generation,
+                                 uint32_t display_generation);
+static bool network_operation_is_current(uint32_t config_generation,
+                                         uint32_t display_generation);
+
 static bool http_request(const quota_device_config_t *config, const char *path,
                          esp_http_client_method_t method, const char *request_json,
-                         int expected_status, http_body_t *body)
+                         int expected_status, uint32_t config_generation,
+                         uint32_t display_generation,
+                         http_request_outcome_t *request_outcome,
+                         http_body_t *body)
 {
+    if (request_outcome != NULL) *request_outcome = HTTP_REQUEST_NOT_ADMITTED;
     char url[QUOTA_BASE_URL_MAX_BYTES + 32];
     int url_length = snprintf(url, sizeof(url), "%s%s", config->base_url, path);
     if (url_length < 0 || (size_t)url_length >= sizeof(url)) return false;
@@ -730,6 +820,10 @@ static bool http_request(const quota_device_config_t *config, const char *path,
         .user_data = body,
         .skip_cert_common_name_check = false,
     };
+    if (!network_operation_is_current(config_generation, display_generation)) {
+        if (request_outcome != NULL) *request_outcome = HTTP_REQUEST_DEFERRED;
+        return false;
+    }
     esp_http_client_handle_t client = esp_http_client_init(&client_config);
     if (client == NULL) return false;
     char authorization[sizeof("Bearer ") + QUOTA_PAIR_TOKEN_BYTES];
@@ -746,7 +840,15 @@ static bool http_request(const quota_device_config_t *config, const char *path,
                                                   (int)strlen(request_json));
         }
     }
-    if (err == ESP_OK) err = esp_http_client_perform(client);
+    if (err == ESP_OK &&
+        !network_operation_is_current(config_generation, display_generation)) {
+        if (request_outcome != NULL) *request_outcome = HTTP_REQUEST_DEFERRED;
+        err = ESP_ERR_INVALID_STATE;
+    }
+    if (err == ESP_OK) {
+        if (request_outcome != NULL) *request_outcome = HTTP_REQUEST_ADMITTED;
+        err = esp_http_client_perform(client);
+    }
     int status = err == ESP_OK ? esp_http_client_get_status_code(client) : 0;
     bool ok = err == ESP_OK && status == expected_status && !body->overflow &&
               !body->redirect;
@@ -780,18 +882,28 @@ static bool parse_refresh_ack(const http_body_t *body)
     return valid;
 }
 
-static bool fetch_snapshot(const quota_device_config_t *config, quota_snapshot_t *snapshot)
+static bool fetch_snapshot(const quota_device_config_t *config,
+                           quota_snapshot_t *snapshot,
+                           uint32_t config_generation,
+                           uint32_t display_generation,
+                           http_request_outcome_t *request_outcome)
 {
-    if (!http_request(config, "/v1/snapshot", HTTP_METHOD_GET, NULL, 200, &s_http_body) ||
+    if (!http_request(config, "/v1/snapshot", HTTP_METHOD_GET, NULL, 200,
+                      config_generation, display_generation, request_outcome,
+                      &s_http_body) ||
         !quota_parse_snapshot(s_http_body.bytes, s_http_body.length, snapshot)) {
         return false;
     }
     return true;
 }
 
-static bool request_refresh(const quota_device_config_t *config)
+static bool request_refresh(const quota_device_config_t *config,
+                           uint32_t config_generation,
+                           uint32_t display_generation,
+                           http_request_outcome_t *request_outcome)
 {
     if (!http_request(config, "/v1/refresh", HTTP_METHOD_POST, "{}", 202,
+                      config_generation, display_generation, request_outcome,
                       &s_http_body)) {
         return false;
     }
@@ -800,13 +912,17 @@ static bool request_refresh(const quota_device_config_t *config)
 
 static bool apply_settings(const quota_device_config_t *config, uint16_t seconds,
                            bool auto_refresh, uint16_t screen_timeout_seconds,
-                           quota_settings_t *applied)
+                           quota_settings_t *applied,
+                           uint32_t config_generation,
+                           uint32_t display_generation,
+                           http_request_outcome_t *request_outcome)
 {
     char request[128];
     snprintf(request, sizeof(request), "{\"refresh_seconds\":%u,\"auto_refresh\":%s,"
              "\"screen_timeout_seconds\":%u}", (unsigned)seconds,
              auto_refresh ? "true" : "false", (unsigned)screen_timeout_seconds);
     return http_request(config, "/v1/settings", HTTP_METHOD_PATCH, request, 200,
+                        config_generation, display_generation, request_outcome,
                         &s_http_body) &&
            quota_parse_settings_ack(s_http_body.bytes, s_http_body.length, applied);
 }
@@ -819,27 +935,73 @@ static bool config_generation_is_current(uint32_t generation)
     return current;
 }
 
-static bool publish_snapshot(const quota_snapshot_t *snapshot, uint32_t generation)
+static bool operation_is_current(uint32_t config_generation,
+                                 uint32_t display_generation)
+{
+    if (!config_generation_is_current(config_generation)) return false;
+    return display_generation_is_current(display_generation);
+}
+
+static bool network_operation_is_current(uint32_t config_generation,
+                                         uint32_t display_generation)
+{
+    mutex_lock();
+    bool connected = s_has_config && s_config_generation == config_generation &&
+                     s_view.connected;
+    mutex_unlock();
+    return connected && display_generation_is_current(display_generation);
+}
+
+static void clear_stale_refreshing(uint32_t display_generation)
+{
+    mutex_lock();
+    if (s_refreshing_display_generation == display_generation) {
+        s_view.refreshing = false;
+    }
+    mutex_unlock();
+}
+
+static bool publish_snapshot(const quota_snapshot_t *snapshot,
+                             uint32_t config_generation,
+                             uint32_t display_generation)
 {
     if (snapshot == NULL) return false;
     mutex_lock();
-    if (!s_has_config || s_config_generation != generation) {
+    if (!s_has_config || s_config_generation != config_generation) {
         mutex_unlock();
         return false;
     }
-    s_view.snapshot = *snapshot;
-    s_view.snapshot_valid = true;
-    s_view.refresh_seconds = snapshot->refresh_seconds;
-    s_view.auto_refresh = snapshot->auto_refresh;
+
+    uint64_t now_epoch = current_epoch();
+    bool committed = false;
+    /* Serialize the snapshot commit with sleep transitions, without holding the
+       display critical section across NVS or other potentially slow work. */
+    portENTER_CRITICAL(&s_display_state_mux);
+    if (!s_display_scheduler.sleeping &&
+        s_display_scheduler.generation == display_generation) {
+        s_view.snapshot = *snapshot;
+        s_view.snapshot_valid = true;
+        s_view.refresh_seconds = snapshot->refresh_seconds;
+        s_view.auto_refresh = snapshot->auto_refresh;
+        if (snapshot->has_screen_timeout_seconds) {
+            s_view.screen_timeout_seconds = snapshot->screen_timeout_seconds;
+        }
+        s_view.now_epoch = now_epoch;
+        s_view.request_failed = false;
+        s_view.clock_synchronized = snapshot->server_time >= 1577836800ULL;
+        committed = true;
+    }
+    portEXIT_CRITICAL(&s_display_state_mux);
+    if (!committed) {
+        mutex_unlock();
+        return false;
+    }
+
     if (snapshot->has_screen_timeout_seconds) {
-        s_view.screen_timeout_seconds = snapshot->screen_timeout_seconds;
         if (!nvs_save_screen_timeout_locked(snapshot->screen_timeout_seconds)) {
             ESP_LOGW(TAG, "unable to persist screen timeout");
         }
     }
-    s_view.now_epoch = current_epoch();
-    s_view.request_failed = false;
-    s_view.clock_synchronized = snapshot->server_time >= 1577836800ULL;
 
     if (s_has_config) {
         bool config_changed = false;
@@ -862,27 +1024,70 @@ static bool publish_snapshot(const quota_snapshot_t *snapshot, uint32_t generati
         (void)nvs_maybe_save_snapshot_locked(&s_config, snapshot);
     }
     mutex_unlock();
+    if (!display_generation_is_current(display_generation)) return true;
     set_system_time_if_newer(snapshot->server_time);
     post_simple_event(QUOTA_APP_EVENT_SNAPSHOT);
     return true;
 }
 
-static void finish_refresh(bool success)
+static bool begin_refresh(uint32_t config_generation, uint32_t display_generation)
 {
     mutex_lock();
-    s_view.refreshing = false;
-    s_view.request_failed = !success;
-    s_view.now_epoch = current_epoch();
+    if (!s_has_config || s_config_generation != config_generation) {
+        mutex_unlock();
+        return false;
+    }
+    portENTER_CRITICAL(&s_display_state_mux);
+    bool current = !s_display_scheduler.sleeping &&
+                   s_display_scheduler.generation == display_generation;
+    if (current) {
+        s_refreshing_display_generation = display_generation;
+        s_view.refreshing = true;
+        s_view.request_failed = false;
+    }
+    portEXIT_CRITICAL(&s_display_state_mux);
     mutex_unlock();
+    return current;
+}
+
+static void finish_refresh(bool success, uint32_t config_generation,
+                           uint32_t display_generation)
+{
+    uint64_t now_epoch = current_epoch();
+    mutex_lock();
+    if (!s_has_config || s_config_generation != config_generation) {
+        if (s_refreshing_display_generation == display_generation) {
+            s_view.refreshing = false;
+        }
+        mutex_unlock();
+        return;
+    }
+    portENTER_CRITICAL(&s_display_state_mux);
+    bool current = !s_display_scheduler.sleeping &&
+                   s_display_scheduler.generation == display_generation;
+    if (current) {
+        s_view.refreshing = false;
+        s_view.request_failed = !success;
+        s_view.now_epoch = now_epoch;
+    } else if (s_refreshing_display_generation == display_generation) {
+        s_view.refreshing = false;
+    }
+    portEXIT_CRITICAL(&s_display_state_mux);
+    mutex_unlock();
+    if (!current) return;
     post_simple_event(QUOTA_APP_EVENT_SNAPSHOT);
 }
 
-static void perform_refresh(const quota_device_config_t *config, uint32_t generation)
+static void perform_refresh(const quota_device_config_t *config,
+                            uint32_t config_generation,
+                            uint32_t display_generation,
+                            bool wake_work)
 {
-    mutex_lock();
-    s_view.refreshing = true;
-    s_view.request_failed = false;
-    mutex_unlock();
+    if (!begin_refresh(config_generation, display_generation)) return;
+    if (!operation_is_current(config_generation, display_generation)) {
+        clear_stale_refreshing(display_generation);
+        return;
+    }
     post_simple_event(QUOTA_APP_EVENT_SNAPSHOT);
 
     uint64_t previous_revision = 0;
@@ -892,69 +1097,190 @@ static void perform_refresh(const quota_device_config_t *config, uint32_t genera
     previous_revision = s_view.snapshot.revision;
     mutex_unlock();
 
-    bool success = request_refresh(config);
+    http_request_outcome_t post_outcome = HTTP_REQUEST_NOT_ADMITTED;
+    bool success = request_refresh(config, config_generation, display_generation,
+                                   &post_outcome);
+    if (!operation_is_current(config_generation, display_generation)) {
+        clear_stale_refreshing(display_generation);
+        return;
+    }
+    if (wake_work && success) mark_wake_fetch_pending(display_generation);
+    if (wake_work && !success &&
+        (post_outcome == HTTP_REQUEST_DEFERRED ||
+         !network_operation_is_current(config_generation, display_generation))) {
+        restore_wake_refresh(display_generation);
+    }
     bool fetched = false;
+    bool wake_fetch_deferred = false;
     if (success) {
         for (unsigned attempt = 0; attempt < 6; attempt++) {
-            if (!config_generation_is_current(generation)) return;
-            if (fetch_snapshot(config, &s_snapshot_work)) {
+            if (!operation_is_current(config_generation, display_generation)) {
+                clear_stale_refreshing(display_generation);
+                return;
+            }
+            if (!network_operation_is_current(config_generation, display_generation)) {
+                wake_fetch_deferred = true;
+                break;
+            }
+            http_request_outcome_t get_outcome = HTTP_REQUEST_NOT_ADMITTED;
+            if (fetch_snapshot(config, &s_snapshot_work, config_generation,
+                               display_generation, &get_outcome)) {
+                if (!operation_is_current(config_generation, display_generation)) {
+                    clear_stale_refreshing(display_generation);
+                    return;
+                }
                 fetched = true;
                 bool changed = !had_previous ||
                                s_snapshot_work.revision != previous_revision;
-                if (!publish_snapshot(&s_snapshot_work, generation)) return;
+                if (!publish_snapshot(&s_snapshot_work, config_generation,
+                                      display_generation)) {
+                    if (!operation_is_current(config_generation, display_generation)) {
+                        clear_stale_refreshing(display_generation);
+                    }
+                    return;
+                }
                 if (changed || attempt == 5) break;
+            } else if (get_outcome == HTTP_REQUEST_DEFERRED ||
+                       !network_operation_is_current(config_generation,
+                                                     display_generation)) {
+                wake_fetch_deferred = get_outcome == HTTP_REQUEST_DEFERRED;
+                break;
             }
-            if (attempt < 5) vTaskDelay(pdMS_TO_TICKS(1000));
+            if (attempt < 5) {
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                if (!operation_is_current(config_generation, display_generation)) {
+                    clear_stale_refreshing(display_generation);
+                    return;
+                }
+            }
         }
-        success = fetched;
+        if (wake_work && fetched) {
+            finish_wake_fetch(display_generation, true);
+        } else if (wake_work &&
+                   !wake_fetch_deferred &&
+                   post_outcome != HTTP_REQUEST_DEFERRED &&
+                   network_operation_is_current(config_generation,
+                                                display_generation)) {
+            /* The wake sync was attempted online but could not fetch valid data. */
+            finish_wake_fetch(display_generation, true);
+        }
+        success = success && fetched;
     }
-    if (!config_generation_is_current(generation)) return;
-    finish_refresh(success);
+    finish_refresh(success, config_generation, display_generation);
 }
 
-static void perform_snapshot_fetch(const quota_device_config_t *config, uint32_t generation)
+static void perform_snapshot_fetch(const quota_device_config_t *config,
+                                   uint32_t config_generation,
+                                   uint32_t display_generation,
+                                   bool wake_fetch)
 {
     /* GET only reads cached data. It does not start a provider quota refresh. */
-    bool success = fetch_snapshot(config, &s_snapshot_work);
-    if (success && config_generation_is_current(generation)) {
-        success = publish_snapshot(&s_snapshot_work, generation);
+    if (!network_operation_is_current(config_generation, display_generation)) return;
+    http_request_outcome_t get_outcome = HTTP_REQUEST_NOT_ADMITTED;
+    bool success = fetch_snapshot(config, &s_snapshot_work, config_generation,
+                                  display_generation, &get_outcome);
+    if (!operation_is_current(config_generation, display_generation)) return;
+    if (success) {
+        success = publish_snapshot(&s_snapshot_work, config_generation,
+                                   display_generation);
     } else {
         success = false;
     }
-    if (!config_generation_is_current(generation)) return;
-    finish_refresh(success);
+    if (wake_fetch && (success ||
+        (get_outcome != HTTP_REQUEST_DEFERRED &&
+         network_operation_is_current(config_generation, display_generation)))) {
+        finish_wake_fetch(display_generation, true);
+    }
+    finish_refresh(success, config_generation, display_generation);
+}
+
+static void restore_pending_settings(uint32_t config_generation,
+                                     uint16_t requested_seconds,
+                                     bool requested_auto_refresh,
+                                     uint16_t requested_screen_timeout)
+{
+    mutex_lock();
+    if (s_has_config && s_config_generation == config_generation &&
+        !s_settings_pending) {
+        s_settings_pending = true;
+        s_pending_refresh_seconds = requested_seconds;
+        s_pending_auto_refresh = requested_auto_refresh;
+        s_pending_screen_timeout_seconds = requested_screen_timeout;
+    }
+    bool pending = s_settings_pending;
+    mutex_unlock();
+    if (pending && s_network_task != NULL) xTaskNotifyGive(s_network_task);
 }
 
 static void perform_settings_update(const quota_device_config_t *config,
-                                    uint32_t generation,
+                                    uint32_t config_generation,
+                                    uint32_t display_generation,
                                     uint16_t requested_seconds,
                                     bool requested_auto_refresh,
                                     uint16_t requested_screen_timeout)
 {
+    if (!operation_is_current(config_generation, display_generation)) {
+        restore_pending_settings(config_generation, requested_seconds,
+                                 requested_auto_refresh, requested_screen_timeout);
+        return;
+    }
     quota_settings_t applied = {0};
+    http_request_outcome_t request_outcome = HTTP_REQUEST_NOT_ADMITTED;
     bool success = apply_settings(config, requested_seconds, requested_auto_refresh,
-                                  requested_screen_timeout, &applied);
+                                  requested_screen_timeout, &applied,
+                                  config_generation, display_generation,
+                                  &request_outcome);
 
-    if (!config_generation_is_current(generation)) return;
+    if (!operation_is_current(config_generation, display_generation)) {
+        restore_pending_settings(config_generation, requested_seconds,
+                                 requested_auto_refresh, requested_screen_timeout);
+        return;
+    }
+    if (request_outcome == HTTP_REQUEST_DEFERRED) {
+        restore_pending_settings(config_generation, requested_seconds,
+                                 requested_auto_refresh, requested_screen_timeout);
+        return;
+    }
 
     mutex_lock();
-    if (!s_has_config || s_config_generation != generation) {
+    if (!s_has_config || s_config_generation != config_generation) {
         mutex_unlock();
         return;
     }
-    if (success) {
+    portENTER_CRITICAL(&s_display_state_mux);
+    bool display_current = !s_display_scheduler.sleeping &&
+                          s_display_scheduler.generation == display_generation;
+    if (display_current && success) {
         s_config.refresh_seconds = applied.refresh_seconds;
         s_config.auto_refresh = applied.auto_refresh;
         s_view.refresh_seconds = applied.refresh_seconds;
         s_view.auto_refresh = applied.auto_refresh;
         if (applied.has_screen_timeout_seconds) {
             s_view.screen_timeout_seconds = applied.screen_timeout_seconds;
+        }
+    }
+    portEXIT_CRITICAL(&s_display_state_mux);
+    if (!display_current) {
+        mutex_unlock();
+        restore_pending_settings(config_generation, requested_seconds,
+                                 requested_auto_refresh, requested_screen_timeout);
+        return;
+    }
+    if (success) {
+        if (applied.has_screen_timeout_seconds) {
             if (!nvs_save_screen_timeout_locked(applied.screen_timeout_seconds)) success = false;
         }
         if (!nvs_save_config_locked(&s_config)) success = false;
     }
-    s_view.request_failed = !success;
-    s_view.now_epoch = current_epoch();
+    uint64_t now_epoch = current_epoch();
+    portENTER_CRITICAL(&s_display_state_mux);
+    display_current = !s_display_scheduler.sleeping &&
+                      s_display_scheduler.generation == display_generation;
+    if (display_current) {
+        s_view.request_failed = !success;
+        s_view.now_epoch = now_epoch;
+    }
+    portEXIT_CRITICAL(&s_display_state_mux);
     if (!success) {
         applied.refresh_seconds = s_config.refresh_seconds;
         applied.auto_refresh = s_config.auto_refresh;
@@ -970,7 +1296,9 @@ static void perform_settings_update(const quota_device_config_t *config,
         .screen_timeout_seconds = applied.screen_timeout_seconds,
         .error_code = success ? 0 : 1,
     };
-    post_event(&event, 0);
+    if (display_current && display_generation_is_current(display_generation)) {
+        post_event(&event, 0);
+    }
 }
 
 static void network_task(void *arg)
@@ -989,15 +1317,14 @@ static void network_task(void *arg)
         uint64_t now_ms = monotonic_ms();
         bool configured;
         bool connected;
-        bool refresh_requested;
         bool settings_pending;
-        bool fetch_after_connect;
         bool automatic;
         uint16_t refresh_seconds;
         uint16_t pending_seconds;
         bool pending_auto;
         uint16_t pending_screen_timeout;
         bool selection_pending;
+        display_state_t display_state;
         char selected_account_id[QUOTA_ACCOUNT_ID_BYTES + 1];
         uint32_t config_generation;
 
@@ -1005,9 +1332,7 @@ static void network_task(void *arg)
         configured = s_has_config;
         if (configured) s_network_config = s_config;
         connected = s_view.connected;
-        refresh_requested = s_refresh_requested;
         settings_pending = s_settings_pending;
-        fetch_after_connect = s_fetch_after_connect;
         automatic = s_view.auto_refresh;
         refresh_seconds = s_view.refresh_seconds;
         selection_pending = s_selection_pending;
@@ -1044,18 +1369,22 @@ static void network_task(void *arg)
             mutex_unlock();
         }
         if (!configured) continue;
+        display_state = display_state_snapshot();
+        if (display_state.sleeping ||
+            !display_generation_is_current(display_state.generation)) continue;
         if (!init_wifi()) {
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
         }
+        if (!display_generation_is_current(display_state.generation)) continue;
         if (!s_wifi_started) continue;
 
         if (config_generation != applied_config_generation && now_ms >= next_config_apply_ms) {
-            if (apply_wifi_config(&s_network_config)) {
+            if (apply_wifi_config(&s_network_config, display_state.generation)) {
                 applied_config_generation = config_generation;
                 next_snapshot_poll_ms = now_ms + 1000;
                 next_provider_refresh_ms = now_ms + 1000;
-            } else {
+            } else if (display_generation_is_current(display_state.generation)) {
                 next_config_apply_ms = now_ms + 5000;
             }
             continue;
@@ -1070,6 +1399,12 @@ static void network_task(void *arg)
         }
         mutex_unlock();
         if (retry_wifi) {
+            if (!display_generation_is_current(display_state.generation)) {
+                mutex_lock();
+                s_wifi_retry_pending = true;
+                mutex_unlock();
+                continue;
+            }
             esp_err_t err = esp_wifi_connect();
             if (err != ESP_OK) {
                 ESP_LOGW(TAG, "Wi-Fi retry failed (%s)", esp_err_to_name(err));
@@ -1082,8 +1417,12 @@ static void network_task(void *arg)
 
         if (settings_pending) {
             mutex_lock();
+            portENTER_CRITICAL(&s_display_state_mux);
+            bool display_current = !s_display_scheduler.sleeping &&
+                s_display_scheduler.generation == display_state.generation;
             if (!s_has_config || s_config_generation != config_generation ||
-                !s_view.connected || !s_settings_pending) {
+                !s_view.connected || !s_settings_pending || !display_current) {
+                portEXIT_CRITICAL(&s_display_state_mux);
                 mutex_unlock();
                 continue;
             }
@@ -1092,15 +1431,13 @@ static void network_task(void *arg)
             pending_screen_timeout = s_pending_screen_timeout_seconds;
             /* Consume the latest request atomically; requests during HTTP remain queued. */
             s_settings_pending = false;
+            portEXIT_CRITICAL(&s_display_state_mux);
             mutex_unlock();
             perform_settings_update(&s_network_config, config_generation,
+                                    display_state.generation,
                                     pending_seconds, pending_auto, pending_screen_timeout);
             continue;
         }
-
-        mutex_lock();
-        if (fetch_after_connect) s_fetch_after_connect = false;
-        mutex_unlock();
 
         if (refresh_seconds != last_refresh_seconds || automatic != last_auto_refresh) {
             last_refresh_seconds = refresh_seconds;
@@ -1108,23 +1445,65 @@ static void network_task(void *arg)
             next_provider_refresh_ms = now_ms + (uint64_t)refresh_seconds * 1000;
         }
 
-        if (refresh_requested) {
-            mutex_lock();
-            s_refresh_requested = false;
-            mutex_unlock();
-            perform_refresh(&s_network_config, config_generation);
-            next_provider_refresh_ms = now_ms + (uint64_t)refresh_seconds * 1000;
-            next_snapshot_poll_ms = now_ms + SNAPSHOT_POLL_MS;
-        } else if (automatic && now_ms >= next_provider_refresh_ms) {
-            perform_refresh(&s_network_config, config_generation);
-            next_provider_refresh_ms = now_ms + (uint64_t)refresh_seconds * 1000;
-            next_snapshot_poll_ms = now_ms + SNAPSHOT_POLL_MS;
-        } else if (fetch_after_connect || now_ms >= next_snapshot_poll_ms) {
-            perform_snapshot_fetch(&s_network_config, config_generation);
+        enum { NETWORK_ACTION_NONE, NETWORK_ACTION_REFRESH,
+               NETWORK_ACTION_SNAPSHOT } action = NETWORK_ACTION_NONE;
+        bool wake_refresh_work = false;
+        bool wake_fetch_work = false;
+        mutex_lock();
+        if (s_has_config && s_config_generation == config_generation && s_view.connected) {
+            portENTER_CRITICAL(&s_display_state_mux);
+            bool display_current = !s_display_scheduler.sleeping;
+            if (display_current) {
+                display_state.generation = s_display_scheduler.generation;
+                if (s_display_scheduler.wake_refresh_pending) {
+                    s_display_scheduler.wake_refresh_pending = false;
+                    s_display_scheduler.wake_fetch_pending = false;
+                    s_refresh_requested = false;
+                    s_fetch_after_connect = false;
+                    wake_refresh_work = true;
+                    action = NETWORK_ACTION_REFRESH;
+                } else if (s_display_scheduler.wake_fetch_pending) {
+                    s_fetch_after_connect = false;
+                    wake_fetch_work = true;
+                    action = NETWORK_ACTION_SNAPSHOT;
+                } else if (s_refresh_requested ||
+                           (s_view.auto_refresh && now_ms >= next_provider_refresh_ms)) {
+                    s_refresh_requested = false;
+                    s_fetch_after_connect = false;
+                    action = NETWORK_ACTION_REFRESH;
+                } else if (s_fetch_after_connect || now_ms >= next_snapshot_poll_ms) {
+                    s_fetch_after_connect = false;
+                    action = NETWORK_ACTION_SNAPSHOT;
+                }
+                refresh_seconds = s_view.refresh_seconds;
+            }
+            portEXIT_CRITICAL(&s_display_state_mux);
+        }
+        mutex_unlock();
+
+        if (action == NETWORK_ACTION_REFRESH) {
+            perform_refresh(&s_network_config, config_generation,
+                            display_state.generation, wake_refresh_work);
+            uint64_t completed_ms = monotonic_ms();
+            next_provider_refresh_ms = completed_ms + (uint64_t)refresh_seconds * 1000;
+            next_snapshot_poll_ms = completed_ms + SNAPSHOT_POLL_MS;
+        } else if (action == NETWORK_ACTION_SNAPSHOT) {
+            perform_snapshot_fetch(&s_network_config, config_generation,
+                                   display_state.generation, wake_fetch_work);
             mutex_lock();
             bool failed = s_view.request_failed;
+            if (wake_fetch_work) refresh_seconds = s_view.refresh_seconds;
             mutex_unlock();
-            next_snapshot_poll_ms = now_ms + (failed ? SNAPSHOT_RETRY_MS : SNAPSHOT_POLL_MS);
+            uint64_t completed_ms = monotonic_ms();
+            if (wake_fetch_work) {
+                /* A staged wake GET completes the wake sync cycle. Start the
+                   automatic provider cadence from this completion, using the
+                   latest interval returned by the server. */
+                next_provider_refresh_ms = completed_ms +
+                    (uint64_t)refresh_seconds * 1000;
+            }
+            next_snapshot_poll_ms = completed_ms +
+                (failed ? SNAPSHOT_RETRY_MS : SNAPSHOT_POLL_MS);
         }
     }
 }
@@ -1350,11 +1729,38 @@ void quota_service_send_button(bsp_btn_t button, bsp_btn_ev_t event)
     post_event(&app_event, 0);
 }
 
+void quota_service_set_display_sleeping(bool sleeping)
+{
+    bool changed = false;
+    portENTER_CRITICAL(&s_display_state_mux);
+    if (s_display_scheduler.sleeping != sleeping) {
+        s_display_scheduler.sleeping = sleeping;
+        s_display_scheduler.generation++;
+        if (s_display_scheduler.generation == 0) s_display_scheduler.generation = 1;
+        s_display_scheduler.wake_refresh_pending = !sleeping;
+        s_display_scheduler.wake_fetch_pending = false;
+        changed = true;
+    }
+    portEXIT_CRITICAL(&s_display_state_mux);
+    if (!changed) return;
+
+    if (sleeping && s_mutex != NULL && xSemaphoreTake(s_mutex, 0) == pdTRUE) {
+        s_view.refreshing = false;
+        (void)xSemaphoreGive(s_mutex);
+    }
+    if (s_network_task != NULL) xTaskNotifyGive(s_network_task);
+}
+
 void quota_service_get_view(quota_service_view_t *view)
 {
     if (view == NULL) return;
     mutex_lock();
     *view = s_view;
+    display_state_t display_state = display_state_snapshot();
+    if (display_state.sleeping ||
+        s_refreshing_display_generation != display_state.generation) {
+        view->refreshing = false;
+    }
     view->now_epoch = current_epoch();
     view->pairing_active = pairing_active_locked(monotonic_ms());
     if (view->pairing_active) {

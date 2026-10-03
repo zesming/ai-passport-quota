@@ -46,6 +46,8 @@ bool quota_service_init(void);
 bool quota_service_start(void);
 QueueHandle_t quota_service_event_queue(void);
 void quota_service_send_button(bsp_btn_t button, bsp_btn_ev_t event);
+/* Idempotent, non-blocking gate for board-originated network activity. */
+void quota_service_set_display_sleeping(bool sleeping);
 void quota_service_get_view(quota_service_view_t *view);
 void quota_service_get_selected_account_id(char account_id[QUOTA_ACCOUNT_ID_BYTES + 1]);
 void quota_service_request_refresh(void);

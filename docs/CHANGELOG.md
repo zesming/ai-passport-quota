@@ -8,6 +8,22 @@
 
 ## Unreleased
 
+### 2026-10-03 — Screen-aware synchronization
+
+Device screen-off state pauses snapshot polling, source-refresh requests, settings HTTP and explicit Wi-Fi retry/configuration work while keeping cache, pairing data and function keys available. A wake immediately queues one coalesced refresh/snapshot cycle even with automatic refresh disabled; any already admitted bounded request finishes first; an offline wake is retained until connectivity recovers. Normal polling and enabled automatic refresh resume from the wake cycle. The companion keeps its separate desktop refresh schedule. Already admitted Wi-Fi initialization may finish; HTTP work stays bounded; display transition generations prevent stale results and follow-up requests after sleep or rapid sleep/wake.
+
+Charging-state audit: the current CW2017/BSP exposes SOC and voltage, with no defined charger-status input in the board pin map or a supplied schematic. The [official charging guide](https://ai-passport.folotoy.cn/en/guides/getting-started/) describes the physical green indicator. A real charging animation remains blocked on a documented MCU-readable CHG/STAT signal; USB attachment, SOC rise and voltage are not used as a substitute.
+
+The user requested development and validation **without flashing**. No device connection or firmware write is part of this iteration; previous board observations do not validate this new sleep/sync behavior.
+
+#### Validation
+
+Build: **PASS** — the complete `./tools/validate.sh` gate passed with ESP-IDF 5.5.3, including the merged image and debug archive. Host tests: **PASS** — repository/workflow checks and all host suites passed, including the four runtime harness tests executing actual HTTP admission, snapshot publication, refresh/settings functions and the network loop. Coverage includes sleep suppression, automatic-refresh-disabled wake, offline recovery, fast disconnect/reconnect, cancelled GET preservation, stale generations, settings deferral, source timestamps, missing windows, completion-based cadence, and 135 non-ASCII glyphs. A new pre-GET reconnect regression failed before the fix and passed afterward. Independent final review found no remaining actionable issue. Companion source was unchanged; its previous validation is recorded below.
+
+The verified local bundle is `build/firmware/2a795a6280ca8f8b74bfa02966a03d4c8bb72e0c782f5ebdfb1789e49af261ac/`, full image SHA-256 `2a795a6280ca8f8b74bfa02966a03d4c8bb72e0c782f5ebdfb1789e49af261ac`, ELF SHA-256 `c420668eea7f7f393ea267fb20c0aa65bd687046b9f3fea4dda681d3db038f8c`. The app is 1,496,576 bytes; the merged image is 1,562,112 bytes. The working-tree build reports `3c823a3-dirty`. Firmware and raw logs remain local and uncommitted.
+
+Device tests: **NOT RUN** — no hardware/serial access or flashing. The previous `c0eb0a89…` bundle remains the last flashed image. Unverified: physical sleep/wake traffic suppression, offline recovery and refresh timing on the new firmware, runtime memory/battery behavior, and a real hardware charging-state interface. The charging-animation requirement is not implemented pending that interface.
+
 ### 2026-10-02 — AI Passport Quota
 
 Consolidated the firmware and local companion in the owner's private repository, added isolated documentation screenshots, and documented account setup, USB configuration and development entry points. Added screen controls and status indicators, corrected refresh-state and quota-preview rendering, and integrated DeepSeek with a single RMB available balance.

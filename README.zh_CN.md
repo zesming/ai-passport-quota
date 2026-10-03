@@ -4,7 +4,7 @@
 
 面向 FoloToy AI Passport（ESP32-C3、240 × 320 小屏）的 AI 订阅额度看板，配套本地电脑网页管理账户和设备设置。支持最多八个独立的 ChatGPT/Codex、Claude 订阅账户和 DeepSeek API 账户，展示 Logo、订阅额度或 API 余额，支持刷新间隔与离线缓存。
 
-小屏状态栏显示 Wi-Fi 连接图标、电池进度及百分比，以及校时后的当前时间。深色屏幕使用黑白 OpenAI Logo。支持设置息屏时间、功能键唤醒，息屏后仍保持后台同步。
+小屏状态栏显示 Wi-Fi 连接图标、电池进度及百分比，以及校时后的当前时间。深色屏幕使用黑白 OpenAI Logo。支持设置息屏时间和功能键唤醒。息屏后暂停设备轮询与刷新请求，亮屏后立即排队同步一次，再恢复设置的刷新周期；电脑端保留独立的定时刷新。电池进度反映实测电量；现有板级接口不提供充电状态，充电请查看绿色指示灯，屏幕目前没有充电动画。
 
 ## 页面截图
 
@@ -46,7 +46,7 @@ DeepSeek 当前只展示可用余额，不支持账户累计/区间消费、请�
 
 在网页设备配置中选择电脑私有 IPv4 地址，填写 **2.4 GHz Wi-Fi** 信息，点击连接并配置，选择 ESP32-C3 USB Serial/JTAG 设备并等待确认。Wi-Fi 信息直接从浏览器内存发送到 USB。配对后小屏连接所选电脑 **4318** 端口的固定证书 HTTPS 服务；网页 **4317** 端口只供本机使用。电脑 IP 改变后重新配对；停止同步会撤销令牌。
 
-小屏操作：上下键切换账户，短按 OK 刷新或确认，长按 OK 打开设置或返回。按设置的时间自动息屏；息屏后的第一次功能键操作只亮屏；亮屏时长按 DOWN 息屏。独立电源键保留官方长按关机方式。配对窗口内不自动息屏，息屏后继续后台同步。
+小屏操作：上下键切换账户，短按 OK 刷新或确认，长按 OK 打开设置或返回。按设置的时间自动息屏；息屏后的第一次功能键操作只亮屏；亮屏时长按 DOWN 息屏。独立电源键保留官方长按关机方式。配对窗口内不自动息屏。息屏暂停设备快照轮询、来源刷新、设置 HTTP 请求和主动 Wi-Fi 重连；唤醒后立即排队同步一次，即使关闭自动刷新也执行；已有的限时请求先结束，断网时等连接恢复。账户缓存与配对信息保留。
 
 USB 配置失败时刷新网页，重新打开小屏窗口并填写 Wi-Fi 信息，关闭其他串口工具或配对网页。页面会区分未收到信息、USB 中断、确认编号不匹配和设备明确拒绝。
 
@@ -95,7 +95,7 @@ npm run dev
 | React 网页与 USB 通信 | `companion/src/App.jsx`、`companion/src/serial.mjs`、`companion/src/styles.css` |
 | 官方登录与额度采集 | `companion/server/accounts.mjs`、`clients.mjs`、`claude-feed.mjs`、`claude-session.mjs`、`deepseek.mjs` |
 | 本机 API、配对与存储 | `companion/server/index.mjs`、`pairing.mjs`、`protocol.mjs`、`storage.mjs` |
-| 主机测试 | `tests/test_quota_logic.c`、`tests/test_quota_fonts.py`、`tests/test_quota_refresh_runtime.py`、`tests/test_quota_storage_runtime.py`、`companion/test/*.test.mjs` |
+| 主机测试 | `tests/test_quota_logic.c`、`tests/test_quota_fonts.py`、`tests/test_quota_http_runtime.py`、`tests/test_quota_refresh_runtime.py`、`tests/test_quota_storage_runtime.py`、`companion/test/*.test.mjs` |
 
 凭证和档案在仓库外的 `~/.local/share/ai-passport-quota/`（或 `AIQ_STATE_DIR`）。禁止提交认证文件、Wi-Fi 信息、令牌、私钥、设备标识或原始日志；截图用示例账户。LVGL 线程之外的固件界面操作需要 BSP 锁，网络及存储不能阻塞按键回调。按改动运行测试，固件交付通过完整检查；刷机需要另外授权。
 

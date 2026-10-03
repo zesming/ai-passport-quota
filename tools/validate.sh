@@ -66,6 +66,7 @@ run_static_checks() {
         "${test_dir}/test_demo_${demo}_runtime"
     done
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_quota_fonts.py
+    PYTHONDONTWRITEBYTECODE=1 python3 tests/test_quota_http_runtime.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_quota_refresh_runtime.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_quota_storage_runtime.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_deep_sleep_contract.py

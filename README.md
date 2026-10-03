@@ -4,7 +4,7 @@
 
 An AI subscription quota dashboard for the FoloToy AI Passport (ESP32-C3, 240 x 320 screen), with a local desktop companion for account login and device settings. Supports up to eight independent ChatGPT/Codex, Claude and DeepSeek API accounts, provider logos, subscription quotas or API balances, refresh timing and offline cache.
 
-The device status bar shows Wi-Fi connection, a filled battery indicator with percentage, and the current time after synchronization. OpenAI uses a monochrome mark on the dark screen. Screen off is configurable; function keys wake the screen while synchronization continues in the background.
+The device status bar shows Wi-Fi connection, a filled battery indicator with percentage, and the current time after synchronization. OpenAI uses a monochrome mark on the dark screen. Screen off is configurable. Device polling and refresh requests pause while the screen is off; waking immediately queues one synchronization, then resumes the configured refresh schedule. The companion keeps its own desktop refresh schedule. The battery bar reflects measured SOC; the current board interface does not expose active charging status, so charging is indicated by the physical green LED rather than an on-screen animation.
 
 ## Screenshots
 
@@ -46,7 +46,7 @@ Flash a verified build first, then connect USB and open the physical pairing win
 
 In the web device configuration panel, choose the computer's private IPv4 address and enter **2.4 GHz Wi-Fi** details. Click Connect and configure, select the ESP32-C3 USB Serial/JTAG device, and wait for confirmation. Wi-Fi details travel directly from browser memory to USB. After pairing, the device connects to the selected computer's pinned HTTPS endpoint on port **4318**; port **4317** remains local-only. Re-pair if the computer's IP changes. Stopping sync revokes the token.
 
-On the device: up/down selects an account, short OK refreshes or confirms, and long OK opens settings or returns. Automatic screen off uses the selected timeout. The first function-key gesture wakes only; long DOWN while awake turns the screen off. The independent hardware power key retains its official long-press shutdown behavior. Pairing suppresses automatic screen off, and network sync continues while the screen is off.
+On the device: up/down selects an account, short OK refreshes or confirms, and long OK opens settings or returns. Automatic screen off uses the selected timeout. The first function-key gesture wakes only; long DOWN while awake turns the screen off. The independent hardware power key retains its official long-press shutdown behavior. Pairing suppresses automatic screen off. Screen off pauses device snapshot polling, source refresh requests, settings HTTP and explicit Wi-Fi reconnect attempts. Waking queues one synchronization immediately, waiting only for an already admitted bounded request to finish, even when automatic refresh is disabled; if offline, it waits for connectivity. Cached accounts and pairing data remain available.
 
 If USB configuration fails, refresh the web page, reopen the physical window and re-enter Wi-Fi details. Close other serial tools or pairing tabs. The page distinguishes no input, interrupted USB communication, an unmatched acknowledgment and explicit device rejection.
 
@@ -95,7 +95,7 @@ Development starts with [AGENTS.md](AGENTS.md) and the [application/protocol gui
 | React dashboard and USB transport | `companion/src/App.jsx`, `companion/src/serial.mjs`, `companion/src/styles.css` |
 | Official login and quota collection | `companion/server/accounts.mjs`, `clients.mjs`, `claude-feed.mjs`, `claude-session.mjs`, `deepseek.mjs` |
 | Local API, pairing and storage | `companion/server/index.mjs`, `pairing.mjs`, `protocol.mjs`, `storage.mjs` |
-| Host tests | `tests/test_quota_logic.c`, `tests/test_quota_fonts.py`, `tests/test_quota_refresh_runtime.py`, `tests/test_quota_storage_runtime.py`, `companion/test/*.test.mjs` |
+| Host tests | `tests/test_quota_logic.c`, `tests/test_quota_fonts.py`, `tests/test_quota_http_runtime.py`, `tests/test_quota_refresh_runtime.py`, `tests/test_quota_storage_runtime.py`, `companion/test/*.test.mjs` |
 
 Profiles and credentials live outside the repository in `~/.local/share/ai-passport-quota/` (or `AIQ_STATE_DIR`). Never commit auth files, Wi-Fi details, tokens, private keys, device identifiers or raw logs. UI changes should be captured with example accounts. Firmware code outside the LVGL task must use the BSP lock; networking/storage must not block button callbacks. Run the relevant tests and the full firmware gate for firmware delivery; flashing requires separate authorization.
 

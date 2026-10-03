@@ -71,6 +71,7 @@ static void render_application(void)
     uint64_t now_ms = (uint64_t)(esp_timer_get_time() / 1000);
     quota_display_tick(&s_display, now_ms, s_view_work.screen_timeout_seconds,
                         s_view_work.pairing_active);
+    quota_service_set_display_sleeping(s_display.sleeping);
     uint8_t brightness = s_display.sleeping ? 0 : 100;
     if (brightness != s_backlight_percent) {
         bsp_display_backlight(brightness);

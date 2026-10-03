@@ -1,0 +1,363 @@
+"""Exercise actual HTTP admission and snapshot commits with fake dependencies."""
+import os
+import re
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def extract_function(source, name):
+    match = re.search(r"^static (?:bool|void) " + name + r"\([^;]*?\)\n\{.*?^\}",
+                      source, re.M | re.S)
+    if match is None:
+        raise AssertionError(f"missing firmware function: {name}")
+    return match[0]
+
+
+class HttpRuntime(unittest.TestCase):
+    def test_actual_transport_admission_and_cleanup(self):
+        source = (ROOT / "main/quota_service.c").read_text()
+        definitions = []
+        for kind, name in (("struct", "http_body_t"), ("struct", "display_scheduler_t"),
+                           ("enum", "http_request_outcome_t")):
+            match = re.search(r"typedef " + kind + r" \{[^{}]*\} " + name + r";", source)
+            self.assertIsNotNone(match, name)
+            definitions.append(match[0])
+        functions = "\n".join(extract_function(source, name) for name in (
+            "display_generation_is_current", "network_operation_is_current", "http_request"))
+        harness = r'''
+#include "quota_logic.h"
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+#define HTTP_BODY_BYTES 8192
+#define HTTP_TIMEOUT_MS 8000
+'''
+        harness += "\n".join(definitions)
+        harness += r'''
+typedef int esp_err_t;
+enum { ESP_OK, ESP_FAIL, ESP_ERR_INVALID_SIZE, ESP_ERR_INVALID_STATE };
+typedef enum { HTTP_METHOD_GET, HTTP_METHOD_POST, HTTP_METHOD_PATCH } esp_http_client_method_t;
+enum { HTTP_TRANSPORT_OVER_SSL };
+typedef struct { int unused; } esp_http_client_event_t;
+typedef struct {
+    const char *url, *cert_pem;
+    esp_http_client_method_t method;
+    int timeout_ms, max_authorization_retries, transport_type, buffer_size, buffer_size_tx;
+    bool disable_auto_redirect, skip_cert_common_name_check;
+    esp_err_t (*event_handler)(esp_http_client_event_t *);
+    void *user_data;
+} esp_http_client_config_t;
+typedef struct { bool alive; } fake_client_t;
+typedef fake_client_t *esp_http_client_handle_t;
+static fake_client_t client;
+static http_body_t *response_body;
+static display_scheduler_t s_display_scheduler;
+static unsigned s_config_generation;
+static bool s_has_config;
+static struct { bool connected; } s_view;
+static int s_display_state_mux;
+static unsigned critical_depth, mutex_depth, inits, performs, cleanups, content_types, fields;
+static bool init_fails, header_fails, body_overflow, body_redirect;
+static esp_err_t perform_error;
+static int response_status;
+static const char *TAG = "test";
+static void (*on_mutex)(void), (*on_header)(void), (*on_cleanup)(void), (*on_perform)(void);
+static void run_once(void (**hook)(void)) {
+    void (*callback)(void) = *hook;
+    *hook = NULL;
+    if (callback != NULL) callback();
+}
+static void enter_critical(int *mux) { (void)mux; assert(critical_depth == 0); critical_depth++; }
+static void exit_critical(int *mux) { (void)mux; assert(critical_depth == 1); critical_depth--; }
+#define portENTER_CRITICAL(mux) enter_critical(mux)
+#define portEXIT_CRITICAL(mux) exit_critical(mux)
+static void mutex_lock(void) {
+    assert(critical_depth == 0 && mutex_depth == 0);
+    run_once(&on_mutex);
+    mutex_depth++;
+}
+static void mutex_unlock(void) { assert(mutex_depth == 1); mutex_depth--; }
+static esp_err_t http_event_handler(esp_http_client_event_t *event) { (void)event; return ESP_OK; }
+static const char *esp_err_to_name(esp_err_t err) { (void)err; return "fake"; }
+#define ESP_LOGW(tag, format, err, status) do { (void)(tag); (void)(format); (void)(err); (void)(status); } while (0)
+static esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *config) {
+    assert(mutex_depth == 0 && critical_depth == 0);
+    assert(config->timeout_ms == HTTP_TIMEOUT_MS);
+    assert(config->transport_type == HTTP_TRANSPORT_OVER_SSL);
+    assert(config->disable_auto_redirect && !config->skip_cert_common_name_check);
+    assert(config->max_authorization_retries == -1);
+    assert(strcmp(config->cert_pem, "synthetic certificate") == 0);
+    assert(strncmp(config->url, "https://127.0.0.1:4318/", 23) == 0);
+    inits++;
+    if (init_fails) return NULL;
+    client.alive = true;
+    response_body = config->user_data;
+    return &client;
+}
+static esp_err_t esp_http_client_set_header(esp_http_client_handle_t handle,
+                                          const char *name, const char *value) {
+    assert(handle == &client && client.alive);
+    assert(value != NULL);
+    if (strcmp(name, "Content-Type") == 0) content_types++;
+    run_once(&on_header);
+    return header_fails ? ESP_FAIL : ESP_OK;
+}
+static esp_err_t esp_http_client_set_post_field(esp_http_client_handle_t handle,
+                                               const char *data, int length) {
+    assert(handle == &client && client.alive);
+    assert(length == (int)strlen(data));
+    fields++;
+    return ESP_OK;
+}
+static esp_err_t esp_http_client_perform(esp_http_client_handle_t handle) {
+    assert(handle == &client && client.alive);
+    assert(mutex_depth == 0 && critical_depth == 0);
+    performs++;
+    run_once(&on_perform);
+    response_body->overflow = body_overflow;
+    response_body->redirect = body_redirect;
+    return perform_error;
+}
+static int esp_http_client_get_status_code(esp_http_client_handle_t handle) {
+    assert(handle == &client && client.alive);
+    return response_status;
+}
+static void esp_http_client_cleanup(esp_http_client_handle_t handle) {
+    assert(handle == &client && client.alive);
+    assert(mutex_depth == 0 && critical_depth == 0);
+    client.alive = false;
+    cleanups++;
+    run_once(&on_cleanup);
+}
+'''
+        harness += functions
+        harness += r'''
+static quota_device_config_t config;
+static http_body_t body;
+static http_request_outcome_t outcome;
+static void sleep_now(void) { s_display_scheduler.sleeping = true; s_display_scheduler.generation++; }
+static void sleep_then_wake(void) { s_display_scheduler.generation += 2; s_display_scheduler.sleeping = false; }
+static void disconnect_now(void) { s_view.connected = false; }
+static void reconnect_now(void) { s_view.connected = true; }
+static void change_config(void) { s_config_generation++; }
+static void reset(void) {
+    s_display_scheduler = (display_scheduler_t){.generation = 1};
+    s_config_generation = 1; s_has_config = true; s_view.connected = true;
+    config = (quota_device_config_t){0};
+    strcpy(config.base_url, "https://127.0.0.1:4318");
+    strcpy(config.server_cert_pem, "synthetic certificate");
+    strcpy(config.pair_token, "example");
+    body = (http_body_t){0};
+    outcome = HTTP_REQUEST_ADMITTED;
+    critical_depth = mutex_depth = inits = performs = cleanups = content_types = fields = 0;
+    init_fails = header_fails = body_overflow = body_redirect = false;
+    perform_error = ESP_OK; response_status = 200;
+    on_mutex = on_header = on_cleanup = on_perform = NULL;
+    client.alive = false;
+}
+static bool request(esp_http_client_method_t method, const char *payload) {
+    bool result = http_request(&config, "/v1/test", method, payload, 200, 1, 1, &outcome, &body);
+    assert(!client.alive && critical_depth == 0 && mutex_depth == 0);
+    return result;
+}
+static void expect_deferred(bool initialized) {
+    assert(outcome == HTTP_REQUEST_DEFERRED && performs == 0);
+    assert(inits == (initialized ? 1u : 0u));
+    assert(cleanups == (initialized ? 1u : 0u));
+}
+int main(void) {
+    reset(); assert(request(HTTP_METHOD_GET, NULL));
+    assert(outcome == HTTP_REQUEST_ADMITTED && performs == 1 && cleanups == 1);
+    assert(content_types == 0 && fields == 0);
+    reset(); assert(request(HTTP_METHOD_POST, "{}")); assert(fields == 1 && content_types == 1);
+    reset(); assert(request(HTTP_METHOD_PATCH, "{}")); assert(fields == 1 && content_types == 1);
+
+    reset(); sleep_now(); assert(!request(HTTP_METHOD_GET, NULL)); expect_deferred(false);
+    reset(); disconnect_now(); assert(!request(HTTP_METHOD_GET, NULL)); expect_deferred(false);
+    reset(); change_config(); assert(!request(HTTP_METHOD_GET, NULL)); expect_deferred(false);
+    reset(); s_has_config = false; assert(!request(HTTP_METHOD_GET, NULL)); expect_deferred(false);
+    /* The display changes while the preflight waits for the configuration mutex. */
+    reset(); on_mutex = sleep_now; assert(!request(HTTP_METHOD_GET, NULL)); expect_deferred(false);
+    /* Recheck after setup and header calls, immediately before perform. */
+    reset(); on_header = sleep_now; assert(!request(HTTP_METHOD_POST, "{}")); expect_deferred(true);
+    reset(); on_header = sleep_then_wake; assert(!request(HTTP_METHOD_GET, NULL)); expect_deferred(true);
+    reset(); on_header = change_config; assert(!request(HTTP_METHOD_PATCH, "{}")); expect_deferred(true);
+    /* Preserve deferral even if the link has recovered by the time cleanup returns. */
+    for (int method = HTTP_METHOD_GET; method <= HTTP_METHOD_PATCH; method++) {
+        reset(); on_header = disconnect_now; on_cleanup = reconnect_now;
+        assert(!request((esp_http_client_method_t)method, method == HTTP_METHOD_GET ? NULL : "{}"));
+        assert(s_view.connected); expect_deferred(true);
+    }
+    /* Local failures are distinct; callers must not turn them into an immediate retry loop. */
+    reset(); init_fails = true; assert(!request(HTTP_METHOD_POST, "{}"));
+    assert(outcome == HTTP_REQUEST_NOT_ADMITTED && inits == 1 && performs == 0 && cleanups == 0);
+    reset(); header_fails = true; assert(!request(HTTP_METHOD_PATCH, "{}"));
+    assert(outcome == HTTP_REQUEST_NOT_ADMITTED && performs == 0 && cleanups == 1);
+    reset(); perform_error = ESP_FAIL; assert(!request(HTTP_METHOD_GET, NULL));
+    assert(outcome == HTTP_REQUEST_ADMITTED && performs == 1 && cleanups == 1);
+    reset(); response_status = 302; assert(!request(HTTP_METHOD_GET, NULL));
+    assert(outcome == HTTP_REQUEST_ADMITTED && cleanups == 1);
+    reset(); body_overflow = true; assert(!request(HTTP_METHOD_GET, NULL));
+    assert(outcome == HTTP_REQUEST_ADMITTED && cleanups == 1);
+    reset(); body_redirect = true; assert(!request(HTTP_METHOD_GET, NULL));
+    assert(outcome == HTTP_REQUEST_ADMITTED && cleanups == 1);
+    /* An admitted request can finish safely; the real publish path separately rejects its token. */
+    reset(); on_perform = sleep_now; assert(request(HTTP_METHOD_GET, NULL));
+    assert(outcome == HTTP_REQUEST_ADMITTED && s_display_scheduler.sleeping && cleanups == 1);
+    puts("quota HTTP runtime tests passed");
+    return 0;
+}
+'''
+        with tempfile.TemporaryDirectory(prefix="ai-quota-http-test-") as directory:
+            path = Path(directory)
+            (path / "test.c").write_text(harness)
+            subprocess.run([os.environ.get("CC", "cc"), "-std=c11", "-Wall", "-Wextra",
+                            "-Werror", "-I" + str(ROOT / "main"), str(path / "test.c"),
+                            "-o", str(path / "test")], check=True)
+            subprocess.run([str(path / "test")], check=True)
+
+
+class PublicationRuntime(unittest.TestCase):
+    def test_actual_snapshot_commit_rejects_superseded_work(self):
+        source = (ROOT / "main/quota_service.c").read_text()
+        header = (ROOT / "main/quota_service.h").read_text()
+        definitions = []
+        for text, name in ((source, "display_scheduler_t"), (header, "quota_service_view_t")):
+            match = re.search(r"typedef struct \{[^{}]*\} " + name + r";", text)
+            self.assertIsNotNone(match, name)
+            definitions.append(match[0])
+        functions = "\n".join(extract_function(source, name) for name in (
+            "display_generation_is_current", "publish_snapshot"))
+        harness = r'''
+#include "quota_logic.h"
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+#define SERVER_TIME_PERSIST_MS 900000
+#define ESP_LOGW(...) ((void)0)
+enum { QUOTA_APP_EVENT_SNAPSHOT };
+'''
+        harness += "\n".join(definitions)
+        harness += r'''
+static quota_service_view_t s_view;
+static quota_device_config_t s_config;
+static display_scheduler_t s_display_scheduler;
+static bool s_has_config;
+static uint32_t s_config_generation;
+static uint64_t s_last_server_time_persist_ms, now_ms, calibrated_time;
+static unsigned critical_depth, mutex_depth, config_saves, snapshot_saves, timeout_saves, events;
+static int s_display_state_mux;
+static void (*on_mutex)(void), (*on_commit)(void), (*on_save)(void);
+static void run_once(void (**hook)(void)) {
+    void (*callback)(void) = *hook;
+    *hook = NULL;
+    if (callback != NULL) callback();
+}
+static void mutex_lock(void) {
+    assert(critical_depth == 0 && mutex_depth == 0);
+    run_once(&on_mutex);
+    mutex_depth++;
+}
+static void mutex_unlock(void) { assert(mutex_depth == 1); mutex_depth--; }
+static void enter_critical(int *mux) {
+    (void)mux; assert(critical_depth == 0); run_once(&on_commit); critical_depth++;
+}
+static void exit_critical(int *mux) { (void)mux; assert(critical_depth == 1); critical_depth--; }
+#define portENTER_CRITICAL(mux) enter_critical(mux)
+#define portEXIT_CRITICAL(mux) exit_critical(mux)
+static uint64_t monotonic_ms(void) { assert(critical_depth == 0); return now_ms; }
+static uint64_t current_epoch(void) { assert(critical_depth == 0); return 1700000000; }
+static bool nvs_save_screen_timeout_locked(uint16_t seconds) {
+    assert(mutex_depth == 1 && critical_depth == 0);
+    (void)seconds; timeout_saves++; run_once(&on_save); return true;
+}
+static bool nvs_save_config_locked(const quota_device_config_t *config) {
+    assert(mutex_depth == 1 && critical_depth == 0);
+    (void)config; config_saves++; run_once(&on_save); return true;
+}
+static bool nvs_maybe_save_snapshot_locked(const quota_device_config_t *config,
+                                         const quota_snapshot_t *snapshot) {
+    assert(mutex_depth == 1 && critical_depth == 0);
+    (void)config; (void)snapshot; snapshot_saves++; run_once(&on_save); return true;
+}
+static void set_system_time_if_newer(uint64_t epoch) {
+    assert(mutex_depth == 0 && critical_depth == 0); calibrated_time = epoch;
+}
+static void post_simple_event(int kind) {
+    assert(mutex_depth == 0 && critical_depth == 0);
+    (void)kind; events++;
+}
+'''
+        harness += functions
+        harness += r'''
+static quota_snapshot_t incoming;
+static void sleep_now(void) { s_display_scheduler.sleeping = true; s_display_scheduler.generation++; }
+static void sleep_then_wake(void) { s_display_scheduler.generation += 2; s_display_scheduler.sleeping = false; }
+static void reset(void) {
+    s_view = (quota_service_view_t){0};
+    s_view.snapshot_valid = true; s_view.snapshot.revision = 1;
+    s_view.refresh_seconds = 300; s_view.auto_refresh = true;
+    s_config = (quota_device_config_t){.refresh_seconds = 300, .auto_refresh = true};
+    s_display_scheduler = (display_scheduler_t){.generation = 1};
+    s_has_config = true; s_config_generation = 1;
+    s_last_server_time_persist_ms = 0; now_ms = 1000; calibrated_time = 0;
+    critical_depth = mutex_depth = config_saves = snapshot_saves = timeout_saves = events = 0;
+    on_mutex = on_commit = on_save = NULL;
+    incoming = (quota_snapshot_t){.revision = 2, .server_time = 1700000100,
+        .refresh_seconds = 300, .auto_refresh = true, .account_count = 1};
+    incoming.accounts[0].has_observed_at = true;
+    incoming.accounts[0].observed_at = 1699990000;
+    incoming.accounts[0].seven_day.present = true;
+}
+static void expect_rejected(void) {
+    assert(!publish_snapshot(&incoming, 1, 1));
+    assert(s_view.snapshot.revision == 1 && s_view.refresh_seconds == 300);
+    assert(snapshot_saves == 0 && config_saves == 0 && timeout_saves == 0);
+    assert(events == 0 && calibrated_time == 0 && critical_depth == 0 && mutex_depth == 0);
+}
+int main(void) {
+    reset(); assert(publish_snapshot(&incoming, 1, 1));
+    assert(s_view.snapshot.revision == 2 && snapshot_saves == 1 && events == 1);
+    assert(s_view.snapshot.accounts[0].observed_at == 1699990000);
+    assert(!s_view.snapshot.accounts[0].five_hour.present);
+    assert(s_view.snapshot.accounts[0].seven_day.remaining_percent == 0);
+    assert(s_config.server_time == 0 && config_saves == 0);
+    assert(calibrated_time == incoming.server_time);
+
+    reset(); sleep_now(); expect_rejected();
+    reset(); s_config_generation++; expect_rejected();
+    reset(); s_has_config = false; expect_rejected();
+    reset(); on_mutex = sleep_then_wake; expect_rejected();
+    reset(); on_commit = sleep_now; expect_rejected();
+    /* Once atomically committed before a transition, persistence may finish;
+       no slow work runs in the display critical section and no old event follows. */
+    reset(); on_save = sleep_now; assert(publish_snapshot(&incoming, 1, 1));
+    assert(s_view.snapshot.revision == 2 && events == 0 && calibrated_time == 0);
+    assert(snapshot_saves == 1 && critical_depth == 0 && mutex_depth == 0);
+    reset(); on_save = sleep_then_wake; assert(publish_snapshot(&incoming, 1, 1));
+    assert(events == 0 && calibrated_time == 0);
+    /* Keep the existing fifteen-minute server-time persistence boundary. */
+    reset(); now_ms = SERVER_TIME_PERSIST_MS - 1;
+    assert(publish_snapshot(&incoming, 1, 1)); assert(config_saves == 0);
+    reset(); now_ms = SERVER_TIME_PERSIST_MS;
+    assert(publish_snapshot(&incoming, 1, 1));
+    assert(config_saves == 1 && s_config.server_time == incoming.server_time);
+    puts("quota snapshot publication tests passed");
+    return 0;
+}
+'''
+        with tempfile.TemporaryDirectory(prefix="ai-quota-publish-test-") as directory:
+            path = Path(directory)
+            (path / "test.c").write_text(harness)
+            subprocess.run([os.environ.get("CC", "cc"), "-std=c11", "-Wall", "-Wextra",
+                            "-Werror", "-I" + str(ROOT / "main"), str(path / "test.c"),
+                            "-o", str(path / "test")], check=True)
+            subprocess.run([str(path / "test")], check=True)
+
+
+if __name__ == "__main__":
+    unittest.main()
