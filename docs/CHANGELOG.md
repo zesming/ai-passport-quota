@@ -8,6 +8,18 @@
 
 ## Unreleased
 
+### 2026-10-03 — Silent wake synchronization and preserved refresh deadlines
+
+The owner confirmed manual screen off, function-key wake and wake-key suppression on the `ca0a27c…` firmware, but reported a refreshing prompt without an apparent source update. The previous wake path always sent a provider-refresh POST before reading the snapshot, regardless of the next deadline. The companion's `202` acknowledgment schedules asynchronous provider work; unchanged values or a snapshot revision alone do not prove new source data. Claude refresh continues to read its existing statusline cache and preserves the source timestamp.
+
+Waking now immediately reads the companion cache silently, including with automatic refresh disabled. It no longer forces a source POST or resets the source deadline. Manual requests and enabled automatic refreshes that are due use the existing progress path; overdue work follows the wake GET. A source attempt canceled before HTTP admission preserves the due deadline and any consumed manual request. Genuine local/HTTP failures retain the existing cadence instead of retrying every worker loop. Screen-off gates, stale-generation rejection and offline wake recovery remain intact; no stored-data layouts or partitions changed.
+
+Build: **PASS** — the complete `./tools/validate.sh` gate passed with ESP-IDF 5.5.3, merged-image checks and retained debug-bundle verification. Host tests: **PASS** — all repository/workflow and host checks passed. The actual refresh/snapshot functions and network-worker harness cover silent wake, repeated wakes before a deadline, overdue wake, slow cache reads, manual-request preservation, cancellation before admission, ordinary-failure cadence and reconnect/generation gates. Independent review found no remaining actionable issue after the cancellation fix. Companion source is unchanged.
+
+Verified bundle: `build/firmware/6ed4d397dc3a19337873d5c0bc1a7fb86dc663364cd5afad9960916bfcbda50e/`; full-image SHA-256 `6ed4d397dc3a19337873d5c0bc1a7fb86dc663364cd5afad9960916bfcbda50e`; matching ELF SHA-256 `9656324ecc89a8fe922f4214709336ef5e4937aafa47a2879a5d2e2f563c0d0d`. The application is 1,496,208 bytes, merged image 1,561,744 bytes, build version `1fb05cb-dirty`. This working-tree build precedes its source commit. Firmware and private logs remain local.
+
+Device tests: **NOT RUN for this fix** — read-only discovery found `/dev/cu.usbmodem1101`; it was not opened or reset, and no firmware was written. The latest flashed image remains `ca0a27c…`. Unverified: physical silence of the wake prompt before a source deadline, immediate cache synchronization, overdue automatic/manual refresh and canceled-request recovery on the new build.
+
 ### 2026-10-03 — Device upgrade to the green battery build
 
 After the owner's explicit flash request, installed the previously validated `ca0a27c27d49eddefeaa0efe29ce6e8d55575c04baaf93e99914033eb08c4e20` bundle on `/dev/cu.usbmodem1101`. Before writing, the actual partition table matched the bundle's SHA-256 `420931e3f5af072d899b5357c043fd9f283bf165fc9df6113b6d43d82b48a06d`. Verified component writes at `0x0` / `0x8000` / `0x10000` left NVS and PHY regions untouched; no full-chip erase or rebuild was performed. Existing cache and pairing were restored.
@@ -16,7 +28,7 @@ Build: **PASS** and Host tests: **PASS**, reusing the complete gate for that exa
 
 Device tests: **PASS for component verification and bounded startup**. A 30-second capture showed application version `b39dc02-dirty`, boot ELF prefix `795791a0e` uniquely matching the retained ELF `795791a0eb12d27f486a178ce454a255034470129700a56f541c71848e3a6971`, application readiness, cache restoration and CW2017 detection. No panic, assertion, stack-canary error or watchdog was observed. The companion received authenticated requests after flashing. The serial port was released; private logs remain local.
 
-Unverified: the physical green icon/no numeric percentage, manual sleep/wake and traffic suppression/resumption, automatic sleep and extended/offline timing. User observations are pending. Current persisted refresh and screen-off intervals are both five minutes, with automatic refresh enabled. This bundle is now the latest flashed image; earlier unflashed entries below describe their original validation stages.
+The owner subsequently confirmed manual screen off, function-key wake and consumption of the wake key. A wake refreshing-prompt issue was reported and is addressed in the newer unflashed fix above. Unverified: the physical green icon/no numeric percentage, traffic suppression/resumption, automatic sleep and extended/offline timing. Current persisted refresh and screen-off intervals are both five minutes, with automatic refresh enabled. This bundle is the latest flashed image; earlier unflashed entries below describe their original validation stages.
 
 ### 2026-10-03 — Green proportional battery indicator
 

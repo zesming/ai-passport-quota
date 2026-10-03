@@ -34,7 +34,7 @@ class RefreshRuntime(unittest.TestCase):
         source = (ROOT / "main/quota_service.c").read_text()
         names = ("display_generation_is_current", "config_generation_is_current",
                  "operation_is_current", "network_operation_is_current",
-                 "restore_wake_refresh", "mark_wake_fetch_pending", "finish_wake_fetch",
+                 "finish_wake_fetch",
                  "clear_stale_refreshing", "begin_refresh", "finish_refresh",
                  "perform_refresh", "perform_snapshot_fetch", "restore_pending_settings",
                  "perform_settings_update")
@@ -72,7 +72,7 @@ typedef struct {
     uint64_t now_epoch;
 } view_t;
 typedef struct {
-    bool sleeping, wake_refresh_pending, wake_fetch_pending;
+    bool sleeping, wake_fetch_pending;
     uint32_t generation;
 } display_scheduler_t;
 typedef int portMUX_TYPE;
@@ -104,6 +104,7 @@ quota_snapshot_t s_snapshot_work;
 bool transport_ok, refresh_accepted, expect_busy;
 bool sleep_on_post, sleep_wake_on_post, sleep_on_get, lose_link_on_post;
 bool defer_get_fast_reconnect, defer_wake_get_gate;
+bool defer_post_fast_reconnect, local_post_setup_failure;
 bool s_settings_pending, s_pending_auto_refresh;
 uint16_t s_pending_refresh_seconds, s_pending_screen_timeout_seconds;
 quota_device_config_t s_config;
@@ -167,6 +168,12 @@ bool request_refresh(const quota_device_config_t *config, uint32_t config_genera
                      uint32_t display_generation, http_request_outcome_t *outcome) {
     (void)config; (void)config_generation; (void)display_generation;
     assert(s_view.refreshing);
+    if (defer_post_fast_reconnect || local_post_setup_failure) {
+        if (outcome != NULL) *outcome = defer_post_fast_reconnect
+            ? HTTP_REQUEST_DEFERRED : HTTP_REQUEST_NOT_ADMITTED;
+        defer_post_fast_reconnect = false;
+        return false;
+    }
     posts++;
     if (outcome != NULL) *outcome = HTTP_REQUEST_ADMITTED;
     if (lose_link_on_post) {
@@ -237,14 +244,31 @@ void reset_state(void) {
     sleep_on_post = false; sleep_wake_on_post = false; sleep_on_get = false;
     lose_link_on_post = false;
     defer_get_fast_reconnect = false; defer_wake_get_gate = false;
+    defer_post_fast_reconnect = false; local_post_setup_failure = false;
     fetches = 0; posts = 0; events = 0; notifications = 0;
 }
 int main(void) {
     quota_device_config_t config = {0};
-    reset_state(); expect_busy = true; defer_wake_get_gate = true;
-    perform_refresh(&config, 1, 1, true);
-    assert(posts == 1 && fetches == 0 && s_view.connected);
+    reset_state(); defer_wake_get_gate = true;
+    s_display_scheduler.wake_fetch_pending = true;
+    perform_snapshot_fetch(&config, 1, 1, true);
+    assert(posts == 0 && fetches == 0 && s_view.connected && !s_view.refreshing);
     assert(s_display_scheduler.wake_fetch_pending);
+    perform_snapshot_fetch(&config, 1, 1, true);
+    assert(posts == 0 && fetches == 1 && !s_display_scheduler.wake_fetch_pending);
+
+    reset_state(); quota_service_set_display_sleeping(true);
+    assert(!perform_refresh(&config, 1, 1));
+    assert(posts == 0 && fetches == 0 && !s_view.refreshing);
+
+    reset_state(); expect_busy = true; defer_post_fast_reconnect = true;
+    assert(!perform_refresh(&config, 1, 1));
+    assert(posts == 0 && fetches == 0 && !s_view.refreshing);
+
+    reset_state(); expect_busy = true; local_post_setup_failure = true;
+    assert(perform_refresh(&config, 1, 1));
+    assert(posts == 0 && fetches == 0 && !s_view.refreshing && s_view.request_failed);
+
     reset_state(); s_view.snapshot_valid = true; s_view.snapshot.revision = 1;
     for (unsigned i = 0; i < 3; i++) perform_snapshot_fetch(&config, 1, 1, false);
     assert(fetches == 3 && posts == 0 && events == 6);
@@ -258,32 +282,32 @@ int main(void) {
 
     reset_state(); s_view.snapshot_valid = true; s_view.snapshot.revision = 1;
     expect_busy = true;
-    perform_refresh(&config, 1, 1, false);
+    assert(perform_refresh(&config, 1, 1));
     assert(posts == 1 && fetches == 1 && !s_view.refreshing && !s_view.request_failed);
     unsigned previous_fetches = fetches;
     refresh_accepted = false;
-    perform_refresh(&config, 1, 1, false);
+    assert(perform_refresh(&config, 1, 1));
     assert(posts == 2 && fetches == previous_fetches);
     assert(s_view.request_failed && !s_view.refreshing && s_view.snapshot.revision == 2);
 
     reset_state(); s_view.snapshot_valid = true; s_view.snapshot.revision = 1;
     expect_busy = true;
     lose_link_on_post = true;
-    perform_refresh(&config, 1, 1, true);
-    assert(posts == 1 && fetches == 0 && s_display_scheduler.wake_refresh_pending);
-    assert(!s_view.connected && !s_view.refreshing);
+    assert(perform_refresh(&config, 1, 1));
+    assert(posts == 1 && fetches == 0 && s_view.request_failed);
+    assert(!s_view.connected && !s_view.refreshing && s_view.snapshot.revision == 1);
     s_view.connected = true;
-    s_display_scheduler.wake_refresh_pending = false;
-    perform_refresh(&config, 1, 1, true);
-    assert(posts == 2 && fetches == 1 && !s_display_scheduler.wake_refresh_pending);
+    assert(perform_refresh(&config, 1, 1));
+    assert(posts == 2 && fetches == 1 && !s_view.request_failed);
 
     reset_state(); s_view.snapshot_valid = true; s_view.snapshot.revision = 1;
-    expect_busy = true; defer_get_fast_reconnect = true;
-    perform_refresh(&config, 1, 1, true);
-    assert(posts == 1 && fetches == 1 && s_display_scheduler.wake_fetch_pending);
-    expect_busy = false;
+    s_display_scheduler.wake_fetch_pending = true;
+    defer_get_fast_reconnect = true;
     perform_snapshot_fetch(&config, 1, 1, true);
-    assert(posts == 1 && fetches == 2 && !s_display_scheduler.wake_fetch_pending);
+    assert(posts == 0 && fetches == 1 && s_display_scheduler.wake_fetch_pending);
+    assert(!s_view.refreshing && s_view.snapshot.revision == 1);
+    perform_snapshot_fetch(&config, 1, 1, true);
+    assert(posts == 0 && fetches == 2 && !s_display_scheduler.wake_fetch_pending);
     assert(s_view.snapshot.revision == 2);
 
     reset_state(); settings_behavior = 1;
@@ -315,22 +339,22 @@ int main(void) {
     reset_state(); s_view.snapshot_valid = true; s_view.snapshot.revision = 1;
     expect_busy = true;
     sleep_on_post = true;
-    perform_refresh(&config, 1, 1, true);
+    assert(perform_refresh(&config, 1, 1));
     assert(posts == 1 && fetches == 0 && s_view.snapshot.revision == 1);
     assert(!s_view.refreshing && s_display_scheduler.sleeping);
 
     reset_state(); s_view.snapshot_valid = true; s_view.snapshot.revision = 1;
     expect_busy = true;
     sleep_wake_on_post = true;
-    perform_refresh(&config, 1, 1, true);
+    assert(perform_refresh(&config, 1, 1));
     assert(posts == 1 && fetches == 0 && s_view.snapshot.revision == 1);
     assert(!s_view.refreshing && !s_display_scheduler.sleeping);
-    assert(s_display_scheduler.wake_refresh_pending);
+    assert(s_display_scheduler.wake_fetch_pending);
 
     reset_state(); s_view.snapshot_valid = true; s_view.snapshot.revision = 1;
     expect_busy = true;
     sleep_on_get = true;
-    perform_refresh(&config, 1, 1, false);
+    assert(perform_refresh(&config, 1, 1));
     assert(posts == 1 && fetches == 1 && s_view.snapshot.revision == 1);
     assert(!s_view.refreshing && s_display_scheduler.sleeping);
 
@@ -342,13 +366,13 @@ int main(void) {
     assert(!s_view.refreshing && s_display_scheduler.sleeping && notifications == 1);
     quota_service_set_display_sleeping(false);
     assert(!s_display_scheduler.sleeping && s_display_scheduler.generation == 3);
-    assert(s_display_scheduler.wake_refresh_pending && notifications == 2);
+    assert(s_display_scheduler.wake_fetch_pending && notifications == 2);
     puts("quota refresh generation tests passed");
 }
 '''
         compile_and_run(harness, "ai-quota-refresh-test-")
 
-    def test_network_worker_pauses_wakes_recovers_and_anchors_staged_get(self):
+    def test_network_worker_pauses_wakes_and_preserves_provider_deadline(self):
         source = (ROOT / "main/quota_service.c").read_text()
         function = extract_function(self, source, "network_task")
         harness = r'''
@@ -364,7 +388,7 @@ typedef struct {
     uint64_t now_epoch;
 } view_t;
 typedef struct {
-    bool sleeping, wake_refresh_pending, wake_fetch_pending;
+    bool sleeping, wake_fetch_pending;
     uint32_t generation;
 } display_scheduler_t;
 typedef struct { bool sleeping; uint32_t generation; } display_state_t;
@@ -396,9 +420,15 @@ void *s_mutex = (void *)1;
 static void network_task(void *arg);
 uint64_t s_now_ms;
 unsigned s_loop_calls, s_stop_after, s_init_calls, s_config_calls;
-unsigned s_retry_calls, s_settings_calls, s_posts, s_gets, s_wake_posts;
+unsigned s_retry_calls, s_settings_calls, s_posts, s_gets, s_wake_gets;
+unsigned s_refresh_calls;
+uint64_t s_post_times[16], s_wake_fetch_duration_ms;
+typedef struct { uint64_t time; bool sleep, wake, manual, cancel_source; } loop_step_t;
+loop_step_t s_steps[16];
+bool s_use_steps;
 bool s_disconnect_after_view_copy, s_disconnected_by_hook;
 bool s_inject_manual_during_refresh, s_inject_settings_during_refresh;
+bool s_cancel_before_refresh, s_local_refresh_failure;
 jmp_buf s_loop_exit;
 void mutex_lock(void) {}
 void mutex_unlock(void) {}
@@ -407,6 +437,17 @@ uint64_t current_epoch(void) { return 1700000000; }
 int ulTaskNotifyTake(unsigned clear, unsigned ticks) {
     (void)clear; (void)ticks;
     if (++s_loop_calls > s_stop_after) longjmp(s_loop_exit, 1);
+    if (s_use_steps) {
+        loop_step_t step = s_steps[s_loop_calls - 1];
+        s_now_ms = step.time;
+        if (step.sleep || step.wake) {
+            s_display_scheduler.sleeping = step.sleep;
+            s_display_scheduler.generation++;
+            s_display_scheduler.wake_fetch_pending = step.wake;
+        }
+        if (step.manual) s_refresh_requested = true;
+        if (step.cancel_source) s_cancel_before_refresh = true;
+    }
     return 0;
 }
 void vTaskDelay(unsigned ticks) { (void)ticks; }
@@ -440,9 +481,20 @@ void perform_settings_update(const quota_device_config_t *config, uint32_t cfg,
     (void)config; (void)cfg; (void)display; (void)seconds; (void)automatic;
     (void)timeout; s_settings_calls++;
 }
-void perform_refresh(const quota_device_config_t *config, uint32_t cfg,
-                     uint32_t display, bool wake_work) {
-    (void)config; (void)cfg; (void)display; s_posts++;
+bool perform_refresh(const quota_device_config_t *config, uint32_t cfg,
+                     uint32_t display) {
+    (void)config; (void)cfg; (void)display;
+    s_refresh_calls++;
+    if (s_cancel_before_refresh) {
+        s_cancel_before_refresh = false;
+        s_display_scheduler.sleeping = true;
+        s_display_scheduler.generation++;
+        s_display_scheduler.wake_fetch_pending = false;
+        return false;
+    }
+    if (s_local_refresh_failure) return true;
+    assert(s_posts < 16);
+    s_post_times[s_posts++] = s_now_ms;
     if (s_inject_manual_during_refresh) {
         s_inject_manual_during_refresh = false;
         s_refresh_requested = true;
@@ -454,18 +506,15 @@ void perform_refresh(const quota_device_config_t *config, uint32_t cfg,
         s_pending_auto_refresh = true;
         s_pending_screen_timeout_seconds = 60;
     }
-    if (wake_work) {
-        s_wake_posts++;
-        s_gets++;
-        s_display_scheduler.wake_fetch_pending = false;
-    }
+    return true;
 }
 void perform_snapshot_fetch(const quota_device_config_t *config, uint32_t cfg,
                             uint32_t display, bool wake_fetch) {
     (void)config; (void)cfg; (void)display; s_gets++;
     if (wake_fetch) {
+        s_wake_gets++;
         s_display_scheduler.wake_fetch_pending = false;
-        s_now_ms += 65000;
+        s_now_ms += s_wake_fetch_duration_ms;
     }
     s_view.request_failed = false;
 }
@@ -486,7 +535,11 @@ void reset_state(void) {
     s_selection_persist_retry_at_ms = 0; s_pairing_opened_at_ms = 0;
     s_now_ms = 0; s_loop_calls = 0; s_stop_after = 0;
     s_init_calls = 0; s_config_calls = 0; s_retry_calls = 0;
-    s_settings_calls = 0; s_posts = 0; s_gets = 0; s_wake_posts = 0;
+    s_settings_calls = 0; s_posts = 0; s_gets = 0; s_wake_gets = 0;
+    s_refresh_calls = 0; s_cancel_before_refresh = false; s_local_refresh_failure = false;
+    s_wake_fetch_duration_ms = 0; s_use_steps = false;
+    memset(s_steps, 0, sizeof(s_steps));
+    memset(s_post_times, 0, sizeof(s_post_times));
     s_disconnect_after_view_copy = false; s_disconnected_by_hook = false;
     s_inject_manual_during_refresh = false;
     s_inject_settings_during_refresh = false;
@@ -510,26 +563,90 @@ int main(void) {
     reset_state();
     s_view.auto_refresh = false;
     s_display_scheduler.generation = 3;
-    s_display_scheduler.wake_refresh_pending = true;
+    s_display_scheduler.wake_fetch_pending = true;
     run_worker(4);
-    assert(s_posts == 1 && s_wake_posts == 1 && s_gets == 1);
-    assert(!s_display_scheduler.wake_refresh_pending);
+    assert(s_posts == 0 && s_wake_gets == 1 && s_gets == 1);
+    assert(!s_display_scheduler.wake_fetch_pending);
 
     reset_state();
-    s_display_scheduler.wake_refresh_pending = true;
+    s_display_scheduler.wake_fetch_pending = true;
     s_disconnect_after_view_copy = true;
     run_worker(1);
     assert(s_disconnected_by_hook && !s_view.connected);
-    assert(s_posts == 0 && s_display_scheduler.wake_refresh_pending);
+    assert(s_posts == 0 && s_gets == 0 && s_display_scheduler.wake_fetch_pending);
     s_view.connected = true; s_disconnect_after_view_copy = false;
     run_worker(3);
-    assert(s_posts == 1 && s_wake_posts == 1 && s_gets == 1);
+    assert(s_posts == 0 && s_wake_gets == 1 && s_gets == 1);
 
     reset_state();
     s_view.auto_refresh = true; s_view.refresh_seconds = 60;
     s_display_scheduler.wake_fetch_pending = true;
+    s_wake_fetch_duration_ms = 65000;
     run_worker(2);
-    assert(s_gets == 1 && s_posts == 0);
+    assert(s_gets == 1 && s_posts == 1 && s_post_times[0] == 65000);
+
+    /* Repeated wake reads before the deadline cannot defer the source refresh. */
+    reset_state(); s_view.auto_refresh = true; s_use_steps = true;
+    s_steps[0] = (loop_step_t){.time = 0};
+    s_steps[1] = (loop_step_t){.time = 20000, .sleep = true};
+    s_steps[2] = (loop_step_t){.time = 25000, .wake = true};
+    s_steps[3] = (loop_step_t){.time = 40000, .sleep = true};
+    s_steps[4] = (loop_step_t){.time = 45000, .wake = true};
+    s_steps[5] = (loop_step_t){.time = 60000};
+    run_worker(6);
+    assert(s_wake_gets == 2 && s_posts == 1 && s_post_times[0] == 60000);
+
+    /* An overdue source refresh follows the wake read and anchors the next period. */
+    reset_state(); s_view.auto_refresh = true; s_use_steps = true;
+    s_steps[0] = (loop_step_t){.time = 0};
+    s_steps[1] = (loop_step_t){.time = 1000, .sleep = true};
+    s_steps[2] = (loop_step_t){.time = 70000, .wake = true};
+    s_steps[3] = (loop_step_t){.time = 70500};
+    s_steps[4] = (loop_step_t){.time = 100000, .sleep = true};
+    s_steps[5] = (loop_step_t){.time = 105000, .wake = true};
+    s_steps[6] = (loop_step_t){.time = 130499};
+    s_steps[7] = (loop_step_t){.time = 130500};
+    run_worker(8);
+    assert(s_wake_gets == 2 && s_posts == 2);
+    assert(s_post_times[0] == 70500 && s_post_times[1] == 130500);
+
+    /* Wake reads do not consume an explicit manual request, even with auto off. */
+    reset_state(); s_use_steps = true;
+    s_steps[0] = (loop_step_t){.time = 0, .sleep = true};
+    s_steps[1] = (loop_step_t){.time = 70000, .wake = true, .manual = true};
+    s_steps[2] = (loop_step_t){.time = 70500};
+    run_worker(3);
+    assert(s_wake_gets == 1 && s_posts == 1 && s_post_times[0] == 70500);
+
+    /* Cancellation before POST admission retains the overdue automatic deadline. */
+    reset_state(); s_view.auto_refresh = true; s_use_steps = true;
+    s_steps[0] = (loop_step_t){.time = 0};
+    s_steps[1] = (loop_step_t){.time = 60000, .cancel_source = true};
+    s_steps[2] = (loop_step_t){.time = 70000, .wake = true};
+    s_steps[3] = (loop_step_t){.time = 70500};
+    run_worker(4);
+    assert(s_refresh_calls == 2 && s_wake_gets == 1);
+    assert(s_posts == 1 && s_post_times[0] == 70500);
+
+    /* With auto off, the explicit manual request survives cancelled admission. */
+    reset_state(); s_use_steps = true;
+    s_steps[0] = (loop_step_t){.time = 0, .manual = true, .cancel_source = true};
+    s_steps[1] = (loop_step_t){.time = 1000, .wake = true};
+    s_steps[2] = (loop_step_t){.time = 1500};
+    run_worker(3);
+    assert(s_refresh_calls == 2 && s_wake_gets == 1);
+    assert(s_posts == 1 && s_post_times[0] == 1500 && !s_refresh_requested);
+
+    /* Genuine client/setup failures keep their cadence rather than retrying each loop. */
+    reset_state(); s_view.auto_refresh = true; s_use_steps = true;
+    s_local_refresh_failure = true;
+    s_steps[0] = (loop_step_t){.time = 0};
+    s_steps[1] = (loop_step_t){.time = 60000};
+    s_steps[2] = (loop_step_t){.time = 60500};
+    s_steps[3] = (loop_step_t){.time = 119999};
+    s_steps[4] = (loop_step_t){.time = 120000};
+    run_worker(5);
+    assert(s_refresh_calls == 2 && s_posts == 0);
 
     reset_state(); s_refresh_requested = true;
     s_inject_manual_during_refresh = true;

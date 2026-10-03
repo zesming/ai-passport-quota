@@ -91,7 +91,6 @@ typedef struct {
 
 typedef struct {
     bool sleeping;
-    bool wake_refresh_pending;
     bool wake_fetch_pending;
     uint32_t generation;
 } display_scheduler_t;
@@ -199,30 +198,6 @@ static bool display_generation_is_current(uint32_t generation)
               s_display_scheduler.generation == generation;
     portEXIT_CRITICAL(&s_display_state_mux);
     return current;
-}
-
-static void restore_wake_refresh(uint32_t generation)
-{
-    bool restored = false;
-    portENTER_CRITICAL(&s_display_state_mux);
-    if (!s_display_scheduler.sleeping &&
-        s_display_scheduler.generation == generation &&
-        !s_display_scheduler.wake_fetch_pending) {
-        s_display_scheduler.wake_refresh_pending = true;
-        restored = true;
-    }
-    portEXIT_CRITICAL(&s_display_state_mux);
-    if (restored && s_network_task != NULL) xTaskNotifyGive(s_network_task);
-}
-
-static void mark_wake_fetch_pending(uint32_t generation)
-{
-    portENTER_CRITICAL(&s_display_state_mux);
-    if (!s_display_scheduler.sleeping &&
-        s_display_scheduler.generation == generation) {
-        s_display_scheduler.wake_fetch_pending = true;
-    }
-    portEXIT_CRITICAL(&s_display_state_mux);
 }
 
 static void finish_wake_fetch(uint32_t generation, bool connection_current)
@@ -1078,15 +1053,15 @@ static void finish_refresh(bool success, uint32_t config_generation,
     post_simple_event(QUOTA_APP_EVENT_SNAPSHOT);
 }
 
-static void perform_refresh(const quota_device_config_t *config,
+/* False means deferred before admission; ordinary failures retain the cadence. */
+static bool perform_refresh(const quota_device_config_t *config,
                             uint32_t config_generation,
-                            uint32_t display_generation,
-                            bool wake_work)
+                            uint32_t display_generation)
 {
-    if (!begin_refresh(config_generation, display_generation)) return;
+    if (!begin_refresh(config_generation, display_generation)) return false;
     if (!operation_is_current(config_generation, display_generation)) {
         clear_stale_refreshing(display_generation);
-        return;
+        return false;
     }
     post_simple_event(QUOTA_APP_EVENT_SNAPSHOT);
 
@@ -1102,24 +1077,17 @@ static void perform_refresh(const quota_device_config_t *config,
                                    &post_outcome);
     if (!operation_is_current(config_generation, display_generation)) {
         clear_stale_refreshing(display_generation);
-        return;
+        return post_outcome == HTTP_REQUEST_ADMITTED;
     }
-    if (wake_work && success) mark_wake_fetch_pending(display_generation);
-    if (wake_work && !success &&
-        (post_outcome == HTTP_REQUEST_DEFERRED ||
-         !network_operation_is_current(config_generation, display_generation))) {
-        restore_wake_refresh(display_generation);
-    }
+    bool completed_attempt = post_outcome != HTTP_REQUEST_DEFERRED;
     bool fetched = false;
-    bool wake_fetch_deferred = false;
     if (success) {
         for (unsigned attempt = 0; attempt < 6; attempt++) {
             if (!operation_is_current(config_generation, display_generation)) {
                 clear_stale_refreshing(display_generation);
-                return;
+                return completed_attempt;
             }
             if (!network_operation_is_current(config_generation, display_generation)) {
-                wake_fetch_deferred = true;
                 break;
             }
             http_request_outcome_t get_outcome = HTTP_REQUEST_NOT_ADMITTED;
@@ -1127,7 +1095,7 @@ static void perform_refresh(const quota_device_config_t *config,
                                display_generation, &get_outcome)) {
                 if (!operation_is_current(config_generation, display_generation)) {
                     clear_stale_refreshing(display_generation);
-                    return;
+                    return completed_attempt;
                 }
                 fetched = true;
                 bool changed = !had_previous ||
@@ -1137,36 +1105,26 @@ static void perform_refresh(const quota_device_config_t *config,
                     if (!operation_is_current(config_generation, display_generation)) {
                         clear_stale_refreshing(display_generation);
                     }
-                    return;
+                    return completed_attempt;
                 }
                 if (changed || attempt == 5) break;
             } else if (get_outcome == HTTP_REQUEST_DEFERRED ||
                        !network_operation_is_current(config_generation,
                                                      display_generation)) {
-                wake_fetch_deferred = get_outcome == HTTP_REQUEST_DEFERRED;
                 break;
             }
             if (attempt < 5) {
                 vTaskDelay(pdMS_TO_TICKS(1000));
                 if (!operation_is_current(config_generation, display_generation)) {
                     clear_stale_refreshing(display_generation);
-                    return;
+                    return completed_attempt;
                 }
             }
-        }
-        if (wake_work && fetched) {
-            finish_wake_fetch(display_generation, true);
-        } else if (wake_work &&
-                   !wake_fetch_deferred &&
-                   post_outcome != HTTP_REQUEST_DEFERRED &&
-                   network_operation_is_current(config_generation,
-                                                display_generation)) {
-            /* The wake sync was attempted online but could not fetch valid data. */
-            finish_wake_fetch(display_generation, true);
         }
         success = success && fetched;
     }
     finish_refresh(success, config_generation, display_generation);
+    return completed_attempt;
 }
 
 static void perform_snapshot_fetch(const quota_device_config_t *config,
@@ -1447,27 +1405,21 @@ static void network_task(void *arg)
 
         enum { NETWORK_ACTION_NONE, NETWORK_ACTION_REFRESH,
                NETWORK_ACTION_SNAPSHOT } action = NETWORK_ACTION_NONE;
-        bool wake_refresh_work = false;
         bool wake_fetch_work = false;
+        bool manual_refresh_work = false;
         mutex_lock();
         if (s_has_config && s_config_generation == config_generation && s_view.connected) {
             portENTER_CRITICAL(&s_display_state_mux);
             bool display_current = !s_display_scheduler.sleeping;
             if (display_current) {
                 display_state.generation = s_display_scheduler.generation;
-                if (s_display_scheduler.wake_refresh_pending) {
-                    s_display_scheduler.wake_refresh_pending = false;
-                    s_display_scheduler.wake_fetch_pending = false;
-                    s_refresh_requested = false;
-                    s_fetch_after_connect = false;
-                    wake_refresh_work = true;
-                    action = NETWORK_ACTION_REFRESH;
-                } else if (s_display_scheduler.wake_fetch_pending) {
+                if (s_display_scheduler.wake_fetch_pending) {
                     s_fetch_after_connect = false;
                     wake_fetch_work = true;
                     action = NETWORK_ACTION_SNAPSHOT;
                 } else if (s_refresh_requested ||
                            (s_view.auto_refresh && now_ms >= next_provider_refresh_ms)) {
+                    manual_refresh_work = s_refresh_requested;
                     s_refresh_requested = false;
                     s_fetch_after_connect = false;
                     action = NETWORK_ACTION_REFRESH;
@@ -1482,26 +1434,27 @@ static void network_task(void *arg)
         mutex_unlock();
 
         if (action == NETWORK_ACTION_REFRESH) {
-            perform_refresh(&s_network_config, config_generation,
-                            display_state.generation, wake_refresh_work);
-            uint64_t completed_ms = monotonic_ms();
-            next_provider_refresh_ms = completed_ms + (uint64_t)refresh_seconds * 1000;
-            next_snapshot_poll_ms = completed_ms + SNAPSHOT_POLL_MS;
+            if (perform_refresh(&s_network_config, config_generation,
+                                display_state.generation)) {
+                uint64_t completed_ms = monotonic_ms();
+                next_provider_refresh_ms = completed_ms + (uint64_t)refresh_seconds * 1000;
+                next_snapshot_poll_ms = completed_ms + SNAPSHOT_POLL_MS;
+            } else if (manual_refresh_work) {
+                /* Sleep/link transitions cannot consume an unadmitted request. */
+                mutex_lock();
+                if (s_has_config && s_config_generation == config_generation) {
+                    s_refresh_requested = true;
+                }
+                mutex_unlock();
+            }
         } else if (action == NETWORK_ACTION_SNAPSHOT) {
             perform_snapshot_fetch(&s_network_config, config_generation,
                                    display_state.generation, wake_fetch_work);
             mutex_lock();
             bool failed = s_view.request_failed;
-            if (wake_fetch_work) refresh_seconds = s_view.refresh_seconds;
             mutex_unlock();
             uint64_t completed_ms = monotonic_ms();
-            if (wake_fetch_work) {
-                /* A staged wake GET completes the wake sync cycle. Start the
-                   automatic provider cadence from this completion, using the
-                   latest interval returned by the server. */
-                next_provider_refresh_ms = completed_ms +
-                    (uint64_t)refresh_seconds * 1000;
-            }
+            /* Cache synchronization never postpones the provider deadline. */
             next_snapshot_poll_ms = completed_ms +
                 (failed ? SNAPSHOT_RETRY_MS : SNAPSHOT_POLL_MS);
         }
@@ -1737,8 +1690,8 @@ void quota_service_set_display_sleeping(bool sleeping)
         s_display_scheduler.sleeping = sleeping;
         s_display_scheduler.generation++;
         if (s_display_scheduler.generation == 0) s_display_scheduler.generation = 1;
-        s_display_scheduler.wake_refresh_pending = !sleeping;
-        s_display_scheduler.wake_fetch_pending = false;
+        /* Wake reads the companion cache; source refresh keeps its own deadline. */
+        s_display_scheduler.wake_fetch_pending = !sleeping;
         changed = true;
     }
     portEXIT_CRITICAL(&s_display_state_mux);
