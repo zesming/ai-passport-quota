@@ -4,7 +4,7 @@
 
 An AI subscription quota dashboard for the FoloToy AI Passport (ESP32-C3, 240 x 320 screen), with a local desktop companion for account login and device settings. Supports up to eight independent ChatGPT/Codex, Claude and DeepSeek API accounts, provider logos, subscription quotas or API balances, refresh timing and offline cache.
 
-The device status bar shows Wi-Fi connection, a filled battery indicator with percentage, and the current time after synchronization. OpenAI uses a monochrome mark on the dark screen. Screen off is configurable. Device polling and refresh requests pause while the screen is off; waking immediately queues one synchronization, then resumes the configured refresh schedule. The companion keeps its own desktop refresh schedule. The battery bar reflects measured SOC; the current board interface does not expose active charging status, so charging is indicated by the physical green LED rather than an on-screen animation.
+The device status bar shows Wi-Fi connection, a green battery fill without a numeric percentage, and the current time after synchronization. OpenAI uses a monochrome mark on the dark screen. Screen off is configurable. Device polling and refresh requests pause while the screen is off; waking immediately queues one synchronization, then resumes the configured refresh schedule. The companion keeps its own desktop refresh schedule. Battery fill always follows measured SOC; a diagonal mark indicates an unavailable reading. Green is the battery icon's color, not a charging-state indication. The physical green LED indicates charging.
 
 ## Screenshots
 

@@ -8,6 +8,18 @@
 
 ## Unreleased
 
+### 2026-10-03 — Green proportional battery indicator
+
+The owner clarified the requested appearance: green battery fill that stays at the actual remaining level. Removed the visible numeric percentage from the firmware and web preview, used `#34C759` for proportional fill, and aligned the icon with the clock and Wi-Fi status. An unavailable reading has a diagonal mark rather than appearing as a measured empty battery. Green is fixed styling; no charging state or looping charge animation is inferred. Updated all four documentation screenshots using isolated example accounts.
+
+Rechecked the public factory identity-card firmware to refine the earlier BSP-only audit. The [official default manifest](https://ai-passport.folotoy.cn/assets/firmwares/ai-passport-default/manifest.json) identifies version `1.2.2`, commit `5f3f673`, hardware `v1.0.0`. Its [application image](https://ai-passport.folotoy.cn/assets/firmwares/ai-passport-default/trae_card.bin) is 2,678,880 bytes, SHA-256 `d911b86737818b624c5621d2bc7e344e3083cc01a06d6335b0153725349db555`, embedded ELF SHA-256 `e1a62f0e614256247471be9ae7a81ba58b453e2571fd4b4582491bae97f46ee0`. Read-only RISC-V disassembly maps its battery timer (`0x4200d3a4`) through SOC sampling/EMA smoothing to renderer `0x4200faee`; this path changes fill and color from battery level. Its additional ID ADC getter (`0x42017098`, registers `0x0E–0x0F`) is called during initialization for a diagnostic voltage log, not by this runtime status-bar path. No verified charging source was found in that path. These findings apply to the checked image, not all factory versions or board revisions; the owner's original factory indication has not been matched to an exact build. Research files and raw logs remain outside Git.
+
+Build: **PASS** — complete `./tools/validate.sh` with ESP-IDF 5.5.3 and debug archive verification. Host tests: **PASS** — all repository/firmware host checks, plus 47 companion tests and its production build. Browser checks confirmed home, settings, DeepSeek and pairing previews; the synthetic 76% sample retains exactly 76% of the web fill track, green color and no visible battery number. Screenshots are web simulations, not board evidence.
+
+The verified local bundle is `build/firmware/ca0a27c27d49eddefeaa0efe29ce6e8d55575c04baaf93e99914033eb08c4e20/`, full image SHA-256 `ca0a27c27d49eddefeaa0efe29ce6e8d55575c04baaf93e99914033eb08c4e20`, ELF SHA-256 `795791a0eb12d27f486a178ce454a255034470129700a56f541c71848e3a6971`. The app is 1,496,512 bytes; the merged image is 1,562,048 bytes. This working-tree build reports `b39dc02-dirty`. Firmware remains local and uncommitted.
+
+Device tests: **NOT RUN** — no hardware/serial access or flashing, as requested. Unverified: physical rendering of the new icon, the preceding screen-aware synchronization feature, and a verified charging-state source if a future design depends on one. The last flashed image remains `c0eb0a89…`.
+
 ### 2026-10-03 — Screen-aware synchronization
 
 Device screen-off state pauses snapshot polling, source-refresh requests, settings HTTP and explicit Wi-Fi retry/configuration work while keeping cache, pairing data and function keys available. A wake immediately queues one coalesced refresh/snapshot cycle even with automatic refresh disabled; any already admitted bounded request finishes first; an offline wake is retained until connectivity recovers. Normal polling and enabled automatic refresh resume from the wake cycle. The companion keeps its separate desktop refresh schedule. Already admitted Wi-Fi initialization may finish; HTTP work stays bounded; display transition generations prevent stale results and follow-up requests after sleep or rapid sleep/wake.

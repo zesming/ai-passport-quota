@@ -21,11 +21,12 @@ LV_FONT_DECLARE(quota_font_16);
 #define UI_AMBER 0xE1B974
 #define UI_RED 0xF18C82
 #define UI_TRACK 0x33414D
+#define UI_BATTERY 0x34C759
 
 typedef struct {
     lv_obj_t *title;
     lv_obj_t *header_info;
-    lv_obj_t *battery;
+    lv_obj_t *battery_unknown;
     lv_obj_t *battery_fill;
     lv_obj_t *clock;
     lv_obj_t *wifi_lines[2];
@@ -150,13 +151,18 @@ static void create_header(const char *title, const char *info)
     lv_line_set_points(s_ui.wifi_slash, slash, 2);
     lv_obj_set_style_line_width(s_ui.wifi_slash, 2, 0);
     lv_obj_set_style_line_color(s_ui.wifi_slash, color(UI_MUTED), 0);
-    lv_obj_t *shell = create_rect(s_page, 197, 7, 26, 12, UI_BG, 2);
+    lv_obj_t *shell = create_rect(s_page, 197, 14, 26, 12, UI_BG, 2);
     lv_obj_set_style_border_color(shell, color(UI_MUTED), 0);
     lv_obj_set_style_border_width(shell, 1, 0);
-    create_rect(s_page, 223, 10, 3, 6, UI_MUTED, 1);
-    s_ui.battery_fill = create_rect(s_page, 199, 9, 22, 8, UI_INK, 1);
-    s_ui.battery = create_label(s_page, 195, 20, 33, 14, &lv_font_montserrat_12,
-                                UI_MUTED, LV_TEXT_ALIGN_CENTER, "");
+    create_rect(s_page, 223, 17, 3, 6, UI_MUTED, 1);
+    s_ui.battery_fill = create_rect(s_page, 199, 16, 22, 8, UI_BATTERY, 1);
+    static const lv_point_precise_t battery_slash[] = {{0, 7}, {7, 0}};
+    s_ui.battery_unknown = lv_line_create(s_page);
+    lv_obj_remove_style_all(s_ui.battery_unknown);
+    lv_obj_set_pos(s_ui.battery_unknown, 206, 16);
+    lv_line_set_points(s_ui.battery_unknown, battery_slash, 2);
+    lv_obj_set_style_line_width(s_ui.battery_unknown, 1, 0);
+    lv_obj_set_style_line_color(s_ui.battery_unknown, color(UI_MUTED), 0);
     create_rect(s_page, 12, 35, 216, 1, UI_LINE, 0);
 }
 
@@ -359,15 +365,6 @@ static void set_account_row_visible(size_t index, bool visible)
         if (visible) lv_obj_clear_flag(objects[i], LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(objects[i], LV_OBJ_FLAG_HIDDEN);
     }
-}
-
-static void battery_text(int battery_percent, char output[8])
-{
-    if (battery_percent < 0 || battery_percent > 100) {
-        snprintf(output, 8, "--");
-        return;
-    }
-    snprintf(output, 8, "%d%%", battery_percent);
 }
 
 static void format_clock(uint64_t epoch, bool include_date, char *output, size_t capacity)
@@ -680,15 +677,13 @@ void quota_ui_render(const quota_navigation_t *navigation,
         lv_screen_load(s_root);
     }
 
-    char battery[8];
-    battery_text(battery_percent, battery);
-    set_label_text(s_ui.battery, battery);
     bool battery_known = battery_percent >= 0 && battery_percent <= 100;
     int fill_width = battery_known ? (22 * battery_percent + 50) / 100 : 0;
     lv_obj_set_width(s_ui.battery_fill, fill_width);
-    lv_obj_set_style_bg_color(s_ui.battery_fill, color(battery_percent <= 20 ? UI_RED : UI_INK), 0);
     if (fill_width == 0) lv_obj_add_flag(s_ui.battery_fill, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_clear_flag(s_ui.battery_fill, LV_OBJ_FLAG_HIDDEN);
+    if (battery_known) lv_obj_add_flag(s_ui.battery_unknown, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_clear_flag(s_ui.battery_unknown, LV_OBJ_FLAG_HIDDEN);
     char clock_text[16];
     format_clock(service->clock_synchronized ? service->now_epoch : 0,
                  false, clock_text, sizeof(clock_text));

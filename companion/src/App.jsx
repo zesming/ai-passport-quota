@@ -100,9 +100,9 @@ function DeviceHeader({ title, info, nowSeconds, previewStatus }) {
         <svg viewBox="0 0 29 12" aria-hidden="true" focusable="false">
           <rect className="battery-outline" x=".5" y=".5" width="25" height="11" rx="2" />
           {batteryPercent !== null && <rect className="battery-fill" x="2" y="2" width={21 * batteryPercent / 100} height="8" rx="1" />}
+          {batteryPercent === null && <path className="battery-unknown" d="M10 9 17 3" />}
           <path className="battery-terminal" d="M27 4v4" />
         </svg>
-        <small>{batteryPercent === null ? '—%' : `${batteryPercent}%`}</small>
       </span>
     </div>
   );
