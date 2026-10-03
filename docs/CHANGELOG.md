@@ -8,6 +8,16 @@
 
 ## Unreleased
 
+### 2026-10-03 — Device upgrade to the green battery build
+
+After the owner's explicit flash request, installed the previously validated `ca0a27c27d49eddefeaa0efe29ce6e8d55575c04baaf93e99914033eb08c4e20` bundle on `/dev/cu.usbmodem1101`. Before writing, the actual partition table matched the bundle's SHA-256 `420931e3f5af072d899b5357c043fd9f283bf165fc9df6113b6d43d82b48a06d`. Verified component writes at `0x0` / `0x8000` / `0x10000` left NVS and PHY regions untouched; no full-chip erase or rebuild was performed. Existing cache and pairing were restored.
+
+Build: **PASS** and Host tests: **PASS**, reusing the complete gate for that exact artifact; archive verification passed again before writing. GitHub static and firmware checks both passed for code commit `17c2ed9`.
+
+Device tests: **PASS for component verification and bounded startup**. A 30-second capture showed application version `b39dc02-dirty`, boot ELF prefix `795791a0e` uniquely matching the retained ELF `795791a0eb12d27f486a178ce454a255034470129700a56f541c71848e3a6971`, application readiness, cache restoration and CW2017 detection. No panic, assertion, stack-canary error or watchdog was observed. The companion received authenticated requests after flashing. The serial port was released; private logs remain local.
+
+Unverified: the physical green icon/no numeric percentage, manual sleep/wake and traffic suppression/resumption, automatic sleep and extended/offline timing. User observations are pending. Current persisted refresh and screen-off intervals are both five minutes, with automatic refresh enabled. This bundle is now the latest flashed image; earlier unflashed entries below describe their original validation stages.
+
 ### 2026-10-03 — Green proportional battery indicator
 
 The owner clarified the requested appearance: green battery fill that stays at the actual remaining level. Removed the visible numeric percentage from the firmware and web preview, used `#34C759` for proportional fill, and aligned the icon with the clock and Wi-Fi status. An unavailable reading has a diagonal mark rather than appearing as a measured empty battery. Green is fixed styling; no charging state or looping charge animation is inferred. Updated all four documentation screenshots using isolated example accounts.
