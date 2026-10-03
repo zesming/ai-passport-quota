@@ -1,32 +1,7 @@
 """Execute the firmware refresh paths and network worker with fake dependencies."""
-import os
 import re
-import subprocess
-import tempfile
 import unittest
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parent.parent
-
-
-def extract_function(test: unittest.TestCase, source: str, name: str,
-                     declaration: str | None = None) -> str:
-    start = r"^static\s+(?:void|bool)\s+" if declaration is None else \
-        r"^" + re.escape(declaration) + r"\s+"
-    match = re.search(start + re.escape(name) +
-                      r"\s*\([^;]*?\)\s*\n\{.*?^\}", source, re.M | re.S)
-    test.assertIsNotNone(match, name)
-    return match[0]
-
-
-def compile_and_run(harness: str, prefix: str) -> None:
-    with tempfile.TemporaryDirectory(prefix=prefix) as directory:
-        path = Path(directory)
-        (path / "test.c").write_text(harness)
-        subprocess.run([os.environ.get("CC", "cc"), "-std=c11", "-Wall", "-Wextra",
-                        "-Werror", "-I" + str(ROOT / "main"), str(path / "test.c"),
-                        "-o", str(path / "test")], check=True)
-        subprocess.run([str(path / "test")], check=True)
+from runtime_helpers import ROOT, extract_function, compile_and_run
 
 
 class RefreshRuntime(unittest.TestCase):
@@ -38,7 +13,7 @@ class RefreshRuntime(unittest.TestCase):
                  "clear_stale_refreshing", "begin_refresh", "finish_refresh",
                  "perform_refresh", "perform_snapshot_fetch", "restore_pending_settings",
                  "perform_settings_update")
-        functions = [extract_function(self, source, name) for name in names]
+        functions = [extract_function(source, name) for name in names]
         # Inject a link change at the outer GET gate, before the transport is called.
         index = names.index("network_operation_is_current")
         functions[index] = functions[index].replace(
@@ -56,7 +31,7 @@ static bool network_operation_is_current(uint32_t config_generation,
     return network_operation_is_current_actual(config_generation, display_generation);
 }
 '''
-        functions.append(extract_function(self, source, "quota_service_set_display_sleeping",
+        functions.append(extract_function(source, "quota_service_set_display_sleeping",
                                           "void"))
         harness = r'''
 #include "quota_logic.h"
@@ -85,7 +60,6 @@ typedef struct {
     uint16_t refresh_seconds;
     bool auto_refresh;
     uint16_t screen_timeout_seconds;
-    uint32_t error_code;
 } quota_app_event_t;
 #define portMUX_INITIALIZER_UNLOCKED 0
 #define portENTER_CRITICAL(mux) ((void)(mux))
@@ -374,7 +348,7 @@ int main(void) {
 
     def test_network_worker_pauses_wakes_and_preserves_provider_deadline(self):
         source = (ROOT / "main/quota_service.c").read_text()
-        function = extract_function(self, source, "network_task")
+        function = extract_function(source, "network_task")
         harness = r'''
 #include "quota_logic.h"
 #include <assert.h>

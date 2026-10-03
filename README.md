@@ -2,25 +2,11 @@
 
 # AI Passport Quota
 
-An AI subscription quota dashboard for the FoloToy AI Passport (ESP32-C3, 240 x 320 screen), with a local desktop companion for account login and device settings. Supports up to eight independent ChatGPT/Codex, Claude and DeepSeek API accounts, provider logos, subscription quotas or API balances, refresh timing and offline cache.
-
-The device status bar shows Wi-Fi connection, a green battery fill without a numeric percentage, and the current time after synchronization. OpenAI uses a monochrome mark on the dark screen. Screen off is configurable. Device polling and refresh requests pause while the screen is off; waking immediately reads the companion's latest cached snapshot silently and retains the next scheduled account refresh. Manual requests or an enabled automatic refresh that is due show refresh progress. The companion keeps its own desktop refresh schedule. Battery fill always follows measured SOC; a diagonal mark indicates an unavailable reading. Green is the battery icon's color, not a charging-state indication. The physical green LED indicates charging.
-
-## Screenshots
-
-These are captures of the running companion with isolated **documentation example accounts**. Emails, quotas, balances and device indicators are synthetic; no personal account data is included. The left panel is the web device preview, not a photograph of the physical screen. Its clock uses the computer's local time; live board Wi-Fi/battery telemetry is not supplied to the companion.
-
-![Account dashboard and device preview](docs/screenshots/dashboard.jpg)
-
-![Refresh settings](docs/screenshots/settings.jpg)
-
-![DeepSeek balance and device preview](docs/screenshots/deepseek.jpg)
-
-![USB device configuration](docs/screenshots/device-setup.jpg)
+A quota dashboard for the FoloToy AI Passport (ESP32-C3, 240 × 320 display), with a local desktop companion. Manage up to eight isolated Codex, Claude and DeepSeek accounts, view remaining subscription quota or RMB API balance, set refresh timing and screen timeout, and retain an offline device cache.
 
 ## Run the companion
 
-Requirements: Node.js 22+, npm, OpenSSL, and the official Codex/Claude CLI for the providers you want to connect. USB configuration requires desktop Chrome or Edge and a data-capable cable. Firmware uses ESP-IDF **5.5.3**, ESP32-C3, 8 MB Flash, no PSRAM.
+Requirements: Node.js 22+, npm, OpenSSL, and the official Codex/Claude CLI for those providers. Device setup needs desktop Chrome or Edge with Web Serial, a data-capable USB cable and 2.4 GHz Wi-Fi. The computer and companion must stay running during synchronization.
 
 ```bash
 git clone https://github.com/zesming/ai-passport-quota.git
@@ -30,75 +16,43 @@ npm run build
 npm start
 ```
 
-Open **http://127.0.0.1:4317/**. On macOS, `companion/start-dashboard.command` starts an already built installation. Keep the computer and companion running during device synchronization. Executables are discovered automatically; optional overrides are `AIQ_CODEX_BIN`, `AIQ_CLAUDE_BIN`, and `AIQ_STATE_DIR`.
+Open **http://127.0.0.1:4317/**. On macOS, `start-dashboard.command` starts an already built installation; keep its terminal open. Optional overrides: `AIQ_CODEX_BIN`, `AIQ_CLAUDE_BIN`, `AIQ_STATE_DIR`.
 
-1. In account management, add Codex or Claude and complete authorization on the official provider page. Each profile is isolated; existing CLI credentials are not imported.
-2. Codex quota is collected through the official app-server. It describes **Codex usage**, not every ordinary ChatGPT message limit. Missing windows display as unknown.
-3. For Claude, copy the account's session launch command from the page and use that profile normally. A statusline callback after a normal model response supplies its quota. Refreshing never sends a paid model prompt.
-4. Add DeepSeek with an API key from the [official portal](https://platform.deepseek.com/api_keys). The optional name is a local label; the balance API does not supply a verified email. Keys stay in owner-only local profiles and are never sent to the device. The page displays one RMB available balance (`total_balance`, including grants and top-ups) from the [official balance API](https://api-docs.deepseek.com/api/get-user-balance/), with availability and observation time. Grant/top-up details and USD are not displayed. Missing RMB data stays unknown. This check sends no model prompt.
-5. Set automatic refresh at 1, 5, 15 or 30 minutes and automatic screen off at 30 seconds, 1/2/5/10 minutes, or Never (default: 2 minutes).
+1. Add Codex or Claude in Account management and complete official authorization. Each account gets an independent profile; existing CLI credentials are not imported.
+2. Codex reports **Codex usage**, not all ChatGPT message limits. Missing quota windows remain unknown.
+3. For Claude, copy the page's session launch command and use that profile normally. A statusline callback after a normal response supplies quota; refresh never sends a paid model prompt.
+4. For DeepSeek, add an API key from the [official portal](https://platform.deepseek.com/api_keys). The page shows RMB available balance, including grants and top-ups, from the [balance API](https://api-docs.deepseek.com/api/get-user-balance/). The name is a local label. Keys stay on the computer. Spending history, request counts and cumulative token totals are not supported.
+5. Set automatic refresh to 1, 5, 15 or 30 minutes. Screen timeout accepts Never, 30 seconds, or 1/2/5/10 minutes; the default is 2 minutes.
 
-The DeepSeek integration displays available balance only. Account-wide cumulative/period spending, request counts and historical token totals are not supported. [Model responses](https://api-docs.deepseek.com/api/create-chat-completion/) contain usage for a single request, not the portal's last-30-day totals across other clients.
+Credentials live under `~/.local/share/ai-passport-quota/` or `AIQ_STATE_DIR`, in private account profiles outside the repository. Removing an account detaches it; Codex/Claude profile files are retained. Stop syncing revokes the device token.
 
-## Connect the device
+## Connect and use the device
 
-Flash a verified build first, then connect USB and open the physical pairing window. For an already configured device, long-press OK, navigate to pairing with up/down, and confirm with OK. The window lasts 120 seconds.
+Install a verified firmware build using the [build and flash guide](docs/development/README.md). On an already configured device, long-press OK, select pairing with up/down and confirm with OK. The physical pairing window lasts 120 seconds.
 
-In the web device configuration panel, choose the computer's private IPv4 address and enter **2.4 GHz Wi-Fi** details. Click Connect and configure, select the ESP32-C3 USB Serial/JTAG device, and wait for confirmation. Wi-Fi details travel directly from browser memory to USB. After pairing, the device connects to the selected computer's pinned HTTPS endpoint on port **4318**; port **4317** remains local-only. Re-pair if the computer's IP changes. Stopping sync revokes the token.
+In Device configuration, choose the computer's private IPv4 address, enter Wi-Fi details, and click Connect and configure. Select the ESP32-C3 USB Serial/JTAG device and wait for confirmation. Wi-Fi details travel directly from browser memory to USB. Device synchronization uses pinned HTTPS on the selected address, port **4318**; the settings page remains local-only on **4317**. Re-pair if the computer's IP changes. Close other serial tools and pairing tabs before connecting. If setup fails, refresh the page, reopen the physical window and re-enter Wi-Fi details; the page distinguishes no input, interrupted communication, unmatched acknowledgment and device rejection.
 
-On the device: up/down selects an account, short OK refreshes or confirms, and long OK opens settings or returns. Automatic screen off uses the selected timeout. The first function-key gesture wakes only; long DOWN while awake turns the screen off. The independent hardware power key retains its official long-press shutdown behavior. Pairing suppresses automatic screen off. Screen off pauses device snapshot polling, source refresh requests, settings HTTP and explicit Wi-Fi reconnect attempts. Waking queues one silent cache read immediately, waiting only for an already admitted bounded request to finish, even when automatic refresh is disabled; if offline, it waits for connectivity. Waking does not start an account refresh or postpone its deadline. If an enabled automatic refresh became due while asleep, it runs after the wake cache read. Cached accounts and pairing data remain available.
+Up/down selects an account; short OK refreshes or confirms; long OK opens settings or returns. Long DOWN while awake turns the screen off. The first function-key gesture wakes only. The independent power key retains hardware long-press shutdown. Pairing suppresses automatic screen off.
 
-If USB configuration fails, refresh the web page, reopen the physical window and re-enter Wi-Fi details. Close other serial tools or pairing tabs. The page distinguishes no input, interrupted USB communication, an unmatched acknowledgment and explicit device rejection.
+Screen off pauses device network work. Wake silently reads the companion cache and preserves the next account-refresh deadline. An enabled overdue refresh runs afterward. The desktop keeps its own refresh schedule. Offline data stays labelled; expired or missing windows do not become full quota.
 
-## Build and verify
+The status bar shows Wi-Fi connection, time after synchronization and proportional green battery fill. A diagonal mark means no battery reading. Green is styling, not a charging indication; no verified software charging-state source is available. The clock shows `--:--` until synchronized.
 
-```bash
-# Companion: from the repository root
-cd companion
-npm ci
-npm test
-npm run build
-cd ..
+## Screenshots
 
-# Firmware: activate your ESP-IDF 5.5.3 installation first
-source <esp-idf-v5.5.3>/export.sh
-python3 tools/install_passport_skills.py --install
-./tools/validate.sh --static
-./tools/validate.sh --firmware
-# The complete delivery gate is ./tools/validate.sh
-```
+These captures use isolated synthetic example accounts. The device preview is a web rendering, not a photograph; its clock uses computer time and its indicators do not establish live board telemetry.
 
-The firmware gate produces `build/FoloToy-AI-Passport-full.bin` and a matching debug bundle under `build/firmware/<sha256>/`. Verify the bundle with `python3 tools/archive_firmware.py verify <bundle-directory>`. Flash only after approval for the exact device, artifact and data impact. To retain settings, confirm partition compatibility and write the verified bootloader, partition table and application at their recorded offsets. A complete merged write at `0x0` also writes the NVS gap and can reset settings. Build files are not committed. See [environment setup](docs/development/engineering/environment-setup.md) and [build/flash policy](docs/development/engineering/build-and-test.md).
+![Account dashboard and device preview](docs/screenshots/dashboard.jpg)
+![Refresh settings](docs/screenshots/settings.jpg)
+![DeepSeek balance](docs/screenshots/deepseek.jpg)
+![USB device configuration](docs/screenshots/device-setup.jpg)
 
-For frontend development, keep the companion API running, then use a separate terminal:
+## Development
 
-```bash
-cd companion
-AIQ_DEV_ORIGIN=http://127.0.0.1:5173 npm start
-# separate terminal, same directory
-npm run dev
-```
+Start with [AGENTS.md](AGENTS.md). See the [developer guide](docs/development/README.md) for structure, checks and flashing, [application contracts](docs/applications/ai-quota-monitor.md) for provider/protocol/cache behavior, and [hardware reference](docs/hardware-design/AI_HARDWARE_DEVELOPMENT_GUIDE.md) for pins and BSP constraints. Dated changes and acceptance evidence belong in the [changelog](docs/CHANGELOG.md).
 
-Open http://127.0.0.1:5173/ for development, matching the allowed origin above.
-
-For reproducible documentation captures without accessing real profiles: `cd companion && npm run preview:readme`, then open http://127.0.0.1:4327/ . This example service uses temporary settings and synthetic accounts; it is separate from production.
-
-## Development entry points
-
-Development starts with [AGENTS.md](AGENTS.md) and the [application/protocol guide](docs/applications/ai-quota-monitor.md). Dated changes, validation and device acceptance are recorded in the [changelog](docs/CHANGELOG.md).
-
-| Area | Files |
-| --- | --- |
-| Firmware UI, state and input | `main/main.c`, `main/quota_ui.c`, `main/quota_logic.c` |
-| Wi-Fi, pinned HTTPS, USB and NVS | `main/quota_service.c` |
-| Display/board drivers | `components/bsp/` |
-| React dashboard and USB transport | `companion/src/App.jsx`, `companion/src/serial.mjs`, `companion/src/styles.css` |
-| Official login and quota collection | `companion/server/accounts.mjs`, `clients.mjs`, `claude-feed.mjs`, `claude-session.mjs`, `deepseek.mjs` |
-| Local API, pairing and storage | `companion/server/index.mjs`, `pairing.mjs`, `protocol.mjs`, `storage.mjs` |
-| Host tests | `tests/test_quota_logic.c`, `tests/test_quota_fonts.py`, `tests/test_quota_http_runtime.py`, `tests/test_quota_refresh_runtime.py`, `tests/test_quota_storage_runtime.py`, `companion/test/*.test.mjs` |
-
-Profiles and credentials live outside the repository in `~/.local/share/ai-passport-quota/` (or `AIQ_STATE_DIR`). Never commit auth files, Wi-Fi details, tokens, private keys, device identifiers or raw logs. UI changes should be captured with example accounts. Firmware code outside the LVGL task must use the BSP lock; networking/storage must not block button callbacks. Run the relevant tests and the full firmware gate for firmware delivery; flashing requires separate authorization.
+Firmware requires ESP-IDF **5.5.3**, ESP32-C3, 8 MB Flash and no PSRAM. Builds and simulations do not establish hardware acceptance. Real browser USB pairing, provider access and the remaining board checks require separate verification.
 
 ## Origin and license
 
-Firmware retains the MIT-licensed [FoloToy AI Passport](https://gitee.com/FoloToy/ai-passport) history, based on commit `0b9e4c81ee4421c0bac39ca3561d65a8285acd4a`. The local `upstream` remote points there; `origin` is this project. See [LICENSE](LICENSE), [font and firmware assets](assets/README.md), and [companion assets](companion/ASSETS.md) for retained licenses and attribution.
+Based on the MIT-licensed [FoloToy AI Passport](https://gitee.com/FoloToy/ai-passport), commit `0b9e4c81ee4421c0bac39ca3561d65a8285acd4a`. See [LICENSE](LICENSE) and [asset sources and licenses](assets/README.md).

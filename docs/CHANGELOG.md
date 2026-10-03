@@ -8,6 +8,18 @@
 
 ## Unreleased
 
+### 2026-10-03 — Project simplification
+
+Reduced the maintained project from 355 to 135 files. Removed uncompiled hardware demos and pixel UI, unused audio/codec and Bluetooth configuration, their tests/stubs, duplicated skill/documentation scaffolding, static Sites packaging and upstream community/release/sync workflows. The active quota app, required BSP, provider assets/licenses and meaningful behavior tests remain. Removed files were retained locally in a recoverable cleanup folder.
+
+README now covers current use and screenshots; concise agent instructions and one developer guide link to the provider/protocol, hardware and asset contracts. Firmware shares one refresh-interval validator and drops write-only UI/event fields. Companion shares browser/server settings and address rules, uses one settings-action path and one public HTTP-error map, and removes dead branches. Runtime C tests share extraction/compilation helpers; repository checks retain links, bilingual peers, Action pins, secrets and conflict markers without unused policy machinery.
+
+Dependencies stay at their previous versions, with LVGL explicitly pinned to 9.5.0. Disabled unused LVGL examples/demos and removed the codec dependency. The final fresh application image is 1,488,912 bytes, 7,296 bytes smaller than the currently flashed image; compile steps decreased from 1,962 to 1,547. NVS formats, partition layout, quota/balance meaning, private profiles, TLS/USB protections and sleep/wake deadlines are unchanged.
+
+Build: **PASS** — ESP-IDF 5.5.3 build, component/merged-image checks and debug archive verification. Host tests: **PASS** — retained firmware/BSP/repository/archive suites and all 47 companion tests; Vite production build passed. Independent code review found no blocking regression. Browser checks with synthetic accounts confirmed dialog reset, mouse/OK settings routes, proportional bars and CNY-only balance display.
+
+Verified local bundle: `build/firmware/32b4b7debb6394fb34d627c73b59da117f4cac2a01e0d670fbdce4a58c6e75d0/`; full-image SHA-256 is the directory name. Matching ELF SHA-256: `2c938c0cd7cb455632f7997260efb69738065175d427099dd69cd8dd87d8b04e`. Application version: `c094fb1-dirty`. Device tests: **NOT RUN** — this bundle was not flashed. Unverified: physical regression of the simplified build and the outstanding real-provider/USB/offline checks below. The last flashed image remains `6ed4d397…`.
+
 ### 2026-10-03 — Device upgrade and silent wake acceptance
 
 After the owner's explicit request, installed the exact verified `6ed4d397dc3a19337873d5c0bc1a7fb86dc663364cd5afad9960916bfcbda50e` bundle on `/dev/cu.usbmodem1101`. The actual partition table matched SHA-256 `420931e3f5af072d899b5357c043fd9f283bf165fc9df6113b6d43d82b48a06d`. All three component writes at `0x0` / `0x8000` / `0x10000` were hash-verified. NVS and PHY regions were untouched; no full-chip erase or rebuild was performed.

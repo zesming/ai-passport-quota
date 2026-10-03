@@ -24,7 +24,6 @@ LV_FONT_DECLARE(quota_font_16);
 #define UI_BATTERY 0x34C759
 
 typedef struct {
-    lv_obj_t *title;
     lv_obj_t *header_info;
     lv_obj_t *battery_unknown;
     lv_obj_t *battery_fill;
@@ -58,14 +57,8 @@ typedef struct {
     lv_obj_t *sleep_rows[QUOTA_SCREEN_TIMEOUT_COUNT];
     lv_obj_t *sleep_markers[QUOTA_SCREEN_TIMEOUT_COUNT];
     lv_obj_t *sleep_values[QUOTA_SCREEN_TIMEOUT_COUNT];
-    lv_obj_t *setup_openai_logo;
-    lv_obj_t *setup_claude_logo;
-    lv_obj_t *setup_deepseek_logo;
-    lv_obj_t *setup_openai_name;
-    lv_obj_t *setup_claude_name;
     lv_obj_t *setup_countdown;
     lv_obj_t *setup_hint;
-    lv_obj_t *footer;
 } quota_ui_objects_t;
 
 static lv_obj_t *s_root;
@@ -125,7 +118,7 @@ static lv_obj_t *create_logo(lv_obj_t *parent, const lv_image_dsc_t *image,
 
 static void create_header(const char *title, const char *info)
 {
-    s_ui.title = create_label(s_page, 12, 9, 70, 22, &quota_font_16,
+    create_label(s_page, 12, 9, 70, 22, &quota_font_16,
                               UI_INK, LV_TEXT_ALIGN_LEFT, title);
     s_ui.header_info = create_label(s_page, 86, 11, 28, 18, &quota_font_12,
                                     UI_MUTED, LV_TEXT_ALIGN_RIGHT, info);
@@ -169,7 +162,7 @@ static void create_header(const char *title, const char *info)
 static void create_footer(const char *text)
 {
     create_rect(s_page, 12, 280, 216, 1, UI_LINE, 0);
-    s_ui.footer = create_label(s_page, 12, 288, 216, 21, &quota_font_12,
+    create_label(s_page, 12, 288, 216, 21, &quota_font_12,
                                 UI_MUTED, LV_TEXT_ALIGN_LEFT, text);
 }
 
@@ -307,12 +300,12 @@ static void create_setup_page(void)
                  LV_TEXT_ALIGN_CENTER, "请在电脑设置页");
     create_label(s_page, 20, 74, 200, 22, &quota_font_16, UI_INK,
                  LV_TEXT_ALIGN_CENTER, "添加账户并完成连接");
-    s_ui.setup_openai_logo = create_logo(s_page, &quota_openai_logo, 30, 109, 36, 36);
-    s_ui.setup_claude_logo = create_logo(s_page, &quota_claude_logo, 102, 109, 36, 36);
-    s_ui.setup_deepseek_logo = create_logo(s_page, &quota_deepseek_logo, 174, 109, 36, 36);
-    s_ui.setup_openai_name = create_label(s_page, 12, 149, 72, 22, &quota_font_12,
+    create_logo(s_page, &quota_openai_logo, 30, 109, 36, 36);
+    create_logo(s_page, &quota_claude_logo, 102, 109, 36, 36);
+    create_logo(s_page, &quota_deepseek_logo, 174, 109, 36, 36);
+    create_label(s_page, 12, 149, 72, 22, &quota_font_12,
                                          UI_INK, LV_TEXT_ALIGN_CENTER, "Codex");
-    s_ui.setup_claude_name = create_label(s_page, 84, 149, 72, 22, &quota_font_12,
+    create_label(s_page, 84, 149, 72, 22, &quota_font_12,
                                          UI_INK, LV_TEXT_ALIGN_CENTER, "Claude");
     create_label(s_page, 156, 149, 72, 22, &quota_font_12,
                   UI_INK, LV_TEXT_ALIGN_CENTER, "DeepSeek");

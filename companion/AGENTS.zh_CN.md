@@ -1,17 +1,11 @@
 简体中文 · [English](AGENTS.md)
 
-# 电脑端开发
+# 电脑端约束
 
-这是正式本地伴侣应用，不是此前的设计原型。先读根 README 与固件应用/协议说明。
+阅读根[仓库说明](../AGENTS.zh_CN.md)与[应用契约](../docs/applications/ai-quota-monitor.zh_CN.md)。
 
-- 设置 API 只监听本机回环地址，凭证放在独立的用户私有档案中。不导入用户已有平台认证，不打印原始授权或 USB 数据。
-- 使用官方 Codex app-server 与 Claude 登录/状态栏作为额度来源。不为获取额度发送模型请求，不伪造采集时间，不把缺失或已过期窗口当作满额。
-- DeepSeek 只用私有 API Key 调用官方只读余额接口。密钥不得进入公开状态、设备快照或 USB。保留来源金额字符串及币种；当前只显示 CNY，不回退到美元或换算。本地账户名称不是已验证邮箱。失败恢复使用余额重试或更新密钥，不进入 Codex/Claude 登录流程。
-- Wi-Fi 信息只从浏览器内存发送到 Web Serial，不经过电脑 API。保留请求编号匹配与安全的失败提示。
-- 设备预览为 240 × 320 像素，原生进度条为 216 × 8 像素。低额度和危险额度分别给数字文字与进度条填充着色，整块数字容器背景保持透明。
-- 验证需要时自行启动本地应用。可分享截图使用 `npm run preview:readme` 的示例账户，不发布个人邮箱、额度或设备配置信息。
-- 行为变更运行 `npm test` 和 `npm run build`，每次测试/构建只设一名负责人。可用浏览器中检查修改后的界面，区分网页模拟和真机验收。
-- 保留 `.openai/hosting.json`、`worker/index.js`、`scripts/prepare-sites-build.mjs`、`tests/sites-worker.test.mjs` 构建脚手架。需要凭证的正式应用通过本机 `server/index.mjs` 运行；静态 Sites 托管不提供该后端。本任务不包含网站发布。
-
-浏览器 USB 通信修正通过了主机数据流测试，仍需实际配对重试。按根 README 的
-顺序继续验收，交接时保留这些验证边界。
+- 设置 API 只监听本机，私有 profile 保持隔离，秘密不得进入公开状态、快照、USB 响应或日志。不导入已有服务凭证。
+- 使用官方 Codex app-server、Claude 授权/statusline 和 DeepSeek 余额来源。保留来源时间、未知窗口、十进制字符串和独立币种；当前视图只选择 CNY。DeepSeek 标签不代表验证邮箱，恢复方式为余额重试或更换密钥。
+- Wi-Fi 输入不得到达 API。保留 USB request ID 确认匹配和有界的传输失败处理。
+- 设备预览为 240 × 320，额度轨道为 216 × 8。百分比文本和填充条分别应用低额/临界样式，数字容器保持透明。正式预览不伪造板卡遥测。
+- 公开截图使用合成账号和临时状态（`npm run preview:readme`）。行为变更运行 `npm test` 和 `npm run build`，UI 变化在浏览器检查。主机/浏览器结果与真实账号、设备验收分开报告。

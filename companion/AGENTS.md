@@ -1,19 +1,11 @@
 [简体中文](AGENTS.zh_CN.md) · English
 
-# Companion development
+# Companion constraints
 
-This is the production local companion, not the earlier design prototype.
-Start with the root README and the firmware application/protocol guide.
+Read the root [instructions](../AGENTS.md) and [application contracts](../docs/applications/ai-quota-monitor.md).
 
-- Keep the settings API on loopback and credentials in isolated user-private profiles. Never import the user's existing provider credentials or print raw auth/USB payloads.
-- Official Codex app-server and Claude authentication/statusline are the quota sources. Do not send model prompts for quota polling, manufacture timestamps, or treat missing/expired windows as full quota.
-- DeepSeek uses only the official read-only balance endpoint with a private API key. Never expose that key in public state, device snapshots or USB. Preserve source decimal strings and currencies; the current UI displays CNY only, with no USD fallback or conversion. A local account label is not a verified email. Recovery uses balance retry or key replacement, never a Codex/Claude login flow.
-- Wi-Fi input goes from browser memory directly to Web Serial; the local API must never receive it. Preserve request-ID acknowledgment matching and safe failure messages.
-- The device preview is 240 by 320 pixels. Its native bar is 216 by 8 pixels. Low/critical styling colors number text and bar fill separately; the full-width number container must stay transparent.
-- Run the local app when verification requires it. Use example accounts for shareable captures (`npm run preview:readme`); do not publish personal emails, quota data or device configuration.
-- Run `npm test` and `npm run build` for behavior changes. Keep one owner per test/build. Check changed UI in an available browser; distinguish browser simulations from board acceptance.
-- `.openai/hosting.json`, `worker/index.js`, `scripts/prepare-sites-build.mjs` and `tests/sites-worker.test.mjs` are retained build scaffolding. The real credential-backed app runs through `server/index.mjs` on the computer; static Sites hosting does not supply that backend. No hosting publication is implied.
-
-The browser USB transport fix passed host stream tests but still needs a real
-pairing retry. Follow the root README acceptance order and preserve these limits
-when handing work to another agent.
+- Keep the settings API on loopback, private profiles isolated, and secrets out of public state, snapshots, USB responses and logs. Do not import existing provider credentials.
+- Use official Codex app-server, Claude authentication/statusline and DeepSeek balance sources. Preserve source timestamps, unknown windows, decimal strings and separate currencies; the current view selects CNY only. A DeepSeek label is not a verified email; recovery uses balance retry/key replacement.
+- Wi-Fi input must never reach the API. Preserve USB request-ID acknowledgment matching and bounded transport failure handling.
+- Keep the device preview at 240 × 320; its quota track is 216 × 8. Percentage text and bar fill have independent low/critical styling; the number container remains transparent. Production previews do not invent board telemetry.
+- Use synthetic accounts and temporary state for shareable captures (`npm run preview:readme`). Run `npm test` and `npm run build` for behavior changes; check changed UI in a browser. Distinguish host/browser results from real account and device acceptance.

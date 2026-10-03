@@ -1,12 +1,7 @@
 """Run actual NVS loaders against fake public records and missing legacy keys."""
-import os
 import re
-import subprocess
-import tempfile
 import unittest
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parent.parent
+from runtime_helpers import ROOT, extract_function, compile_and_run
 
 
 class StorageRuntime(unittest.TestCase):
@@ -17,8 +12,7 @@ class StorageRuntime(unittest.TestCase):
         for kind, name in (("uint32_t", "crc32_update"), ("uint32_t", "crc32_bytes"),
                            ("uint16_t", "nvs_load_screen_timeout"),
                            ("void", "nvs_load_balance_snapshot")):
-            functions.append(re.search(r"^static " + kind + " " + name + r"\(.*?^\}",
-                                       source, re.M | re.S)[0])
+            functions.append(extract_function(source, name, "static " + kind))
         definitions = "\n".join(re.findall(r"^#define (?:NVS_NAMESPACE|NVS_SCREEN_TIMEOUT_KEY|NVS_BALANCE_KEY|STORED_BALANCE_MAGIC) .*", source, re.M))
         harness = r'''
 #include "quota_logic.h"
@@ -96,14 +90,8 @@ int main(void) {
     puts("quota storage runtime tests passed");
 }
 '''
-        with tempfile.TemporaryDirectory(prefix="ai-quota-storage-test-") as directory:
-            path = Path(directory)
-            (path / "test.c").write_text(harness)
-            subprocess.run([os.environ.get("CC", "cc"), "-std=c11", "-Wall", "-Wextra", "-Werror",
-                            "-I" + str(ROOT / "main"), "-I" + str(ROOT / "tests/cjson"),
-                            str(path / "test.c"), str(ROOT / "main/quota_logic.c"),
-                            str(ROOT / "tests/cjson/cJSON.c"), "-lm", "-o", str(path / "test")], check=True)
-            subprocess.run([str(path / "test")], check=True)
+        compile_and_run(harness, "ai-quota-storage-test-",
+                        ("main/quota_logic.c", "tests/cjson/cJSON.c"))
 
 
 if __name__ == "__main__":

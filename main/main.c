@@ -157,7 +157,6 @@ static void process_event(const quota_app_event_t *event)
         default:
             break;
     }
-    s_view_work.configured = s_navigation.configured;
     render_application();
 }
 

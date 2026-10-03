@@ -40,9 +40,7 @@ test('loopback admin denies foreign origin, rebinding Host, and missing CSRF', a
   assert.equal(Object.hasOwn(state, 'preview_status'), false);
 });
 test('synthetic device status is only returned when a preview fixture supplies it', async t => {
-  const realState = await fixture(t);
   const syntheticState = await fixture(t, { previewStatus: { wifi_connected: true, battery_percent: 76 } });
-  assert.equal(Object.hasOwn(await fetch(`${realState.url}/api/state`).then(response => response.json()), 'preview_status'), false);
   assert.deepEqual((await fetch(`${syntheticState.url}/api/state`).then(response => response.json())).preview_status, { wifi_connected: true, battery_percent: 76 });
 });
 test('DeepSeek create, alias edit, key replacement, and login rejection stay scoped and secret-free', async t => {

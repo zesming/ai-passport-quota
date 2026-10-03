@@ -1,59 +1,53 @@
-<p align="right"><strong>简体中文</strong> · <a href="ai-quota-monitor.md">English</a></p>
+简体中文 · [English](ai-quota-monitor.md)
 
-# AI 订阅额度看板
+# 来源、协议与数据契约
 
-应用把演示菜单替换为 AI Passport 240 × 320 竖屏额度看板。电脑端伴侣管理最多八个独立的 Codex、Claude 订阅账户和 DeepSeek API 账户；设备只接收展示身份、额度或余额、设置及采集时间。
+## 服务数据
 
-## 电脑端使用
+最多八个账号各自使用 `~/.local/share/ai-passport-quota/profiles/<id>`（或 `AIQ_STATE_DIR`）下的隔离私有 profile，不导入已有 CLI 凭证。删除账号立即解除状态关联；Codex/Claude 会尝试退出授权并保留其 profile 文件。DeepSeek 删除本地密钥，服务侧撤销须另行操作。
 
-仓库内 `companion/` 目录包含 Node.js 服务和 React 设置页。使用 Node.js 22 或以上，在该目录依次运行 `npm install`、`npm run build`、`npm start`，打开 `http://127.0.0.1:4317/`。设备同步时需保持电脑和服务运行。连接账户与配对前安装官方客户端和 OpenSSL。
+| 服务 | 来源 | 含义 |
+| --- | --- | --- |
+| Codex | 官方 app-server 登录与 `account/rateLimits/read` | Codex 用量；将 300/10080 分钟窗口映射到五小时/七日额度 |
+| Claude | 官方订阅登录及正常响应后的 statusline 回调 | 回调绑定到已验证隔离账号；缓存回调保留来源时间 |
+| DeepSeek | 私有 API key 调用 `GET https://api.deepseek.com/user/balance` | 可用余额；无验证邮箱、消费历史、请求次数或累计 token 总数 |
 
-在账户管理中添加账户，完成官方授权，等待显示已验证邮箱。每个账户使用 `~/.local/share/ai-passport-quota/profiles/<id>` 下的独立配置，不导入已有 Codex/Claude 登录。可通过 `AIQ_CODEX_BIN`、`AIQ_CLAUDE_BIN` 指定官方客户端，通过 `AIQ_STATE_DIR` 更换本地存储位置。文件权限仅开放给当前系统用户。移除账户会立即从应用中解除关联并尝试官方退出登录，保留配置文件。
+额度/余额刷新不发送模型提示。保留 `observed_at`；读取缓存或快照 revision 变化不代表新服务观察。缺失数据是未知，不是余额零或满额。重置时间到期不能在无新来源数据时恢复为 100%。旧数据、离线和过期状态须明确标识。
 
-Codex 使用官方 app-server 的设备验证码登录及 `account/rateLimits/read`。展示的是 Codex 使用窗口，不代表 ChatGPT 普通聊天的全部限制。窗口按时长匹配；缺失的 5 小时或周额度显示未知。
+DeepSeek 密钥存于仅限当前用户的 `profiles/<id>/deepseek/api-key.json`，不得进入公开状态、设备快照或 USB。金额保留有符号十进制字符串，CNY/USD 独立。当前视图仅选择 CNY `total_balance`，包含赠款和充值，不展开其组成、不换汇、不回退 USD。正常刷新失败保留带状态的缓存，更换密钥则在验证前清除旧钱包。本地标签不是授权邮箱。单请求模型用量不代表账户级平台历史。
 
-Claude 使用官方订阅登录和状态栏回调。授权后，在网页复制会话启动命令，正常使用该独立账户；首次正常模型回复后可能出现额度。启动助手清除环境中其他服务的认证信息，并将回调绑定到已验证账户。看板不会为获取额度发送模型请求。重复回调、定时刷新不会伪造新的采集时间。
+来源参考：[Codex 授权](https://learn.chatgpt.com/codex/auth)、[app-server](https://learn.chatgpt.com/codex/app-server)、[Claude 授权](https://code.claude.com/docs/en/authentication)、[statusline](https://code.claude.com/docs/en/statusline)、[DeepSeek 余额](https://api-docs.deepseek.com/api/get-user-balance/)。
 
-DeepSeek 使用用户提供的 API Key，只请求 `GET https://api.deepseek.com/user/balance`。在本机网页添加或更换密钥，独立保存于 `profiles/<id>/deepseek/api-key.json`，文件和目录仅供当前用户访问，密钥不进入公开账户状态或设备数据。接口不提供邮箱，账户以本地备注识别。来源金额按币种分别保留十进制字符串，界面只显示 CNY 的 `total_balance`，即包含赠送和充值部分的可用总余额，不展开这两项明细。未知金额不补零，也不编造赠送余额的过期倒计时。普通刷新失败时保留并标明缓存；更换密钥前清除旧钱包数据。移除账户会清除本地 DeepSeek 密钥，远程撤销需在官方平台操作。
+## 信任与传输
 
-截至 2026-10-02，未找到公开文档支持的账户累计/区间消费、请求次数或历史 Tokens 总量接口。[Chat Completions 响应](https://api-docs.deepseek.com/api/create-chat-completion/)只提供单次请求的 Tokens，不能查询其他客户端产生的官网历史用量。不从余额变动推算这些统计，不发送模型请求采集，也不在正式服务填入模拟数字。官网统计需要单独验证数据来源，目前尚未实现。
+设置 API 的 4317 端口只监听本机。私有地址的 4318 HTTPS 监听器在配对时启动，或恢复先前已授权配置。配对提供随机 bearer token、带 IP subject alternative name 的 ECDSA 证书及可信时间。固件固定该证书并验证主机；设备 HTTP 不跟随重定向。停止同步撤销令牌，地址变化须重新配对。
 
-当前电脑端与小屏只显示人民币，使用中文标签。显式选择 CNY 钱包、保留其金额字符串；缺失 CNY 时显示未知。不回退到美元，也不做币种换算。数据源、解析器及缓存保留官方币种条目以维持兼容；后续美元展示需要另行修改产品。
+Wi-Fi 凭证从浏览器内存直接通过 Web Serial 发送，不经过电脑端 API。固件仅在物理 120 秒窗口内接受配置，已配置设备启动时关闭该窗口。USB 帧以 `@AIQ:` 开始、换行结束，上限 4096 字节。版本 1 的 `configure` 包含八位十六进制 request ID、Wi-Fi 字段、私有 HTTPS base URL、令牌、证书和初始时间。`result` 须匹配 ID，不能回显凭证。USB 打开后立即接收，区分超时/无输入、传输中断、响应不匹配和明确拒绝。
 
-浏览器保留 UTF-8 名称。小屏子集字体覆盖固定界面文字，任意非 ASCII 身份字符以 `?` 回退显示。需要在小屏完整显示时使用 ASCII 名称；修改此规则前先补充字体覆盖。
+## 设备 API
 
-## USB 配对
+所有设备请求使用 `Authorization: Bearer <pair-token>`。
 
-使用桌面版 Chrome 或 Edge，用支持数据传输的 USB 线连接设备，并在小屏打开配对页。电脑「设备配置」选择本机私有 IPv4 地址，输入 Wi-Fi 信息，点击连接并配置，选择串口，等待结果。Wi-Fi 信息仅从浏览器内存直接发送到 USB，不经过电脑 API。设备仅在物理打开的 120 秒配对窗口内接受配置；已配置设备启动时关闭该窗口。
+| 方法/路径 | 契约 |
+| --- | --- |
+| `GET /v1/snapshot` | 版本 1、服务时间、revision、设置和已授权账号；最多八个账号、8192 字节 |
+| `POST /v1/refresh` | 合并来源刷新请求；接受请求不证明已有新观察 |
+| `PATCH /v1/settings` | `refresh_seconds`：60/300/900/1800；布尔 `auto_refresh`；可选 `screen_timeout_seconds`：0/30/60/120/300/600 |
 
-设备同步地址为 `https://<所选私有IP>:4318`。配对生成随机访问令牌和包含 IP 主体备用名称的 ECDSA 证书，固件验证证书及地址。设置网页仅监听本机回环地址；局域网服务在用户配对时启用，或恢复此前已授权的配置。电脑 IP 改变后需重新配对；停止同步会撤销旧令牌。
+省略息屏时间保留已有设置；旧电脑状态默认 120 秒。旧快照/ACK 缺少该字段时固件保留已存息屏值。仅改息屏时间不重置电脑额度计时器。设置以服务端为准，设备确认后再持久化。
 
-## 显示与保存
+DeepSeek 载荷使用 `provider: "deepseek"`、空 `email`、`plan: "API"`、最多 32 个 UTF-8 字节的 `label`、null 额度窗口及可空 `balance: {is_available, balance_infos}`。最多两项不重复的 CNY/USD 条目包含字符串 `total_balance`、`granted_balance`、`topped_up_balance`，每项最多 20 个十进制字符。旧固件拒绝 DeepSeek，添加前须更新。可执行结构见 `companion/shared/contract.mjs`、`companion/server/protocol.mjs` 和 `main/quota_logic.h`。
 
-主页显示账户 Logo、已验证邮箱、5 小时和 7 天剩余百分比。短按 OK 请求刷新，上下键切换账户，长按 OK 进入设置或返回。设置支持账户选择、刷新间隔、自动刷新、息屏时间及配对。DeepSeek 只展示一项人民币可用余额，不使用额度百分比进度条。网络和存储操作在工作任务执行，不阻塞按钮回调或 LVGL 锁。
+## 刷新与屏幕生命周期
 
-息屏时间支持 0（永不）、30、60、120、300、600 秒，默认 120 秒。到时背光为 0%，功能键检测与 USB 配对保持可用。
+电脑端维持独立刷新计划。设备息屏暂停快照轮询、来源刷新请求、设置 HTTP 和显式 Wi-Fi 重试/配置。已获准的有界 HTTP 请求或 Wi-Fi 初始化可结束；显示 generation 防止旧 HTTP 结果发布或继续触发操作。
 
-息屏时暂停设备发起的快照轮询、来源刷新、设置 HTTP 请求，以及主动 Wi-Fi 重试和配置应用。已接纳的 Wi-Fi 初始化或限时 HTTP 请求可以完成，但显示状态切换后不再发布旧 HTTP 结果，也不发起后续活动。亮屏后立即排队一次静默的 `GET /v1/snapshot`，即使关闭自动刷新也执行；工作任务先结束已接纳的限时请求，断网时等待连接恢复。它只读取电脑端当前缓存，不触发来源刷新，也不显示刷新提示。缓存读取不会推迟来源刷新时间；唤醒读取结束后，待处理的手动刷新或已启用且到点的自动刷新才调用 `POST /v1/refresh`，此路径才显示刷新提示。来源刷新完成后计算下一周期，快照轮询则从缓存读取结束后恢复。数据源时间保持原样，快照修订号变化不代表来源数据已重新采集。电脑端保留独立的定时刷新。
+唤醒排入一次静默缓存 GET，即使关闭自动刷新也执行；先等待已获准的有界请求结束，离线则等待连接恢复。该读取不启动服务刷新、不显示进度、不推迟原截止时间。读取后，待执行手动刷新或已启用且到期自动刷新才发送 POST 并显示进度。下一来源间隔从完成时计算。请求准入前取消时保留到期/手动工作；普通失败维持有界节奏。
 
-首次唤醒的完整按键操作被忽略，包括 CLICK/DOUBLE/LONG 后续事件；亮屏时长按 DOWN 息屏。独立电源键没有已支持的软件短按信号，保留硬件长按关机。配对窗口内抑制自动息屏，关闭后重新计算等待时间。事件队列最多等待一秒，空闲时仍检查息屏和时钟；电池读取缓存三十秒。
+第一个唤醒功能键手势全部被消耗。配对抑制自动息屏，关闭后重置空闲时间。息屏把背光设为零，不代表 MCU deep sleep。冷启动时间保持未知，直到本次启动配对或固定证书快照校准。设备时间使用 UTC+8。电量读数缓存三十秒，SOC 填充不推断充电。
 
-电池图标按电量比例以绿色（`#34C759`）填充，不显示数字百分比。读取不可用时显示斜线，与实测电量为空区分。填充保持实测比例，绿色为固定配色。当前 BSP 读取电量与电池电压，没有充电状态接口。充电动画需要经过核实的、适用于本板的状态来源，以及正在充电、充满和故障语义；单凭 USB 连接、电量上涨或电压变化不能视为已确认正在充电。绿色指示灯的含义见[官方充电说明](https://ai-passport.folotoy.cn/en/guides/getting-started/)。
+## 持久化与显示数据
 
-Wi-Fi 图标反映真实连接状态，不显示虚构信号强度。冷启动后时钟先显示 `--:--`，本次配对或固定证书 HTTPS 快照提供时间后才显示。屏幕、唤醒行为、动态内存和耗电仍需真机验证。
+设备 NVS 保存配对和脱敏快照，快照写入最多每十五分钟一次。保留旧配对/额度缓存布局。`screen_to` 为独立息屏键。DeepSeek 的 `balance_cache` 是 CRC 保护的旁路缓存，绑定快照 revision、配置身份与保存时间。不匹配/损坏数据应拒绝，不能为掩盖初始化错误擦除无关 NVS。
 
-未知数据显示横线。重置时间已到时等待数据源提供新窗口，不推算恢复到 100%。旧数据、离线和登录过期均有状态提示。服务端设置为准，设备收到确认后保存。设备在 NVS 保存配对信息及脱敏额度缓存；快照写入间隔至少十五分钟。息屏时间使用独立 NVS 键 `screen_to`，原有配对及额度缓存结构保持兼容。DeepSeek 余额另存于带 CRC 的 `balance_cache`，与额度缓存的修订号、配置身份和保存时间匹配。
-
-## 验证
-
-电脑端运行 `npm test` 和 `npm run build`。固件交付前必须激活 ESP-IDF 5.5.3 并通过完整 `./tools/validate.sh`。本工作区在 macOS 使用临时编译器包装脚本适配 Darwin 链接器及校验过的 actionlint，固件仍使用仓库默认配置。真机需检查中文字形、USB 配对、Wi-Fi 重连、错误证书拒绝、按钮、窗口重置和重启保存；息屏同步还需验证：息屏时设备不发起 HTTP 或主动重试、关闭自动刷新时仍在唤醒后立即静默同步缓存、离线唤醒及恢复、请求期间快速息屏/唤醒、来源刷新未到点时没有刷新提示，以及反复唤醒读取不推迟来源刷新时间。没有真实硬件信号时，充电动画仍不可用。编译通过不代表这些检查通过。
-
-## 协议
-
-设备请求携带 `Authorization: Bearer <配对令牌>`，不跟随重定向。`GET /v1/snapshot` 返回版本 1、服务时间、修订号、设置及已授权账户。`POST /v1/refresh` 合并重复刷新请求。`PATCH /v1/settings` 接受 60、300、900、1800 秒间隔及布尔自动刷新开关。可选 `screen_timeout_seconds` 接受六种息屏时间，省略时保留当前设置。旧电脑数据文件默认 120 秒；旧快照或设置确认缺少此字段时，新固件保留已保存的息屏设置。仅修改息屏时间不会重置电脑额度刷新计时；被动读取快照不显示额度刷新进度。
-
-DeepSeek 账户使用 `provider: "deepseek"`、空 `email`、`plan: "API"`、最多 32 个 UTF-8 字节的本地 `label`、空额度窗口，以及可为空的 `balance: {is_available, balance_infos}`。最多两个互不重复的 CNY/USD 来源条目，各包含字符串 `total_balance`、`granted_balance`、`topped_up_balance`（最多 20 个十进制字符，支持负余额）。当前只显示 CNY，不同币种不合并。旧固件会拒绝 DeepSeek，添加前需升级。快照最多 8192 字节，最多八个账户。
-
-USB 帧以 `@AIQ:` 开头、换行结尾，最多 4096 字节。版本 1 的 `configure` 帧包含八位十六进制请求编号、Wi-Fi 字段、私有 HTTPS 地址、令牌、证书和初始可信时间。`result` 确认匹配请求编号，不回显凭证。
-
-数据源约定：[Codex 认证](https://learn.chatgpt.com/codex/auth)、[Codex app-server](https://learn.chatgpt.com/codex/app-server)、[Claude 状态栏](https://code.claude.com/docs/en/statusline)、[Claude 认证](https://code.claude.com/docs/en/authentication)、[DeepSeek 余额接口](https://api-docs.deepseek.com/api/get-user-balance/)。
+设备固定文本使用 `assets/fonts/` 的两种子集字体。任意非 ASCII 账号身份字符回退为 `?`；精确显示需 ASCII 标签或明确扩展覆盖。真机显示、USB 配对、离线恢复、扩展时序和真实来源行为需要[验收检查](../development/README.zh_CN.md#验收与报告)，现有证据记于[变更日志](../CHANGELOG.zh_CN.md)。

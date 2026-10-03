@@ -36,7 +36,7 @@ export async function recordClaudeFeed(directory, payload, now = epoch(), identi
     if (verified && verified.email !== identity) return;
     const previous = await readJSON(sessionFile);
     if (previous?.fingerprint === fingerprint) return;
-    const observation = { v: 1, identity, ...windows, observed_at: previous?.fingerprint === fingerprint ? previous.observed_at : now, fingerprint };
+    const observation = { v: 1, identity, ...windows, observed_at: now, fingerprint };
     await atomicJSON(sessionFile, observation);
     const current = await readJSON(filename);
     if (!current || current.identity !== identity || observation.observed_at >= current.observed_at) await atomicJSON(filename, observation);

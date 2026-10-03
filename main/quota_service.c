@@ -211,11 +211,6 @@ static void finish_wake_fetch(uint32_t generation, bool connection_current)
     portEXIT_CRITICAL(&s_display_state_mux);
 }
 
-static bool valid_refresh_seconds(uint16_t seconds)
-{
-    return seconds == 60 || seconds == 300 || seconds == 900 || seconds == 1800;
-}
-
 static uint32_t crc32_update(uint32_t crc, const void *data, size_t length)
 {
     const uint8_t *bytes = data;
@@ -262,7 +257,7 @@ static bool config_is_well_formed(const quota_device_config_t *config)
            quota_pair_token_is_valid(config->pair_token) &&
            (config->selected_account_id[0] == '\0' ||
             quota_id_is_valid(config->selected_account_id)) &&
-           config->server_time > 0 && valid_refresh_seconds(config->refresh_seconds) &&
+           config->server_time > 0 && quota_refresh_seconds_is_valid(config->refresh_seconds) &&
            strncmp(config->server_cert_pem, "-----BEGIN CERTIFICATE-----", 27) == 0 &&
            strstr(config->server_cert_pem, "-----END CERTIFICATE-----") != NULL;
 }
@@ -1252,7 +1247,6 @@ static void perform_settings_update(const quota_device_config_t *config,
         .refresh_seconds = applied.refresh_seconds,
         .auto_refresh = applied.auto_refresh,
         .screen_timeout_seconds = applied.screen_timeout_seconds,
-        .error_code = success ? 0 : 1,
     };
     if (display_current && display_generation_is_current(display_generation)) {
         post_event(&event, 0);
@@ -1513,7 +1507,6 @@ static void handle_serial_frame(const char *frame, size_t length)
         quota_app_event_t event = {
             .kind = QUOTA_APP_EVENT_CONFIGURATION_RESULT,
             .success = false,
-            .error_code = 2,
         };
         post_event(&event, 0);
         return;
@@ -1571,7 +1564,6 @@ static void handle_serial_frame(const char *frame, size_t length)
     quota_app_event_t event = {
         .kind = QUOTA_APP_EVENT_CONFIGURATION_RESULT,
         .success = saved,
-        .error_code = saved ? 0 : 3,
     };
     post_event(&event, 0);
     if (saved) {
@@ -1750,7 +1742,7 @@ void quota_service_request_refresh(void)
 void quota_service_request_settings(uint16_t refresh_seconds, bool auto_refresh,
                                     uint16_t screen_timeout_seconds)
 {
-    if (!valid_refresh_seconds(refresh_seconds) ||
+    if (!quota_refresh_seconds_is_valid(refresh_seconds) ||
         !quota_screen_timeout_is_valid(screen_timeout_seconds)) return;
     mutex_lock();
     s_settings_pending = true;

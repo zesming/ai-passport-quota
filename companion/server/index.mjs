@@ -20,15 +20,14 @@ async function readBody(request, max = 8192) {
   for await (const chunk of request) { size += chunk.length; if (size > max) throw new Error('request_too_large'); chunks.push(chunk); }
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw new Error('invalid_json'); }
 }
-function errorStatus(error) {
-  if (error.message === 'account_not_found') return 404;
-  if (['invalid_provider', 'invalid_interface', 'invalid_settings', 'invalid_login_code', 'invalid_api_key', 'invalid_account_label', 'invalid_json', 'invalid_content_type', 'account_limit', 'unsupported_account'].includes(error.message)) return 400;
-  if (error.message === 'request_too_large') return 413;
-  if (error.message === 'cli_unavailable') return 503;
-  if (['pairing_address_active', 'account_busy'].includes(error.message)) return 409;
-  return 500;
-}
-const visibleErrors = new Set(['account_not_found', 'invalid_provider', 'invalid_interface', 'invalid_settings', 'invalid_login_code', 'invalid_api_key', 'invalid_account_label', 'invalid_json', 'invalid_content_type', 'account_limit', 'request_too_large', 'cli_unavailable', 'unsupported_account', 'pairing_address_active', 'account_busy']);
+const errorStatuses = {
+  account_not_found: 404,
+  invalid_provider: 400, invalid_interface: 400, invalid_settings: 400, invalid_login_code: 400,
+  invalid_api_key: 400, invalid_account_label: 400, invalid_json: 400, invalid_content_type: 400,
+  account_limit: 400, unsupported_account: 400,
+  request_too_large: 413, cli_unavailable: 503, pairing_address_active: 409, account_busy: 409,
+};
+function errorStatus(error) { return Object.hasOwn(errorStatuses, error.message) ? errorStatuses[error.message] : 500; }
 export async function createApplication({ directory = process.env.AIQ_STATE_DIR ?? path.join(os.homedir(), '.local/share/ai-passport-quota'), adminPort = 4317, dataPort = 4318, executables, managerFactory, interfaces = availableInterfaces, autoRestore = true, previewStatus } = {}) {
   directory = path.resolve(directory);
   const store = new StateStore(directory, await loadState(directory));
@@ -66,7 +65,7 @@ export async function createApplication({ directory = process.env.AIQ_STATE_DIR 
       if (request.url === '/v1/refresh' && request.method === 'POST') { await readBody(request, 1024); manager.schedule(); json(response, 202, { v: 1, accepted: true }); return; }
       if (request.url === '/v1/settings' && request.method === 'PATCH') { json(response, 200, await settings(await readBody(request, 1024))); return; }
       json(response, 404, { error: 'not_found' });
-    } catch (error) { json(response, errorStatus(error), { error: visibleErrors.has(error.message) ? error.message : 'local_service_error' }); }
+    } catch (error) { json(response, errorStatus(error), { error: Object.hasOwn(errorStatuses, error.message) ? error.message : 'local_service_error' }); }
   };
   pairing = new PairingService(directory, dataHandler, { dataPort, interfaces });
   if (autoRestore) await pairing.restore();
@@ -114,7 +113,7 @@ export async function createApplication({ directory = process.env.AIQ_STATE_DIR 
       const extension = path.extname(filename);
       const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
       response.writeHead(200, { 'Content-Type': types[extension] ?? 'application/octet-stream', 'Content-Length': content.length, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'", 'Permissions-Policy': 'serial=(self)' }); response.end(request.method === 'HEAD' ? undefined : content);
-    } catch (error) { json(response, errorStatus(error), { error: visibleErrors.has(error.message) ? error.message : 'local_service_error' }); }
+    } catch (error) { json(response, errorStatus(error), { error: Object.hasOwn(errorStatuses, error.message) ? error.message : 'local_service_error' }); }
   });
   admin.requestTimeout = 30000; admin.headersTimeout = 10000;
   beginTimer();

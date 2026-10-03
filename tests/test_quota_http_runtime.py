@@ -1,20 +1,7 @@
 """Exercise actual HTTP admission and snapshot commits with fake dependencies."""
-import os
 import re
-import subprocess
-import tempfile
 import unittest
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parent.parent
-
-
-def extract_function(source, name):
-    match = re.search(r"^static (?:bool|void) " + name + r"\([^;]*?\)\n\{.*?^\}",
-                      source, re.M | re.S)
-    if match is None:
-        raise AssertionError(f"missing firmware function: {name}")
-    return match[0]
+from runtime_helpers import ROOT, extract_function, compile_and_run
 
 
 class HttpRuntime(unittest.TestCase):
@@ -212,13 +199,7 @@ int main(void) {
     return 0;
 }
 '''
-        with tempfile.TemporaryDirectory(prefix="ai-quota-http-test-") as directory:
-            path = Path(directory)
-            (path / "test.c").write_text(harness)
-            subprocess.run([os.environ.get("CC", "cc"), "-std=c11", "-Wall", "-Wextra",
-                            "-Werror", "-I" + str(ROOT / "main"), str(path / "test.c"),
-                            "-o", str(path / "test")], check=True)
-            subprocess.run([str(path / "test")], check=True)
+        compile_and_run(harness, "ai-quota-http-test-")
 
 
 class PublicationRuntime(unittest.TestCase):
@@ -350,13 +331,7 @@ int main(void) {
     return 0;
 }
 '''
-        with tempfile.TemporaryDirectory(prefix="ai-quota-publish-test-") as directory:
-            path = Path(directory)
-            (path / "test.c").write_text(harness)
-            subprocess.run([os.environ.get("CC", "cc"), "-std=c11", "-Wall", "-Wextra",
-                            "-Werror", "-I" + str(ROOT / "main"), str(path / "test.c"),
-                            "-o", str(path / "test")], check=True)
-            subprocess.run([str(path / "test")], check=True)
+        compile_and_run(harness, "ai-quota-publish-test-")
 
 
 if __name__ == "__main__":

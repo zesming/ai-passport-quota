@@ -1,110 +1,27 @@
-<p align="right">
-  <a href="AGENTS.zh_CN.md">简体中文</a> · <strong>English</strong>
-</p>
+[简体中文](AGENTS.zh_CN.md) · English
 
-# Repository Guidelines for AI Agents
+# Repository instructions
 
-This file is the only mandatory entry point for AI-assisted work in this repository. Read task-specific documents from the routing table below; do not load every README by default.
+This repository contains the Quota firmware in `main/`, board support in `components/bsp/`, and the production local companion in `companion/`.
 
-## Required AI skills
+- Preserve existing changes. Read relevant headers and nearby code before editing; make the smallest complete change.
+- Keep reusable board drivers in the BSP, product state/UI/network work in `main`, and account credentials in isolated private profiles outside the repository. Never commit credentials, device identifiers or unsanitized logs.
+- Preserve authoritative provider timestamps, missing/expired-window semantics and decimal currency strings. Quota polling must not send paid model prompts or invent observations.
+- Preserve USB request-ID matching, the physical pairing window, pinned TLS and the separation between loopback settings and authenticated device endpoints. Wi-Fi input goes directly from browser memory to USB.
+- Preserve silent wake-cache reads, source-refresh deadlines and screen-off network gates. Preserve existing NVS layouts and compatibility defaults.
+- LVGL access outside its task requires a successful BSP lock. Button callbacks only enqueue bounded work; networking/storage must not block them. Stop producers before deleting UI objects.
+- Hardware mappings follow `components/bsp/include/bsp_pins.h` and measured evidence. Do not infer wiring or charging status. Check subset-font coverage when UI text changes; compilation does not prove rendering.
+- Run checks appropriate to the change; firmware delivery uses the complete gate. Report build, host tests, device tests and unverified checks separately. Keep one active owner/run per test or build target.
+- Flashing needs authorization for the exact device, verified artifact and data impact. A newly built artifact needs its own applicable authorization; prior flashing approval is not blanket consent. Never add chip erase as a routine prerequisite.
+- Root README contains current functionality and use only. Dated work/validation history belongs in paired changelogs. Keep maintained Markdown English by default, with an aligned `.zh_CN.md` peer and top language links.
 
-Application context: this checkout is **AI Passport Quota**, with the firmware at
-the repository root and the real local account/dashboard app in `companion/`.
-Read the root README for setup, current functionality and constraints; read
-`docs/CHANGELOG.md` for validation and device history, and read
-`companion/AGENTS.md` before editing that app. Keep example screenshot data
-separate from production. The reported browser USB timeout is still awaiting
-physical confirmation after the transport fix; do not mark it resolved from
-host tests. Preserve source quota timestamps and missing-window semantics.
+Read only the context the task needs:
 
-Repository organization, commits and a push to the owner's new private repo
-were explicitly requested. Future release tags, public visibility, upstream
-submissions and flashing need their own applicable authorization. Do not
-replace this app with upstream demo UI during synchronization.
-
-The following five skills are required for AI-assisted development in this repository:
-`passport-develop`, `passport-setup`, `passport-build`, `passport-device-test`, and
-`passport-debug`. Their maintained sources are under `skills/`.
-
-Before starting development, the AI must check that all five are installed and
-available in its current environment. If any are missing, the AI must choose an
-appropriate installation method for its tool and environment, perform the
-installation, and verify availability itself. Do not wait for the user to request
-installation or make the user choose the method or run installation commands.
-No particular script, installation directory, or AI client is mandatory.
-
-Respect the environment's approval requirements and preserve existing skills
-and user configuration. If permissions, conflicts, or platform limitations prevent
-installation, explain the blocker and request only the necessary user action;
-do not claim installation succeeded. Having all five available does not mean
-loading or invoking all five for every task: use only the matching skills, and
-retain the separate authorization requirements for flashing, Git writes, and publishing.
-
-## Project and safety baseline
-
-- Target: ESP32-C3, 8 MB Flash, no PSRAM, ESP-IDF 5.5.3.
-- Keep the repository's default partition table minimal: NVS, PHY data, and
-  one factory application spanning the rest of the 8 MB Flash. User firmware
-  may deliberately change this layout; validate the resulting table and do not
-  turn product-specific partitions into mandatory template contracts.
-- Preserve existing user changes. Start with `git status --short --branch`; never overwrite or clean unrelated files.
-- Flashing new firmware does not require backing up the firmware already on the device; do not make a Flash readback a prerequisite. This does not guarantee preservation of user data or authorize a full-chip erase. Follow the [flashing and data policy](docs/development/engineering/firmware-layout.md#flashing-and-stored-data).
-- Hardware facts follow this priority: product specifications and measured results → `components/bsp/include/bsp_pins.h` → BSP headers and implementation → hardware guide → README/demo code. If a task requires a hardware detail not defined by these sources, ask the user instead of guessing.
-- Reusable board logic belongs in `components/bsp`; pages, state machines, animations, and application tasks belong in `main`.
-- Derivative applications must redesign and implement their own UI. Reusing the current demo test menu, screens, or visual shell is prohibited; renaming, recoloring, or adding a feature to that shell does not count as a redesign. BSP APIs and non-UI logic remain reusable. See the [mandatory UI redesign rule](docs/development/ai-guide.md#mandatory-ui-redesign-for-derivative-applications).
-- LVGL is not thread-safe. Code outside the LVGL task must hold `bsp_lvgl_lock()` while accessing LVGL objects.
-- Before adding Chinese UI text, follow the [font checklist](docs/development/engineering/coding-conventions.md#chinese-fonts-and-missing-glyphs). The default Montserrat fonts have no Chinese glyphs; UTF-8 and a successful build do not prove display support. Verify glyph coverage, widget font selection, and on-device rendering.
-- Button callbacks must stay non-blocking. Audio, storage, networking, and other slow operations belong in worker tasks.
-- A demo must stop every task, timer, callback, and event handler that can access its UI before deleting the screen.
-- Keep testable state machines, protocols, timing, and layout calculations independent from ESP-IDF/LVGL and cover them with host tests.
-- Never commit credentials, device QR secrets, private keys, personal data, or unsanitized logs.
-- Every maintained Markdown document uses English at its default `.md` path and Simplified Chinese in a paired `.zh_CN.md` file. Keep both versions aligned and retain reciprocal language links.
-
-## Task-specific context routing
-
-| Task | Read before editing |
+| Task | Entry |
 | --- | --- |
-| Any code change | `docs/development/ai-guide.md`, relevant headers and neighboring implementation |
-| Application workflow or core skill setup | `skills/README.md`; ensure the five required skills are available, then use only the matching skill |
-| Environment bootstrap or missing toolchain | `docs/development/engineering/environment-setup.md` |
-| BSP, pins, buses, display, audio, battery | `docs/hardware-design/AI_HARDWARE_DEVELOPMENT_GUIDE.md`, `components/bsp/include/bsp_pins.h` |
-| Demo or menu | `main/demo.h`, `main/main.c`, the nearest `main/demo_*.c` implementation |
-| Chinese UI text or fonts | `docs/development/engineering/lvgl-chinese-fonts.md`, the application's font assets, configuration, and widget styles |
-| Wi-Fi connection or Bluetooth provisioning | `docs/development/engineering/wifi-provisioning.md`, the referenced `demo/blufi-provisioning` implementation |
-| Build, test, dependencies, partitions | `docs/development/engineering/build-and-test.md`, `docs/development/engineering/firmware-layout.md`, `sdkconfig.defaults`, `partitions.csv` |
-| CI or release | the matching file in `docs/development/ci/CI-*.md` and `.github/workflows/` |
-| Project completion | `docs/development/release/project-completion.md` (then the `issue-suggestions` or `experience-pr` skill) |
-| Documentation | `docs/contribution/doc-conventions.md`, `docs/README.md` |
-| Commit or PR | `docs/contribution/commit-and-pr.md` |
-
-Use `docs/README.md` for the product overview and the documentation index. For the detailed AI development workflow — context setup, source-of-truth priority, application/BSP boundary, runtime invariants, material placement, and delivery format — read `docs/development/ai-guide.md`. Fork-specific workflow is in `docs/fork-guide.md` and is not required for ordinary upstream development.
-
-## Required validation and delivery
-
-Run the smallest relevant check while iterating, then run the complete gate before delivery:
-
-```bash
-./tools/validate.sh --static    # repository checks + host tests
-./tools/validate.sh --firmware  # ESP-IDF build + merged-image verification
-./tools/validate.sh             # complete gate
-```
-
-The complete gate requires an activated ESP-IDF 5.5.3 environment. Do not describe a successful build as hardware validation. Final delivery must report these fields separately:
-
-```text
-Build: PASS / FAIL / NOT RUN
-Host tests: PASS / FAIL / NOT RUN
-Device tests: PASS / FAIL / NOT RUN
-Unverified: remaining board, instrument, or user checks
-```
-
-After each complete implementation of a user-requested firmware change,
-proactively ask whether to flash it to the device for testing; do not wait for
-a release request. If no device is detected, ask the user to turn it on and
-connect it to a computer USB port with a data-capable cable. Follow the
-[on-device testing handoff](docs/development/ai-guide.md#offer-on-device-testing)
-and obtain approval before flashing; detection alone is not consent.
-
-Create commits and push only when the user requests them or the active workflow explicitly requires them. The owner explicitly requires this fork's root README to describe current functionality, usage, constraints and development entry points only. Record dated development, validation and flashing history in `docs/CHANGELOG.md` and `docs/CHANGELOG.zh_CN.md`, keeping both aligned and preserving inherited upstream entries. This fork-specific instruction overrides the inherited release-only changelog rule; do not invent release tags or publication status.
-
-Community guidance is in `.github/CONTRIBUTING.md`, `.github/CODE_OF_CONDUCT.md`, `.github/SECURITY.md`, and `.github/SUPPORT.md`.
+| Use and setup | [README](README.md) |
+| Architecture, checks and flashing | [Developer guide](docs/development/README.md) |
+| Provider, protocol and persistent data | [Application contracts](docs/applications/ai-quota-monitor.md) |
+| Pins, BSP and physical checks | [Hardware reference](docs/hardware-design/AI_HARDWARE_DEVELOPMENT_GUIDE.md) |
+| Companion change | [Companion instructions](companion/AGENTS.md) |
+| Assets and font generation | [Assets](assets/README.md) |

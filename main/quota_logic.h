@@ -180,6 +180,7 @@ bool quota_url_is_private_ipv4(const char *url, char host_out[16]);
 bool quota_pair_token_is_valid(const char *token);
 void quota_copy_display_ascii(const char *source, char *destination, size_t capacity);
 void quota_copy_display_plan(const char *source, char *destination, size_t capacity);
+bool quota_refresh_seconds_is_valid(uint64_t seconds);
 bool quota_screen_timeout_is_valid(uint64_t seconds);
 bool quota_balance_is_valid(const quota_balance_t *balance);
 const quota_currency_balance_t *quota_balance_cny(const quota_balance_t *balance);

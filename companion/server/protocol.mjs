@@ -1,14 +1,12 @@
 import { timingSafeEqual } from 'node:crypto';
 import { normalizeDeepSeekBalance } from './deepseek.mjs';
+import { MAX_ACCOUNTS, INTERVALS, SCREEN_TIMEOUT_SECONDS, DEFAULT_SCREEN_TIMEOUT_SECONDS } from '../shared/contract.mjs';
 
-export const MAX_ACCOUNTS = 8;
+export { MAX_ACCOUNTS, INTERVALS, SCREEN_TIMEOUT_SECONDS, DEFAULT_SCREEN_TIMEOUT_SECONDS, privateIPv4 } from '../shared/contract.mjs';
+
 export const MAX_SNAPSHOT_BYTES = 8192;
-export const INTERVALS = [60, 300, 900, 1800];
-export const SCREEN_TIMEOUT_SECONDS = [0, 30, 60, 120, 300, 600];
-export const DEFAULT_SCREEN_TIMEOUT_SECONDS = 120;
 export const epoch = () => Math.floor(Date.now() / 1000);
 export const validId = value => typeof value === 'string' && /^[a-f0-9]{32}$/.test(value);
-export const privateIPv4 = value => typeof value === 'string' && /^(10|192\.168|172\.(1[6-9]|2\d|3[01]))\./.test(value) && value.split('.').length === 4 && value.split('.').every(part => /^\d{1,3}$/.test(part) && Number(part) <= 255);
 export function safeText(value, limit) {
   if (typeof value !== 'string') return '';
   let result = '';

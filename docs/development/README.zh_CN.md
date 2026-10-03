@@ -1,43 +1,61 @@
-<p align="right">
-  <strong>简体中文</strong> · <a href="README.md">English</a>
-</p>
+简体中文 · [English](README.md)
 
-# 工程规范（Development）
+# 开发、校验与刷写
 
-本目录存放 AI Passport 的工程开发规范和可复用工作流，按用途分组：AI 开发工作流（`ai-guide.md`）、工程约定（`engineering/`）、CI 文档（`ci/`）、发布/完成流程（`release/`）。
+## 结构
 
-## 收录标准
+| 范围 | 入口 |
+| --- | --- |
+| 固件输入与显示生命周期 | `main/main.c` |
+| 纯状态、解析与时序 | `main/quota_logic.c`、`main/quota_logic.h` |
+| Wi-Fi、HTTPS、USB 与 NVS | `main/quota_service.c` |
+| 看板与显示资源 | `main/quota_ui.c`、`main/quota_brand_assets.c`、`assets/` |
+| 板卡驱动 | `components/bsp/include/`、`components/bsp/src/` |
+| 电脑 UI 与 USB | `companion/src/` |
+| 官方来源与本地服务 | `companion/server/` |
+| 电脑端共享设置 | `companion/shared/contract.mjs` |
+| 主机检查与固件打包 | `tests/`、`companion/test/`、`tools/` |
 
-- 收录构建验证、代码风格、注释、测试、资源约束和 AI 开发流程。
-- `ai-guide.md` 面向 AI 编程助手，允许包含本项目结构和硬件边界。
-- 每条规则应写清触发条件、必须做什么、禁止做什么、验证方法和例外条件。
-- 涉及本板具体硬件事实的结论引用 `docs/hardware-design/`，不重复。
-- 可以由 lint、测试或脚本强制的要求，应同时落实到自动化检查，不能只靠 agent 阅读文字。
-- 新增规约时在本文件更新索引。
+状态和协议计算应能脱离 ESP-IDF/LVGL 测试。固件按键回调投递事件，应用与网络工作任务处理慢操作。非 LVGL 任务访问 UI 须持有 BSP 锁。修改协议、来源数据、刷新或持久化前阅读[应用契约](../applications/ai-quota-monitor.zh_CN.md)；修改驱动或硬件配置前阅读[硬件参考](../hardware-design/AI_HARDWARE_DEVELOPMENT_GUIDE.zh_CN.md)。
 
-## AI 工作流
+## 构建与检查
 
-- [ai-guide.zh_CN.md](ai-guide.zh_CN.md)：AI 开发工作流（面向 AI 编程助手：上下文建立、需求拆解、BSP 边界、验收交付格式）。
-- [核心 AI 技能](../../skills/README.zh_CN.md)：开发、环境准备、构建、真机测试及诊断，包含安装和使用示例。
+电脑端需要 Node.js 22+、npm、OpenSSL 和官方服务客户端。固件针对 ESP32-C3，使用 ESP-IDF **5.5.3**。激活合适的已有安装；缺少时按照[乐鑫安装指南](https://docs.espressif.com/projects/esp-idf/en/v5.5.3/esp32c3/get-started/index.html)安装该版本。保留其他工具链和用户配置。
 
-## 工程约定（engineering）
+```bash
+# 仓库根目录；电脑端行为与前端检查
+(cd companion && npm ci && npm test && npm run build)
 
-- [game-demo-to-device-acceptance.zh_CN.md](engineering/game-demo-to-device-acceptance.zh_CN.md)：共享 C/Wasm 游戏逻辑，先验收网页玩法，再验收真机表现。
-- [environment-setup.zh_CN.md](engineering/environment-setup.zh_CN.md)：AI 在全新机器上的环境引导，包含国际与中国大陆下载线路。
-- [build-and-test.zh_CN.md](engineering/build-and-test.zh_CN.md)：构建与验证（ESP-IDF 命令、逻辑测试、改动验证要求）。
-- [firmware-layout.zh_CN.md](engineering/firmware-layout.zh_CN.md)：默认/用户自定义分区布局与合并产物验证。
-- [coding-conventions.zh_CN.md](engineering/coding-conventions.zh_CN.md)：代码约定（语言风格、复用、注释、测试同步、资源约束等），包含中文字体接入、空白/方框排查与显示验收。
-- [lvgl-chinese-fonts.zh_CN.md](engineering/lvgl-chinese-fonts.zh_CN.md)：CJK 配置、字体生成/链接、fallback 示例、缺字检查和故障排查的分步指南。
-- [wifi-provisioning.zh_CN.md](engineering/wifi-provisioning.zh_CN.md)：参考 BLUFI 分支实现蓝牙 Wi-Fi 配网，包含配套小程序名称及接入检查。
+# 先激活 ESP-IDF 5.5.3
+source <esp-idf-v5.5.3>/export.sh
+idf.py --version
+./tools/validate.sh --static    # 仓库/workflow 检查和固件主机测试
+./tools/validate.sh --firmware  # 隔离构建和镜像/归档检查
+./tools/validate.sh             # 两项固件门禁
+```
 
-## CI（ci）
+迭代时运行聚焦检查。固件交付使用完整门禁，电脑端行为变更运行对应检查。CI 调用同一门禁，不另维护竞争的构建命令序列。仅文档修改需要文档检查，无需刷写无关固件。
 
-- [CI-validation.zh_CN.md](ci/CI-validation.zh_CN.md)：Pull Request 与 main 的自动仓库检查、host tests 和固件验证。
-- [CI-build-and-release.zh_CN.md](ci/CI-build-and-release.zh_CN.md)：自动构建与发布说明（tag 触发自动编译固件并发布 Release）。
-- [CI-sync-main.zh_CN.md](ci/CI-sync-main.zh_CN.md)：上游同步说明（定期把上游 `FoloToy/ai-passport` 的 `main` 同步到本 fork 的 `main`）。
+受版本管理的默认值来自 `sdkconfig.defaults`、`partitions.csv` 和 `dependencies.lock`。LVGL 固定为 9.5.0，以 `CONFIG_LV_BUILD_EXAMPLES=n` 和 `CONFIG_LV_BUILD_DEMOS=n` 关闭未使用的 examples/demos。依赖锁变化须与组件 manifest 一起审阅。固件门禁在临时目录生成独立 `sdkconfig` 并构建，被忽略的本地设置不会进入该产物。需要本地变体时明确解决配置差异。已有 ccache 时可用 `IDF_CCACHE_ENABLE=1` 复用编译结果。
 
-## 发布/完成流程（release）
+成功门禁生成 `build/FoloToy-AI-Passport-full.bin`，并将匹配产物存于 `build/firmware/<full-image-sha256>/`。归档包含合并镜像、应用 ELF/MAP/镜像、bootloader、分区表、`flash_args` 及大小/哈希 manifest。校验命令：
 
-- [publish-to-community.zh_CN.md](release/publish-to-community.zh_CN.md)：发布到社区说明（把当前固件发布到 AI Passport 社区市场）。
-- [project-completion.zh_CN.md](release/project-completion.zh_CN.md)：项目开发完成流程说明（一组可选收尾动作）。
-- [file-issues.zh_CN.md](release/file-issues.zh_CN.md)：提交 issue 说明（把建议作为上游 GitHub issue 提交）。
+```bash
+python3 tools/archive_firmware.py verify <bundle-directory>
+```
+
+分析崩溃时使用匹配 ELF，后续重构建可能具有不同身份。失败运行可能保留旧输出，必须报告确切成功归档路径和镜像哈希。生成固件和调试归档不提交，也不自动上传。额外自定义分区载荷不会单独保存于此归档。
+
+前端迭代时在 `companion/` 运行 `AIQ_DEV_ORIGIN=http://127.0.0.1:5173 npm start`，另开终端执行 `npm run dev`，打开这个确切 origin。文档截图使用 `npm run preview:readme`，在 `http://127.0.0.1:4327/` 提供隔离合成账号。
+
+## 刷写与 NVS
+
+默认 8 MB 布局：NVS 为 `0x9000`/`0x6000`，PHY data 为 `0xF000`/`0x1000`，factory app 为 `0x10000`/`0x7F0000`；分区表通常位于 `0x8000`。校验器检查配置偏移、边界、不重叠、分区 MD5 和镜像一致性。允许合法自定义布局，以实际产物记录的偏移为准。
+
+写入前识别目标设备和确切已验证产物，确认分区兼容性并说明数据影响。获得适用于该设备、产物和写入范围的授权。其他构建的旧授权不适用于新产物；重构建会改变待交付文件。不要求先读回原固件。
+
+合并 `full.bin` 从 `0x0` 写入时包含填充间隙，可能重置 NVS/PHY 数据，适用于空设备或明确的完整刷新。保留设置时，先确认分区表兼容且写入不覆盖存储数据，再按记录偏移仅写已验证组件镜像。需要保留的数据应使用应用支持的方法保存。不得将 app-only 镜像写在 `0x0`，未经明确授权不得擦除全片。产物校验本身不保证用户数据保留。
+
+## 验收与报告
+
+分开报告 `Build`、`Host tests`、`Device tests` 和 `Unverified`，列出实际完成的检查。浏览器截图和主机模拟不能证明板卡显示、物理 USB 配对或服务授权。相关设备检查包括启动、字体、按键、配对确认、固定证书拒绝、离线/重连、睡眠唤醒通信及刷新截止时间、重启持久化。真实 DeepSeek 凭证与扩展/离线时序仍需要各自验收证据；已发生结果见[变更日志](../CHANGELOG.zh_CN.md)，不能把旧验收自动移用于新构建。

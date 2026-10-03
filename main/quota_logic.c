@@ -439,7 +439,7 @@ static bool parse_balance(const cJSON *account, quota_balance_t *balance)
     return quota_balance_is_valid(balance);
 }
 
-static bool valid_refresh_seconds(uint64_t seconds)
+bool quota_refresh_seconds_is_valid(uint64_t seconds)
 {
     return seconds == 60 || seconds == 300 || seconds == 900 || seconds == 1800;
 }
@@ -470,7 +470,7 @@ static bool parse_settings_object(const cJSON *settings, quota_settings_t *parse
     const cJSON *screen_timeout = json_field(settings, "screen_timeout_seconds");
     uint64_t seconds = 0;
     uint64_t timeout = 0;
-    if (!json_uint(refresh, 1800, &seconds) || !valid_refresh_seconds(seconds) ||
+    if (!json_uint(refresh, 1800, &seconds) || !quota_refresh_seconds_is_valid(seconds) ||
         !cJSON_IsBool(automatic) ||
         (screen_timeout != NULL && (!json_uint(screen_timeout, 600, &timeout) ||
                                    !quota_screen_timeout_is_valid(timeout)))) return false;
@@ -734,7 +734,7 @@ void quota_navigation_init(quota_navigation_t *navigation, bool configured,
     if (navigation == NULL) return;
     memset(navigation, 0, sizeof(*navigation));
     navigation->configured = configured;
-    navigation->refresh_seconds = valid_refresh_seconds(refresh_seconds)
+    navigation->refresh_seconds = quota_refresh_seconds_is_valid(refresh_seconds)
                                 ? refresh_seconds : QUOTA_REFRESH_DEFAULT_SECONDS;
     navigation->auto_refresh = auto_refresh;
     navigation->screen_timeout_seconds = quota_screen_timeout_is_valid(screen_timeout_seconds)
@@ -748,7 +748,7 @@ void quota_navigation_sync_settings(quota_navigation_t *navigation,
                                      uint16_t refresh_seconds, bool auto_refresh,
                                      uint16_t screen_timeout_seconds)
 {
-    if (navigation == NULL || !valid_refresh_seconds(refresh_seconds)) return;
+    if (navigation == NULL || !quota_refresh_seconds_is_valid(refresh_seconds)) return;
     navigation->refresh_seconds = refresh_seconds;
     navigation->auto_refresh = auto_refresh;
     if (quota_screen_timeout_is_valid(screen_timeout_seconds)) {

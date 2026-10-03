@@ -23,7 +23,6 @@ typedef struct {
     uint16_t refresh_seconds;
     bool auto_refresh;
     uint16_t screen_timeout_seconds;
-    uint32_t error_code;
 } quota_app_event_t;
 
 typedef struct {
