@@ -8,6 +8,16 @@
 
 ## Unreleased
 
+### 2026-10-03 — Device upgrade and silent wake acceptance
+
+After the owner's explicit request, installed the exact verified `6ed4d397dc3a19337873d5c0bc1a7fb86dc663364cd5afad9960916bfcbda50e` bundle on `/dev/cu.usbmodem1101`. The actual partition table matched SHA-256 `420931e3f5af072d899b5357c043fd9f283bf165fc9df6113b6d43d82b48a06d`. All three component writes at `0x0` / `0x8000` / `0x10000` were hash-verified. NVS and PHY regions were untouched; no full-chip erase or rebuild was performed.
+
+Build: **PASS** and Host tests: **PASS**, reusing the complete gate for this exact artifact; archive verification passed again before writing. Source commit `4204ee3` passed both GitHub [static checks](https://github.com/zesming/ai-passport-quota/actions/runs/37114083133) and [firmware checks](https://github.com/zesming/ai-passport-quota/actions/runs/37114083130).
+
+Device tests: **PASS for verified writes, startup, authenticated communication and observed silent wake**. A 30-second startup capture matched version `1fb05cb-dirty` and boot ELF prefix `9656324ec` to retained ELF SHA-256 `9656324ecc89a8fe922f4214709336ef5e4937aafa47a2879a5d2e2f563c0d0d`; the application became ready, restored its quota cache and detected CW2017. No panic, assertion, stack-canary error or watchdog was observed. The companion received authenticated requests after flashing; pairing and the saved five-minute refresh/screen-off settings remained available, with automatic refresh enabled. Following the requested long-DOWN sleep, approximately 25-second wait and function-key wake test, the owner confirmed silent wake before the deadline and no account switch. The serial port was released; private logs remain local.
+
+Unverified: extended/offline timing, overdue automatic refresh and cancellation recovery on the physical board. The new bundle is now the latest flashed image; earlier entries below describe their original validation stages.
+
 ### 2026-10-03 — Silent wake synchronization and preserved refresh deadlines
 
 The owner confirmed manual screen off, function-key wake and wake-key suppression on the `ca0a27c…` firmware, but reported a refreshing prompt without an apparent source update. The previous wake path always sent a provider-refresh POST before reading the snapshot, regardless of the next deadline. The companion's `202` acknowledgment schedules asynchronous provider work; unchanged values or a snapshot revision alone do not prove new source data. Claude refresh continues to read its existing statusline cache and preserves the source timestamp.
