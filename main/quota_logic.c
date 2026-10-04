@@ -468,26 +468,15 @@ static bool parse_codex_extras(const cJSON *account, quota_codex_extras_t *extra
     return true;
 }
 
-static void quota_format_duration(uint64_t seconds, char *output, size_t capacity)
+void quota_format_duration(uint64_t seconds, char *output, size_t capacity)
 {
     if (output == NULL || capacity == 0) return;
-    uint64_t minutes = seconds / 60 + (seconds % 60 != 0);
-    if (seconds < 60) {
-        snprintf(output, capacity, "不足1分钟");
-    } else if (minutes < 60) {
-        snprintf(output, capacity, "%llu分钟", (unsigned long long)minutes);
-    } else if (minutes < 1440) {
-        if (minutes % 60 == 0) {
-            snprintf(output, capacity, "%llu小时", (unsigned long long)(minutes / 60));
-        } else {
-            snprintf(output, capacity, "%llu小时%llu分", (unsigned long long)(minutes / 60),
-                     (unsigned long long)(minutes % 60));
-        }
-    } else if (minutes % 1440 / 60 == 0) {
-        snprintf(output, capacity, "%llu天", (unsigned long long)(minutes / 1440));
+    uint64_t hours = seconds / 3600;
+    if (hours == 0) {
+        snprintf(output, capacity, "<1h");
     } else {
-        snprintf(output, capacity, "%llu天%llu小时", (unsigned long long)(minutes / 1440),
-                 (unsigned long long)(minutes % 1440 / 60));
+        snprintf(output, capacity, "%llud %lluh", (unsigned long long)(hours / 24),
+                 (unsigned long long)(hours % 24));
     }
 }
 
@@ -504,7 +493,8 @@ void quota_format_reset_time(const quota_window_t *window, uint64_t now,
     } else {
         char remaining[32];
         quota_format_duration(window->resets_at - now, remaining, sizeof(remaining));
-        snprintf(output, capacity, "%s后重置", remaining);
+        /* U+F021 is the refresh glyph in the built-in font fallback. */
+        snprintf(output, capacity, "\xEF\x80\xA1 %s", remaining);
     }
 }
 

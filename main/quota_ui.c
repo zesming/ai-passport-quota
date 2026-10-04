@@ -371,12 +371,12 @@ static void set_account_row_visible(size_t index, bool visible)
     }
 }
 
-static void format_clock(uint64_t epoch, bool include_date, char *output, size_t capacity)
+static void format_clock(uint64_t epoch, char *output, size_t capacity)
 {
     time_t value = (time_t)epoch;
     struct tm local = {0};
     if (epoch < 1577836800ULL || localtime_r(&value, &local) == NULL ||
-        strftime(output, capacity, include_date ? "%m/%d %H:%M" : "%H:%M", &local) == 0) {
+        strftime(output, capacity, "%H:%M", &local) == 0) {
         snprintf(output, capacity, "--:--");
     }
 }
@@ -532,8 +532,9 @@ static void render_home(const quota_navigation_t *navigation,
                          (unsigned long long)extras->available_resets);
             } else if (extras->has_next_reset_expiry && extras->next_reset_expires_at > service->now_epoch) {
                 char expiry[20];
-                format_clock(extras->next_reset_expires_at, true, expiry, sizeof(expiry));
-                snprintf(value, sizeof(value), "%llu次 · %s到期",
+                quota_format_duration(extras->next_reset_expires_at - service->now_epoch,
+                                      expiry, sizeof(expiry));
+                snprintf(value, sizeof(value), "%llu次 · %s 到期",
                          (unsigned long long)extras->available_resets, expiry);
             } else if (extras->has_next_reset_expiry) {
                 snprintf(value, sizeof(value), "%llu次 · 等待更新",
@@ -574,7 +575,7 @@ static void render_home(const quota_navigation_t *navigation,
         snprintf(status, sizeof(status), "余额不可用");
     } else if (account->has_observed_at) {
         char clock_text[16];
-        format_clock(account->observed_at, false, clock_text, sizeof(clock_text));
+        format_clock(account->observed_at, clock_text, sizeof(clock_text));
         snprintf(status, sizeof(status), stale ? "缓存 · 更新于 %s" : "更新于 %s", clock_text);
     } else {
         snprintf(status, sizeof(status), "尚未采集数据");
@@ -722,8 +723,7 @@ void quota_ui_render(const quota_navigation_t *navigation,
     if (battery_known) lv_obj_add_flag(s_ui.battery_unknown, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_clear_flag(s_ui.battery_unknown, LV_OBJ_FLAG_HIDDEN);
     char clock_text[16];
-    format_clock(service->clock_synchronized ? service->now_epoch : 0,
-                 false, clock_text, sizeof(clock_text));
+    format_clock(service->clock_synchronized ? service->now_epoch : 0, clock_text, sizeof(clock_text));
     set_label_text(s_ui.clock, clock_text);
     for (size_t i = 0; i < 2; i++) {
         lv_obj_set_style_line_color(s_ui.wifi_lines[i], color(service->connected ? UI_INK : UI_DIM), 0);

@@ -8,6 +8,14 @@
 
 ## Unreleased
 
+### 2026-10-04 — Compact countdowns
+
+Quota resets use a refresh icon followed by `xd xh`; available reset expiry uses the same duration followed by the localized expiry label. Durations show completed hours, with `<1h` for a positive remainder below one hour. Both subscription views share this presentation. The device's 12-pixel font falls back to the built-in refresh glyph. Credits preserve the source string; screenshots now use integer examples without imposing an integer-only contract.
+
+Build: **PASS** — complete ESP-IDF 5.5.3 gate and verified archive; app 1,499,856 bytes. Host tests: **PASS** — firmware/runtime/font checks, 52 companion tests and Vite build. Browser checks passed for two-window Codex, Pro without a 5-hour window, Claude and text fit; synthetic screenshots were updated.
+
+Verified bundle: `build/firmware/80ce100545ad885e002dd2c16481f38e1a225d0439b4383f75df053a110c51e3/`. Matching ELF SHA-256: `55520faeb409259d7d0464ee8529e4e19379e641f35ec02620e0e43e99751622`; app version `7b76eb5-dirty`. Device tests: **NOT RUN** — not flashed. Physical countdown and fallback-icon rendering remain unverified; the installed image remains `a3251c5c…`. NVS layouts and refresh behavior are unchanged.
+
 ### 2026-10-04 — Reset countdowns and expiry labels
 
 Both subscription views show time remaining until each quota reset. Uncalibrated device clocks wait for synchronization; elapsed deadlines still wait for new source data. Credits use the localized label for remaining credits. Codex polling requests reset details and displays the earliest expiry only when the available rows are complete and valid. Counts remain authoritative; missing/capped details hide the date, and cached expired dates wait for an update. Private reset rows are excluded from public state; device extras remain RAM-only with unchanged NVS layouts.

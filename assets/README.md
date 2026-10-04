@@ -21,6 +21,8 @@ npx --yes lv_font_conv@1.5.3 \
 
 `tests/test_quota_fonts.py` checks generated cmap coverage against UI literals and ASCII. Widget font selection and board rendering still need verification; arbitrary non-ASCII account identity uses the application's `?` fallback.
 
+The 12-pixel font uses `lv_font_montserrat_12` as a fallback for its built-in refresh glyph (U+F021); add `--lv-fallback lv_font_montserrat_12` when regenerating that size. The 16-pixel font has no fallback.
+
 ## Provider marks
 
 Firmware SVG sources are `images/openai-quota.svg`, `claude-quota.svg` and `deepseek-quota.svg`. Desktop copies are `companion/public/assets/openai.svg`, `claude.svg` and `deepseek.svg`. Sources: Lobe Icons [OpenAI](https://github.com/lobehub/lobe-icons/blob/master/packages/static-svg/icons/openai.svg), [Claude](https://github.com/lobehub/lobe-icons/blob/master/packages/static-svg/icons/claude-color.svg) and [DeepSeek](https://github.com/lobehub/lobe-icons/blob/master/packages/static-svg/icons/deepseek-color.svg). The MIT notice is retained in [images/lobe-icons-LICENSE.txt](images/lobe-icons-LICENSE.txt) and the desktop asset directory. Provider trademarks remain with their owners; the marks identify providers without implying endorsement.

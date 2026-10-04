@@ -606,17 +606,16 @@ static void test_codex_extras_contract(void)
 static void test_remaining_duration(void)
 {
     const struct { uint64_t seconds; const char *text; } cases[] = {
-        {1, "不足1分钟"}, {59, "不足1分钟"}, {60, "1分钟"},
-        {61, "2分钟"}, {3599, "1小时"}, {3600, "1小时"},
-        {3601, "1小时1分"}, {8100, "2小时15分"},
-        {86400, "1天"}, {97200, "1天3小时"}, {604800, "7天"},
+        {1, "<1h"}, {3599, "<1h"}, {3600, "0d 1h"},
+        {8100, "0d 2h"}, {86399, "0d 23h"}, {86400, "1d 0h"},
+        {97200, "1d 3h"}, {604800, "7d 0h"},
     };
     char output[48], expected[48];
     quota_window_t window = {.present = true, .has_resets_at = true};
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         window.resets_at = 1700000000 + cases[i].seconds;
         quota_format_reset_time(&window, 1700000000, true, output, sizeof(output));
-        snprintf(expected, sizeof(expected), "%s后重置", cases[i].text);
+        snprintf(expected, sizeof(expected), "\xEF\x80\xA1 %s", cases[i].text);
         assert(strcmp(output, expected) == 0);
     }
     /* Cached boot time is not a current-clock observation. */

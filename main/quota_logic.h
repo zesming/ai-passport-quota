@@ -193,6 +193,7 @@ bool quota_url_is_private_ipv4(const char *url, char host_out[16]);
 bool quota_pair_token_is_valid(const char *token);
 void quota_copy_display_ascii(const char *source, char *destination, size_t capacity);
 void quota_copy_display_plan(const char *source, char *destination, size_t capacity);
+void quota_format_duration(uint64_t seconds, char *output, size_t capacity);
 void quota_format_reset_time(const quota_window_t *window, uint64_t now,
                              bool clock_synchronized, char *output, size_t capacity);
 bool quota_refresh_seconds_is_valid(uint64_t seconds);

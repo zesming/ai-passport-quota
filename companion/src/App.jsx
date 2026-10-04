@@ -169,12 +169,8 @@ function friendlyLoginError(code) {
 }
 
 function remainingDuration(seconds) {
-  if (seconds < 60) return '不足1分钟';
-  const minutes = Math.ceil(seconds / 60);
-  if (minutes < 60) return `${minutes}分钟`;
-  if (minutes < 1440) return `${Math.floor(minutes / 60)}小时${minutes % 60 ? `${minutes % 60}分` : ''}`;
-  const hours = Math.floor(minutes % 1440 / 60);
-  return `${Math.floor(minutes / 1440)}天${hours ? `${hours}小时` : ''}`;
+  const hours = Math.floor(seconds / 3600);
+  return hours < 1 ? '<1h' : `${Math.floor(hours / 24)}d ${hours % 24}h`;
 }
 
 function quotaView(windowValue, nowSeconds) {
@@ -185,7 +181,7 @@ function quotaView(windowValue, nowSeconds) {
   const expired = Number.isFinite(resetAt) && resetAt <= nowSeconds;
   return {
     value: expired ? null : Math.max(0, Math.min(100, windowValue.remaining_percent)),
-    reset: Number.isFinite(resetAt) && !expired ? `${remainingDuration(resetAt - nowSeconds)}后重置` : '',
+    reset: Number.isFinite(resetAt) && !expired ? `🔄 ${remainingDuration(resetAt - nowSeconds)}` : '',
     expired,
   };
 }
@@ -227,11 +223,8 @@ function SubscriptionQuota({ account, nowSeconds, stale, compact = false }) {
   if (account.provider === 'codex') {
     if (account.banked_reset?.available_count > 0) {
       const expiry = account.banked_reset.next_expires_at;
-      const date = Number.isFinite(expiry) ? compact
-        ? `${new Intl.DateTimeFormat(undefined, { month: '2-digit', day: '2-digit' }).format(new Date(expiry * 1000))} ${formatLocalClock(expiry)}`
-        : formatDate(expiry) : '';
-      extras.push(['可用重置', date
-        ? `${account.banked_reset.available_count}次 · ${expiry <= nowSeconds ? '等待更新' : `${date}到期`}`
+      extras.push(['可用重置', Number.isFinite(expiry)
+        ? `${account.banked_reset.available_count}次 · ${expiry <= nowSeconds ? '等待更新' : `${remainingDuration(expiry - nowSeconds)} 到期`}`
         : `${account.banked_reset.available_count} 次`]);
     }
     if (account.credits?.has_credits || account.credits?.unlimited) {

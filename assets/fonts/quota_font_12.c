@@ -1,7 +1,7 @@
 /*******************************************************************************
  * Size: 12 px
  * Bpp: 4
- * Opts: --font managed_components/lvgl__lvgl/tests/src/test_files/fonts/noto/NotoSansSC-Regular.ttf --range 0x20-0x7E --symbols ·—不个中为也于交亮人从任余供保值充先关分切到刷剩加动即受口只可台同后响回在备天失存完对小尚屏已币平并度开录影待快息意成或户手打择持按换据接提支收放效数新无时暂更最有期未次正步民添源照理用由电留登知确离秒窗立端等管线缓置脑自认设误请败账赠足过近返连送选通配采重量钟错键长闭间限隔集页额 --size 12 --bpp 4 --format lvgl --no-compress --lv-font-name quota_font_12 --lv-include lvgl.h --output assets/fonts/quota_font_12.c
+ * Opts: --font managed_components/lvgl__lvgl/tests/src/test_files/fonts/noto/NotoSansSC-Regular.ttf --range 0x20-0x7E --symbols ·—不个中为也于交亮人从任余供保值充先关分切到刷剩加动即受口只可台同后响回在备天失存完对小尚屏已币平并度开录影待快息意成或户手打择持按换据接提支收放效数新无时暂更最有期未次正步民添源照理用由电留登知确离秒窗立端等管线缓置脑自认设误请败账赠足过近返连送选通配采重量钟错键长闭间限隔集页额 --size 12 --bpp 4 --format lvgl --no-compress --lv-font-name quota_font_12 --lv-include lvgl.h --lv-fallback lv_font_montserrat_12 --output assets/fonts/quota_font_12.c
  ******************************************************************************/
 
 #ifdef LV_LVGL_H_INCLUDE_SIMPLE
@@ -2737,6 +2737,7 @@ static lv_font_fmt_txt_dsc_t font_dsc = {
 #endif
 };
 
+extern const lv_font_t lv_font_montserrat_12;
 
 
 /*-----------------
@@ -2762,7 +2763,7 @@ lv_font_t quota_font_12 = {
 #endif
     .dsc = &font_dsc,          /*The custom font data. Will be accessed by `get_glyph_bitmap/dsc` */
 #if LV_VERSION_CHECK(8, 2, 0) || LVGL_VERSION_MAJOR >= 9
-    .fallback = NULL,
+    .fallback = &lv_font_montserrat_12,
 #endif
     .user_data = NULL,
 };

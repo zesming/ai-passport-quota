@@ -21,6 +21,8 @@ npx --yes lv_font_conv@1.5.3 \
 
 `tests/test_quota_fonts.py` 检查生成 cmap 对 UI 字面文本和 ASCII 的覆盖。控件字体选择与真机显示仍须验证；任意非 ASCII 账号身份采用应用的 `?` 回退。
 
+12 像素字体回退到 `lv_font_montserrat_12` 中的内置刷新图标（U+F021）；重新生成此字号时添加 `--lv-fallback lv_font_montserrat_12`。16 像素字体没有回退字体。
+
 ## 服务标志
 
 固件 SVG 源为 `images/openai-quota.svg`、`claude-quota.svg` 和 `deepseek-quota.svg`，电脑端副本为 `companion/public/assets/openai.svg`、`claude.svg` 和 `deepseek.svg`。来源为 Lobe Icons 的 [OpenAI](https://github.com/lobehub/lobe-icons/blob/master/packages/static-svg/icons/openai.svg)、[Claude](https://github.com/lobehub/lobe-icons/blob/master/packages/static-svg/icons/claude-color.svg) 和 [DeepSeek](https://github.com/lobehub/lobe-icons/blob/master/packages/static-svg/icons/deepseek-color.svg)。MIT 声明保留于 [images/lobe-icons-LICENSE.txt](images/lobe-icons-LICENSE.txt) 和电脑端资源目录。商标归各服务所有，标志用于识别，不代表背书。
