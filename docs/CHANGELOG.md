@@ -8,6 +8,14 @@
 
 ## Unreleased
 
+### 2026-10-04 — Compact countdown firmware installed
+
+Installed the verified `80ce1005…` bundle after the owner's request. The device partition table matched the archive; writes at `0x0` / `0x8000` / `0x10000` passed all three component hash checks. NVS and PHY regions were untouched.
+
+Build and Host tests: **PASS**, reusing this exact bundle's complete gate and 52 companion tests. Archive verification passed again before writing; source commit `eff037c` passed both GitHub [static checks](https://github.com/zesming/ai-passport-quota/actions/runs/37180800306) and [firmware checks](https://github.com/zesming/ai-passport-quota/actions/runs/37180800273). Device tests: **PASS for writes, startup and authenticated communication**. The 30-second capture matched version `7b76eb5-dirty` and the ELF prefix to `55520faeb409259d7d0464ee8529e4e19379e641f35ec02620e0e43e99751622`; application readiness, cache restoration and battery detection were observed without crash markers. Authenticated device requests resumed, and companion settings and account count remained unchanged. The serial port was released; raw logs remain local.
+
+Unverified: physical refresh-icon/countdown rendering awaits owner observation, including the compact expiry row after synchronization. This bundle is now the latest installed image; earlier entries preserve their original validation stages.
+
 ### 2026-10-04 — Compact countdowns
 
 Quota resets use a refresh icon followed by `xd xh`; available reset expiry uses the same duration followed by the localized expiry label. Durations show completed hours, with `<1h` for a positive remainder below one hour. Both subscription views share this presentation. The device's 12-pixel font falls back to the built-in refresh glyph. Credits preserve the source string; screenshots now use integer examples without imposing an integer-only contract.
