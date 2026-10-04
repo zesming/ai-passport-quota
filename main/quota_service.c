@@ -630,12 +630,14 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
     (void)base;
     (void)data;
     if (id != WIFI_EVENT_STA_DISCONNECTED) return;
+    bool sleeping = display_state_snapshot().sleeping;
     mutex_lock();
     bool was_connected = s_view.connected;
     s_view.connected = false;
-    s_wifi_retry_pending = true;
-    s_wifi_retry_at_ms = (int64_t)monotonic_ms() + s_wifi_retry_delay_ms;
-    if (s_wifi_retry_delay_ms < WIFI_RETRY_MAX_MS) {
+    /* Keep disconnect facts even if stop failed; the sleeping worker never connects. */
+    s_wifi_retry_pending = s_wifi_started;
+    s_wifi_retry_at_ms = (int64_t)monotonic_ms() + (sleeping ? 0 : s_wifi_retry_delay_ms);
+    if (!sleeping && s_wifi_retry_delay_ms < WIFI_RETRY_MAX_MS) {
         s_wifi_retry_delay_ms *= 2;
         if (s_wifi_retry_delay_ms > WIFI_RETRY_MAX_MS) {
             s_wifi_retry_delay_ms = WIFI_RETRY_MAX_MS;
@@ -643,7 +645,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
     }
     mutex_unlock();
     if (was_connected) post_simple_event(QUOTA_APP_EVENT_CONNECTION);
-    if (s_network_task != NULL) xTaskNotifyGive(s_network_task);
+    if (!sleeping && s_network_task != NULL) xTaskNotifyGive(s_network_task);
 }
 
 static void ip_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data)
@@ -652,7 +654,14 @@ static void ip_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
     (void)base;
     (void)data;
     if (id != IP_EVENT_STA_GOT_IP) return;
+    /* An old queued IP event can arrive after restart, before the new association. */
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK) return;
     mutex_lock();
+    if (!s_wifi_started || display_state_snapshot().sleeping) {
+        mutex_unlock();
+        return;
+    }
     s_view.connected = true;
     s_fetch_after_connect = true;
     s_wifi_retry_delay_ms = WIFI_RETRY_MIN_MS;
@@ -665,25 +674,33 @@ static void ip_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
 static bool init_wifi(void)
 {
     if (!prepare_network_stack()) return false;
-    if (s_handlers_registered) return true;
-    esp_err_t err = esp_event_handler_instance_register(WIFI_EVENT,
-        WIFI_EVENT_STA_DISCONNECTED, wifi_event_handler, NULL, &s_wifi_handler);
-    if (err != ESP_OK) goto failed;
-    err = esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
-        ip_event_handler, NULL, &s_ip_handler);
-    if (err != ESP_OK) {
-        (void)esp_event_handler_instance_unregister(WIFI_EVENT,
-            WIFI_EVENT_STA_DISCONNECTED, s_wifi_handler);
-        goto failed;
+    esp_err_t err;
+    if (!s_handlers_registered) {
+        err = esp_event_handler_instance_register(WIFI_EVENT,
+            WIFI_EVENT_STA_DISCONNECTED, wifi_event_handler, NULL, &s_wifi_handler);
+        if (err != ESP_OK) goto failed;
+        err = esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+            ip_event_handler, NULL, &s_ip_handler);
+        if (err != ESP_OK) {
+            (void)esp_event_handler_instance_unregister(WIFI_EVENT,
+                WIFI_EVENT_STA_DISCONNECTED, s_wifi_handler);
+            goto failed;
+        }
+        s_handlers_registered = true;
+        err = esp_wifi_set_storage(WIFI_STORAGE_RAM);
+        if (err != ESP_OK) goto failed;
+        err = esp_wifi_set_mode(WIFI_MODE_STA);
+        if (err != ESP_OK) goto failed;
     }
-    s_handlers_registered = true;
-    err = esp_wifi_set_storage(WIFI_STORAGE_RAM);
-    if (err != ESP_OK) goto failed;
-    err = esp_wifi_set_mode(WIFI_MODE_STA);
-    if (err != ESP_OK) goto failed;
+    if (s_wifi_started) return true;
     err = esp_wifi_start();
     if (err != ESP_OK) goto failed;
+    /* Restarting retains the RAM configuration and the provider deadline. */
+    mutex_lock();
     s_wifi_started = true;
+    s_wifi_retry_pending = true;
+    s_wifi_retry_at_ms = (int64_t)monotonic_ms();
+    mutex_unlock();
     return true;
 
 failed:
@@ -696,6 +713,24 @@ failed:
         s_handlers_registered = false;
     }
     return false;
+}
+
+static void stop_wifi_for_sleep(void)
+{
+    if (!s_wifi_started) return;
+    esp_err_t err = esp_wifi_stop();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Wi-Fi sleep stop failed (%s)", esp_err_to_name(err));
+        return;
+    }
+    mutex_lock();
+    s_wifi_started = false;
+    bool was_connected = s_view.connected;
+    s_view.connected = false;
+    s_wifi_retry_pending = false;
+    s_fetch_after_connect = false;
+    mutex_unlock();
+    if (was_connected) post_simple_event(QUOTA_APP_EVENT_CONNECTION);
 }
 
 static bool apply_wifi_config(const quota_device_config_t *config,
@@ -1265,7 +1300,15 @@ static void network_task(void *arg)
     bool last_auto_refresh = false;
 
     for (;;) {
-        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500));
+        display_state_t waiting_display = display_state_snapshot();
+        TickType_t wait = waiting_display.sleeping && !s_wifi_started
+                        ? portMAX_DELAY : pdMS_TO_TICKS(500);
+        (void)ulTaskNotifyTake(pdTRUE, wait);
+        display_state_t display_state = display_state_snapshot();
+        if (display_state.sleeping) {
+            stop_wifi_for_sleep();
+            continue;
+        }
         uint64_t now_ms = monotonic_ms();
         bool configured;
         bool connected;
@@ -1276,7 +1319,6 @@ static void network_task(void *arg)
         bool pending_auto;
         uint16_t pending_screen_timeout;
         bool selection_pending;
-        display_state_t display_state;
         char selected_account_id[QUOTA_ACCOUNT_ID_BYTES + 1];
         uint32_t config_generation;
 
@@ -1577,10 +1619,19 @@ static void serial_task(void *arg)
     (void)arg;
     quota_frame_decoder_init(&s_frame_decoder);
     for (;;) {
+        if (display_state_snapshot().sleeping) {
+            quota_frame_decoder_init(&s_frame_decoder);
+            (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            continue;
+        }
         int input = fgetc(stdin);
         if (input == EOF) {
             clearerr(stdin);
             vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+        if (display_state_snapshot().sleeping) {
+            quota_frame_decoder_init(&s_frame_decoder);
             continue;
         }
         const char *frame = NULL;
@@ -1694,6 +1745,7 @@ void quota_service_set_display_sleeping(bool sleeping)
         (void)xSemaphoreGive(s_mutex);
     }
     if (s_network_task != NULL) xTaskNotifyGive(s_network_task);
+    if (s_serial_task != NULL) xTaskNotifyGive(s_serial_task);
 }
 
 void quota_service_get_view(quota_service_view_t *view)

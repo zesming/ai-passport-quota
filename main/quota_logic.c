@@ -439,6 +439,31 @@ static bool parse_balance(const cJSON *account, quota_balance_t *balance)
     return quota_balance_is_valid(balance);
 }
 
+static bool parse_codex_extras(const cJSON *account, quota_codex_extras_t *extras)
+{
+    const cJSON *reset = json_field(account, "banked_reset");
+    if (reset != NULL && !cJSON_IsNull(reset)) {
+        if (!object_has_unique_keys(reset) ||
+            !json_uint(json_field(reset, "available_count"), 9007199254740991ULL,
+                       &extras->available_resets)) return false;
+        extras->has_banked_reset = true;
+    }
+    const cJSON *credits = json_field(account, "credits");
+    if (credits == NULL || cJSON_IsNull(credits)) return true;
+    if (!object_has_unique_keys(credits)) return false;
+    const cJSON *available = json_field(credits, "has_credits");
+    const cJSON *unlimited = json_field(credits, "unlimited");
+    const cJSON *balance = json_field(credits, "balance");
+    if (!cJSON_IsBool(available) || !cJSON_IsBool(unlimited)) return false;
+    if (balance != NULL && !cJSON_IsNull(balance) &&
+        (!json_copy_string(balance, QUOTA_CREDITS_BALANCE_BYTES, false,
+                           extras->credits_balance, sizeof(extras->credits_balance)) ||
+         ascii_has_control(extras->credits_balance, strlen(extras->credits_balance)))) return false;
+    extras->has_credits = cJSON_IsTrue(available) || cJSON_IsTrue(unlimited);
+    extras->unlimited_credits = cJSON_IsTrue(unlimited);
+    return true;
+}
+
 bool quota_refresh_seconds_is_valid(uint64_t seconds)
 {
     return seconds == 60 || seconds == 300 || seconds == 900 || seconds == 1800;
@@ -541,6 +566,11 @@ bool quota_parse_snapshot(const char *json, size_t json_length, quota_snapshot_t
                 }
                 if (parsed.accounts[i].provider == QUOTA_PROVIDER_DEEPSEEK &&
                     !parse_balance(entry, &parsed.balances[i])) {
+                    valid = false;
+                    break;
+                }
+                if (parsed.accounts[i].provider == QUOTA_PROVIDER_CODEX &&
+                    !parse_codex_extras(entry, &parsed.codex_extras[i])) {
                     valid = false;
                     break;
                 }

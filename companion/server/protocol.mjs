@@ -37,12 +37,27 @@ export function codexWindows(response) {
   const candidates = map && typeof map === 'object' ? Object.entries(map) : [];
   const preferred = candidates.find(([id, bucket]) => id === 'codex' || bucket?.limitId === 'codex');
   const bucket = preferred?.[1] ?? (candidates.length === 1 ? candidates[0][1] : response?.rateLimits);
-  const result = { five_hour: null, seven_day: null };
+  const result = {
+    five_hour: null, seven_day: null,
+    credits: publicCredits({ has_credits: bucket?.credits?.hasCredits, unlimited: bucket?.credits?.unlimited, balance: bucket?.credits?.balance }),
+    banked_reset: publicBankedReset({ available_count: response?.rateLimitResetCredits?.availableCount }),
+  };
   for (const window of [bucket?.primary, bucket?.secondary]) {
     if (window?.windowDurationMins === 300) result.five_hour = percentWindow(window.usedPercent, window.resetsAt);
     if (window?.windowDurationMins === 10080) result.seven_day = percentWindow(window.usedPercent, window.resetsAt);
   }
   return result;
+}
+function publicCredits(value) {
+  if (!value || Array.isArray(value) || typeof value.has_credits !== 'boolean' || typeof value.unlimited !== 'boolean'
+    || (!value.has_credits && !value.unlimited)) return null;
+  const balance = typeof value.balance === 'string' && value.balance.length > 0 && Buffer.byteLength(value.balance) <= 32
+    && !/[\u0000-\u001f\u007f]/.test(value.balance) ? value.balance : null;
+  return { has_credits: value.has_credits, unlimited: value.unlimited, balance };
+}
+function publicBankedReset(value) {
+  return value && !Array.isArray(value) && Number.isSafeInteger(value.available_count) && value.available_count >= 0
+    ? { available_count: value.available_count } : null;
 }
 export function claudeWindows(payload) {
   const five = payload?.rate_limits?.five_hour;
@@ -61,6 +76,10 @@ export function publicAccount(account) {
     observed_at: Number.isSafeInteger(account.observed_at) && account.observed_at > 0 ? account.observed_at : null,
     five_hour: publicWindow(account.five_hour), seven_day: publicWindow(account.seven_day),
   };
+  if (account.provider === 'codex') {
+    result.credits = publicCredits(account.credits);
+    result.banked_reset = publicBankedReset(account.banked_reset);
+  }
   if (account.provider === 'deepseek') {
     result.email = '';
     result.plan = 'API';

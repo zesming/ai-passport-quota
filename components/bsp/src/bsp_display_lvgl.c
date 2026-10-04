@@ -4,6 +4,7 @@
 #include "bsp_display_rounding.h"
 #include "bsp_pins.h"
 #include "esp_lvgl_port.h"
+#include "esp_lcd_panel_ops.h"
 #include "esp_log.h"
 #include <string.h>
 
@@ -67,7 +68,8 @@ lv_display_t *bsp_lvgl_init(void) {
             ESP_LOGE(TAG, "LVGL port 初始化未完成，需重启后重试");
             return NULL;
         }
-        const lvgl_port_cfg_t pc = ESP_LVGL_PORT_INIT_CONFIG();
+        lvgl_port_cfg_t pc = ESP_LVGL_PORT_INIT_CONFIG();
+        pc.task_max_sleep_ms = 60000;
         if (lvgl_port_init(&pc) != ESP_OK) {
             s_port_init_failed = true;
             ESP_LOGE(TAG, "lvgl_port_init 失败，需重启后重试");
@@ -129,4 +131,43 @@ bool bsp_lvgl_lock(int timeout_ms) {
 }
 void bsp_lvgl_unlock(void) {
     if (s_disp) lvgl_port_unlock();
+}
+
+bool bsp_lvgl_set_sleeping(bool sleeping) {
+    if (!bsp_lvgl_lock(500)) return false;
+    lv_timer_t *refresh = lv_display_get_refr_timer(s_disp);
+    esp_lcd_panel_handle_t panel = bsp_display_panel();
+    if (!refresh || !panel) {
+        bsp_lvgl_unlock();
+        return false;
+    }
+    esp_err_t first, second;
+    if (sleeping) {
+        lv_timer_pause(refresh);
+        first = esp_lcd_panel_disp_on_off(panel, false);
+        second = esp_lcd_panel_disp_sleep(panel, true);
+    } else {
+        first = esp_lcd_panel_disp_sleep(panel, false); /* Driver waits for SLPOUT. */
+        second = first == ESP_OK ? esp_lcd_panel_disp_on_off(panel, true) : first;
+        if (first == ESP_OK && second == ESP_OK) {
+            lv_timer_resume(refresh);
+            lv_obj_invalidate(lv_display_get_screen_active(s_disp));
+        }
+    }
+    /* Keep the port task/tick alive: lvgl_port_stop disables the timer handler,
+       whose LVGL 9.5 disabled path returns 1 and makes this port poll every 2ms. */
+    bsp_lvgl_unlock();
+    if (!sleeping && first == ESP_OK && second == ESP_OK) {
+        lvgl_port_task_wake(LVGL_PORT_EVENT_DISPLAY, s_disp);
+    }
+    return first == ESP_OK && second == ESP_OK;
+}
+
+bool bsp_lvgl_refresh(void) {
+    if (!bsp_lvgl_lock(500)) return false;
+    lv_refr_now(s_disp);
+    /* SPI parameter commands drain queued color transfers before returning. */
+    esp_err_t err = esp_lcd_panel_disp_on_off(bsp_display_panel(), true);
+    bsp_lvgl_unlock();
+    return err == ESP_OK;
 }

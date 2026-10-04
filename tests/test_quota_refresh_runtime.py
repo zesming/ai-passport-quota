@@ -74,6 +74,7 @@ bool s_has_config;
 uint32_t s_config_generation;
 void *s_mutex = (void *)1;
 void *s_network_task = (void *)1;
+void *s_serial_task;
 quota_snapshot_t s_snapshot_work;
 bool transport_ok, refresh_accepted, expect_busy;
 bool sleep_on_post, sleep_wake_on_post, sleep_on_get, lose_link_on_post;
@@ -333,14 +334,15 @@ int main(void) {
     assert(!s_view.refreshing && s_display_scheduler.sleeping);
 
     reset_state(); s_view.refreshing = true; s_refreshing_display_generation = 1;
+    s_serial_task = (void *)2;
     quota_service_set_display_sleeping(true);
     uint32_t sleeping_generation = s_display_scheduler.generation;
     quota_service_set_display_sleeping(true);
     assert(sleeping_generation == 2 && s_display_scheduler.generation == 2);
-    assert(!s_view.refreshing && s_display_scheduler.sleeping && notifications == 1);
+    assert(!s_view.refreshing && s_display_scheduler.sleeping && notifications == 2);
     quota_service_set_display_sleeping(false);
     assert(!s_display_scheduler.sleeping && s_display_scheduler.generation == 3);
-    assert(s_display_scheduler.wake_fetch_pending && notifications == 2);
+    assert(s_display_scheduler.wake_fetch_pending && notifications == 4);
     puts("quota refresh generation tests passed");
 }
 '''
@@ -368,9 +370,11 @@ typedef struct {
 typedef struct { bool sleeping; uint32_t generation; } display_state_t;
 typedef int portMUX_TYPE;
 typedef int esp_err_t;
+typedef unsigned TickType_t;
 enum { ESP_OK = 0, QUOTA_APP_EVENT_PAIRING_TICK, QUOTA_APP_EVENT_CONNECTION };
 #define pdTRUE 1
 #define pdMS_TO_TICKS(ms) (ms)
+#define portMAX_DELAY UINT32_MAX
 #define SNAPSHOT_POLL_MS 10000
 #define SNAPSHOT_RETRY_MS 30000
 #define SELECTION_PERSIST_RETRY_MS 30000
@@ -396,6 +400,7 @@ uint64_t s_now_ms;
 unsigned s_loop_calls, s_stop_after, s_init_calls, s_config_calls;
 unsigned s_retry_calls, s_settings_calls, s_posts, s_gets, s_wake_gets;
 unsigned s_refresh_calls;
+unsigned s_wifi_stop_calls, s_waits[16];
 uint64_t s_post_times[16], s_wake_fetch_duration_ms;
 typedef struct { uint64_t time; bool sleep, wake, manual, cancel_source; } loop_step_t;
 loop_step_t s_steps[16];
@@ -409,8 +414,9 @@ void mutex_unlock(void) {}
 uint64_t monotonic_ms(void) { return s_now_ms; }
 uint64_t current_epoch(void) { return 1700000000; }
 int ulTaskNotifyTake(unsigned clear, unsigned ticks) {
-    (void)clear; (void)ticks;
+    (void)clear;
     if (++s_loop_calls > s_stop_after) longjmp(s_loop_exit, 1);
+    assert(s_loop_calls <= 16); s_waits[s_loop_calls - 1] = ticks;
     if (s_use_steps) {
         loop_step_t step = s_steps[s_loop_calls - 1];
         s_now_ms = step.time;
@@ -444,6 +450,9 @@ bool display_generation_is_current(uint32_t generation) {
     return !s_display_scheduler.sleeping && s_display_scheduler.generation == generation;
 }
 bool init_wifi(void) { s_init_calls++; s_wifi_started = true; return true; }
+void stop_wifi_for_sleep(void) {
+    if (s_wifi_started) { ++s_wifi_stop_calls; s_wifi_started = false; }
+}
 bool apply_wifi_config(const quota_device_config_t *config, uint32_t generation) {
     (void)config; (void)generation; s_config_calls++; return true;
 }
@@ -511,6 +520,7 @@ void reset_state(void) {
     s_init_calls = 0; s_config_calls = 0; s_retry_calls = 0;
     s_settings_calls = 0; s_posts = 0; s_gets = 0; s_wake_gets = 0;
     s_refresh_calls = 0; s_cancel_before_refresh = false; s_local_refresh_failure = false;
+    s_wifi_stop_calls = 0; memset(s_waits, 0, sizeof(s_waits));
     s_wake_fetch_duration_ms = 0; s_use_steps = false;
     memset(s_steps, 0, sizeof(s_steps));
     memset(s_post_times, 0, sizeof(s_post_times));
@@ -533,6 +543,12 @@ int main(void) {
     assert(s_init_calls == 0 && s_config_calls == 0 && s_retry_calls == 0);
     assert(s_settings_calls == 0 && s_posts == 0 && s_gets == 0);
     assert(s_settings_pending);
+    assert(s_waits[0] == portMAX_DELAY && s_waits[2] == portMAX_DELAY);
+
+    reset_state(); s_display_scheduler.sleeping = true;
+    run_worker(3);
+    assert(s_wifi_stop_calls == 1 && !s_wifi_started);
+    assert(s_waits[0] == 500 && s_waits[1] == portMAX_DELAY && s_waits[2] == portMAX_DELAY);
 
     reset_state();
     s_view.auto_refresh = false;

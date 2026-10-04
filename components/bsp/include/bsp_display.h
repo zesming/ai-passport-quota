@@ -46,3 +46,10 @@ struct _lv_display_t *bsp_lvgl_init(void);
 // LVGL 尚未就绪或超时时 lock 返回 false；只有 lock 成功后才调用 unlock。
 bool bsp_lvgl_lock(int timeout_ms);
 void bsp_lvgl_unlock(void);
+
+// Reversible LCD sleep and refresh pause; call once per transition from a task.
+// Wake restores rendering; caller redraws cached UI before enabling backlight.
+bool bsp_lvgl_set_sleeping(bool sleeping);
+
+// Render pending UI and wait for queued SPI pixels before lighting the screen.
+bool bsp_lvgl_refresh(void);

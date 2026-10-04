@@ -36,7 +36,7 @@ LVGL is fixed at **9.5.0**. The current port uses one 40-line internal DMA buffe
 
 The final flush masks pixels outside the 30-pixel screen radius to black; do not replace it with a full-screen intermediate ARGB layer without checking memory. Fonts and brand descriptors stay in Flash. With no PSRAM, review TLS/Wi-Fi, LVGL, DMA and task-stack use together; measure free heap, minimum heap and largest block under real load. Configured 80 MHz SPI does not prove a board's signal margin.
 
-Screen off only reduces backlight to zero and gates application networking; function-key sensing remains active. It is not MCU deep sleep or hardware power-off. See [application lifecycle contracts](../applications/ai-quota-monitor.md#refresh-and-screen-lifecycle).
+Screen off stops Wi-Fi, sets backlight to zero, sends LCD Sleep In and pauses its refresh timer. CPU DFS can fall to 40 MHz after releasing the awake maximum-frequency lock; wake reacquires that lock, restores cached display, then reconnects. Application/network/serial polling pauses, but the LVGL 5 ms tick and ADC function-key sensing remain active. This is neither MCU light/deep sleep nor hardware power-off; current reduction and wake timing require physical measurement. See [application lifecycle contracts](../applications/ai-quota-monitor.md#refresh-and-screen-lifecycle).
 
 ## Physical acceptance
 
@@ -47,7 +47,7 @@ Use the exact build and record board revision, artifact identity and observation
 - Key voltage margins and click/long events across battery levels; consumed wake gesture and manual screen off.
 - Plausible battery SOC/voltage and graceful missing-device/I2C failure behavior; no inferred charging animation.
 - USB pairing/request-ID acknowledgment, Wi-Fi offline/reconnect, invalid-certificate rejection and saved settings after reboot.
-- No device HTTP/retry activity while asleep, silent wake before deadline, overdue refresh afterward, offline and active-request sleep/wake transitions.
+- Wi-Fi stopped and LCD asleep with no device HTTP/retry or worker polling; reliable function-key wake, LCD restoration before reconnect, silent wake before deadline, overdue refresh afterward, offline and active-request sleep/wake transitions.
 - Runtime heap/stack stability, sustained display/network load and measured power consumption when relevant.
 
 Host tests and browser previews cannot establish these observations. [Development and flashing](../development/README.md) defines the verified artifact/data policy; the [changelog](../CHANGELOG.md) records which physical checks were actually performed.

@@ -213,6 +213,7 @@ export class AccountManager {
     const changed = account.authenticated && account.email !== email;
     if (changed) {
       account.five_hour = null; account.seven_day = null; account.observed_at = null;
+      if (account.provider === 'codex') { account.credits = null; account.banked_reset = null; }
       if (account.provider === 'claude') await rm(path.join(directory, 'quota-snapshot.json'), { force: true });
     }
     if (account.provider === 'claude') await atomicJSON(path.join(directory, 'quota-identity.json'), { v: 1, email });

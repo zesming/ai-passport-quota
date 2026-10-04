@@ -541,6 +541,56 @@ static void test_deepseek_balance_contract(void)
     assert(snapshot.accounts[0].five_hour.present && !snapshot.balances[0].present);
 }
 
+static void test_codex_extras_contract(void)
+{
+    char json[2048], account[1024];
+    const char *prefix =
+        "{\"id\":\"0123456789abcdef0123456789abcdef\",\"provider\":\"codex\","
+        "\"email\":\"x@example.com\",\"plan\":\"pro\",\"status\":\"ok\","
+        "\"observed_at\":1700000000,\"five_hour\":null,"
+        "\"seven_day\":{\"remaining_percent\":0,\"resets_at\":null},";
+    const char *cases[] = {
+        "\"banked_reset\":{\"available_count\":3},\"credits\":{\"has_credits\":true,\"unlimited\":false,\"balance\":\"12.340000001\"}}",
+        "\"banked_reset\":{\"available_count\":0},\"credits\":{\"has_credits\":false,\"unlimited\":true,\"balance\":null}}",
+        "\"banked_reset\":null,\"credits\":null}",
+    };
+    quota_snapshot_t snapshot = {0};
+    for (size_t i = 0; i < 3; i++) {
+        snprintf(account, sizeof(account), "%s%s", prefix, cases[i]);
+        size_t length = make_snapshot(json, sizeof(json), account,
+            "{\"refresh_seconds\":300,\"auto_refresh\":true}");
+        assert(quota_parse_snapshot(json, length, &snapshot));
+        assert(!snapshot.accounts[0].five_hour.present);
+        assert(snapshot.accounts[0].seven_day.present && snapshot.accounts[0].seven_day.remaining_percent == 0);
+        const quota_codex_extras_t *extras = &snapshot.codex_extras[0];
+        assert(extras->has_banked_reset == (i < 2));
+        assert(extras->available_resets == (i == 0 ? 3 : 0));
+        assert(extras->has_credits == (i < 2));
+        assert(extras->unlimited_credits == (i == 1));
+        assert(strcmp(extras->credits_balance, i == 0 ? "12.340000001" : "") == 0);
+    }
+    const char *bad[] = {
+        "\"banked_reset\":{\"available_count\":-1}}",
+        "\"banked_reset\":{\"available_count\":1.5}}",
+        "\"banked_reset\":{\"available_count\":9007199254740992}}",
+        "\"credits\":{\"has_credits\":1,\"unlimited\":false,\"balance\":\"1\"}}",
+        "\"credits\":{\"has_credits\":true,\"unlimited\":false,\"balance\":1}}",
+        "\"credits\":{\"has_credits\":true,\"unlimited\":false,\"balance\":\"12345678901234567890123456789012345\"}}",
+        "\"credits\":{\"has_credits\":true,\"unlimited\":false,\"balance\":\"1\\n2\"}}",
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        snprintf(account, sizeof(account), "%s%s", prefix, bad[i]);
+        size_t length = make_snapshot(json, sizeof(json), account,
+            "{\"refresh_seconds\":300,\"auto_refresh\":true}");
+        assert(!quota_parse_snapshot(json, length, &snapshot));
+    }
+    /* A legacy snapshot clears optional RAM metadata instead of reusing old credits. */
+    size_t length = make_snapshot(json, sizeof(json), valid_account,
+        "{\"refresh_seconds\":300,\"auto_refresh\":true}");
+    assert(quota_parse_snapshot(json, length, &snapshot));
+    assert(!snapshot.codex_extras[0].has_credits && !snapshot.codex_extras[0].has_banked_reset);
+}
+
 int main(void)
 {
     test_utf8_and_identifiers();
@@ -556,6 +606,7 @@ int main(void)
     test_display_sleep_and_wake_gestures();
     test_screen_timeout_settings_compatibility();
     test_deepseek_balance_contract();
+    test_codex_extras_contract();
     puts("quota logic tests passed");
     return 0;
 }

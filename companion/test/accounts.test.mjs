@@ -207,12 +207,34 @@ test('provider auth environments are isolated without changing HOME', () => {
   assert.equal(officialLoginURL('https://claude.ai/oauth/authorize', 'claude'), 'https://claude.ai/oauth/authorize');
   assert.equal(shellQuote("a'b"), "'a'\"'\"'b'");
 });
-test('changed Codex identity clears old quota even when the new request fails', async t => {
+test('changed Codex identity clears old quota and extras even when the new request fails', async t => {
   const store = await fixture(t); const id = 'd'.repeat(32);
-  const account = { id, provider: 'codex', email: 'old@example.com', authenticated: true, status: 'ok', observed_at: 1000, five_hour: { remaining_percent: 75, resets_at: null }, seven_day: null }; store.state.accounts.push(account);
+  const account = { id, provider: 'codex', email: 'old@example.com', authenticated: true, status: 'ok', observed_at: 1000, five_hour: { remaining_percent: 75, resets_at: null }, seven_day: null, credits: { has_credits: true, unlimited: false, balance: '50.00' }, banked_reset: { available_count: 2 } }; store.state.accounts.push(account);
   const client = new FakeCodex(store.profile(id)); client.request = async method => { if (method === 'account/read') return { account: { type: 'chatgpt', email: 'new@example.com', planType: 'Plus' } }; throw new Error('offline'); };
   const manager = new AccountManager(store, { codex: '/fake/codex' }, { codexFactory: () => client }); t.after(() => manager.close()); await manager.refresh(id);
   assert.equal(account.email, 'new@example.com'); assert.equal(account.five_hour, null); assert.equal(account.observed_at, null); assert.equal(account.status, 'error');
+  assert.equal(account.credits, null); assert.equal(account.banked_reset, null);
+});
+test('Codex polling keeps count-only reads and clears extras when the source stops providing them', async t => {
+  const store = await fixture(t); const id = '1'.repeat(32);
+  store.state.accounts.push({ id, provider: 'codex', email: 'test@example.com', authenticated: true, status: 'ok', observed_at: 1000 });
+  let response = { rateLimits: { credits: { hasCredits: true, unlimited: false, balance: '12.3400' } }, rateLimitResetCredits: { availableCount: 2, credits: null } };
+  const client = new FakeCodex(store.profile(id)); const original = client.request.bind(client);
+  client.request = async (method, params) => {
+    if (method !== 'account/rateLimits/read') return original(method, params);
+    client.calls.push({ method, params });
+    return response;
+  };
+  const manager = new AccountManager(store, { codex: '/fake/codex' }, { codexFactory: () => client });
+  t.after(() => manager.close());
+  await manager.refresh(id);
+  assert.deepEqual(client.calls.find(call => call.method === 'account/rateLimits/read').params, { excludeResetCreditDetails: true });
+  assert.deepEqual(manager.publicAccounts()[0].credits, { has_credits: true, unlimited: false, balance: '12.3400' });
+  assert.deepEqual(manager.publicAccounts()[0].banked_reset, { available_count: 2 });
+  assert.equal(manager.publicAccounts()[0].five_hour, null);
+  response = { rateLimits: {}, rateLimitResetCredits: null };
+  await manager.refresh(id);
+  assert.equal(manager.publicAccounts()[0].credits, null); assert.equal(manager.publicAccounts()[0].banked_reset, null);
 });
 test('Claude rejects an old running session feed after a different account logs in', async t => {
   const store = await fixture(t); const id = 'e'.repeat(32); const account = { id, provider: 'claude', email: 'old@example.com', authenticated: true, status: 'ok', observed_at: 1000, five_hour: { remaining_percent: 50, resets_at: null }, seven_day: null }; store.state.accounts.push(account);

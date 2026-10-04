@@ -8,6 +8,16 @@
 
 ## Unreleased
 
+### 2026-10-04 — Codex extras, independent windows and screen-off power controls
+
+Subscription windows display independently in both views: missing windows are hidden, real 0% remains visible, and expired windows wait for new source data. Codex reads Credits from the selected official bucket and account-level banked-reset availability; show Credits only when available/unlimited and reset counts only above zero. Preserve source balance strings without assigning currency. Claude has no equivalent statusline extras. Device extras stay in RAM and remain hidden after cold boot until synchronization; NVS layouts are unchanged.
+
+With the owner's authorization to turn Wi-Fi off during screen off, the device stops Wi-Fi, sends LCD Sleep In, pauses display refresh and application/network/serial polling, and permits CPU DFS down to 40 MHz. Awake operation holds the maximum-frequency lock. ADC function-key sensing and the LVGL 5 ms tick stay active; no MCU light/deep sleep is used. Wake restores cached display before reconnecting and silently reading the desktop cache, retaining source deadlines and reserving progress for actual source-refresh work.
+
+Build: **PASS** — complete ESP-IDF 5.5.3 gate, component/merged images and debug archive verified; application 1,498,352 bytes. Host tests: **PASS** — firmware/BSP/runtime checks, 51 companion tests and Vite production build. Independent reviews found and resolved a layout overlap and stale Wi-Fi-event recovery races. Synthetic browser checks cover both/single/missing windows, real 0%, expired Claude data, unavailable/only Credits, conditional reset counts, account switching and proportional 216 × 8 tracks. Documentation captures were updated without private data.
+
+Verified bundle: `build/firmware/a3251c5c35b719d4465669df606aef3f174fbbe6e49ad6e5b9ad3c942b8a3c35/`; directory name is the full-image SHA-256. Matching ELF SHA-256: `30f7bf01ab7559989809d4a48bfe67de8f9a6910f9554808aac164516ae1c82e`. App version: `d18d939-dirty`. Device tests: **NOT RUN** — no new flashing or current measurement. Unverified: real-account Codex extras, physical window/extras layout, Wi-Fi stop/reconnect, LCD sleep/wake, key wake timing, offline/active-request transitions, and measured current or battery-life improvement. Previous device acceptance does not validate these changes.
+
 ### 2026-10-03 — Project simplification
 
 Reduced the maintained project from 355 to 135 files. Removed uncompiled hardware demos and pixel UI, unused audio/codec and Bluetooth configuration, their tests/stubs, duplicated skill/documentation scaffolding, static Sites packaging and upstream community/release/sync workflows. The active quota app, required BSP, provider assets/licenses and meaningful behavior tests remain. Removed files were retained locally in a recoverable cleanup folder.

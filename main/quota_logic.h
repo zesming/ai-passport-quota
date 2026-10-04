@@ -20,6 +20,7 @@
 #define QUOTA_SCREEN_TIMEOUT_COUNT 6
 #define QUOTA_BALANCE_AMOUNT_BYTES 20
 #define QUOTA_BALANCE_CURRENCIES 2
+#define QUOTA_CREDITS_BALANCE_BYTES 32
 #define QUOTA_PAIRING_WINDOW_MS 120000
 
 typedef enum {
@@ -71,6 +72,15 @@ typedef struct {
     quota_currency_balance_t balance_infos[QUOTA_BALANCE_CURRENCIES];
 } quota_balance_t;
 
+/* Optional Codex metadata stays in RAM; legacy NVS accounts are unchanged. */
+typedef struct {
+    bool has_banked_reset;
+    uint64_t available_resets;
+    bool has_credits;
+    bool unlimited_credits;
+    char credits_balance[QUOTA_CREDITS_BALANCE_BYTES + 1];
+} quota_codex_extras_t;
+
 typedef struct {
     uint64_t server_time;
     uint64_t revision;
@@ -81,6 +91,7 @@ typedef struct {
     uint8_t account_count;
     quota_account_t accounts[QUOTA_MAX_ACCOUNTS];
     quota_balance_t balances[QUOTA_MAX_ACCOUNTS];
+    quota_codex_extras_t codex_extras[QUOTA_MAX_ACCOUNTS];
 } quota_snapshot_t;
 
 typedef struct {

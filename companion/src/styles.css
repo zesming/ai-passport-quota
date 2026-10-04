@@ -71,10 +71,11 @@ h1 { color: #22362b; font-size: 27px; line-height: 1.35; font-weight: 600; lette
 .brand-logo { object-fit: contain; flex: 0 0 auto; }
 .device-screen .brand-logo.openai { filter: invert(1); opacity: .78; }
 .brand-logo.deepseek { object-fit: contain; }
-.identity { height: 67px; display: flex; gap: 10px; align-items: center; border-bottom: 1px solid #34424d; }
-.identity>div { min-width: 0; }
-.identity h3 { font-size: 19px; line-height: 24px; font-weight: 600; letter-spacing: -.2px; }
-.identity p, .email { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 166px; color: #b3c0c8; font-size: 10px; line-height: 16px; }
+.identity { position: absolute; top: 43px; left: 12px; width: 216px; height: 61px; display: flex; gap: 8px; align-items: flex-start; border-bottom: 1px solid #34424d; }
+.identity>.brand-logo { margin-top: 3px; }
+.identity>div { min-width: 0; width: 160px; }
+.identity h3 { font-size: 20px; line-height: 24px; font-weight: 600; letter-spacing: -.2px; }
+.identity p, .email { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 160px; color: #afbbc6; font-size: 12px; line-height: 17px; }
 .quota { min-width: 0; height: 92px; padding: 9px 0 8px; border-bottom: 1px solid #e7ece6; }
 .quota-label { display: flex; align-items: center; justify-content: space-between; gap: 6px; white-space: nowrap; }
 .quota-label strong { color: #53695b; font-size: 11px; font-weight: 600; }
@@ -90,12 +91,29 @@ h1 { color: #22362b; font-size: 27px; line-height: 1.35; font-weight: 600; lette
 .quota.unknown .quota-value, .quota.stale .quota-value { color: #98a5a6; }
 .quota.stale .quota-track>div { background: #9aa9a1; }
 .quota.unknown .quota-track>div { width: 0 !important; }
-.quota.compact { height: 78px; padding-top: 7px; border-color: #34424d; }
-.device-screen .quota-label strong { color: #e9eff1; font-size: 11px; }
-.device-screen .quota-label>span { max-width: 111px; color: #afbdc4; font-size: 9px; }
-.device-screen .quota-value { color: #66d6aa; font-size: 32px; line-height: 36px; }
-.device-screen .quota-value>span { font-size: 22px; }
-.device-screen .quota-track { height: 8px; background: #34434d; }
+.device-subscription { position: absolute; top: 109px; left: 12px; width: 216px; }
+.quota.compact { position: relative; height: 60px; padding: 0; border: 0; }
+.device-screen .quota-label { height: 18px; }
+.device-screen .quota-label strong { color: #edf1f4; font-size: 12px; font-weight: 400; }
+.device-screen .quota-label>span { max-width: 132px; color: #afbbc6; font-size: 12px; }
+.device-screen .quota-value { position: absolute; top: 18px; color: #66d6aa; font-size: 20px; line-height: 30px; letter-spacing: 0; }
+.device-screen .quota-value>span { font-size: 20px; }
+.device-screen .quota-track { position: absolute; top: 46px; width: 216px; height: 8px; background: #34434d; }
+.device-screen .quota.unknown .quota-track { visibility: hidden; }
+.device-screen .quota.unknown .quota-value { font-size: 12px; }
+.single-window .quota.compact { height: 76px; }
+.single-window .quota-track { top: 62px; }
+.no-windows { color: #82919d; padding: 12px 0; font-size: 12px; }
+.device-subscription .no-windows { padding-top: 10px; color: #afbbc6; font-size: 16px; }
+.quota-extras { display: grid; gap: 7px; margin: 9px 0; padding: 10px 12px; border-radius: 6px; background: #f3f7f1; color: #829286; font-size: 11px; }
+.quota-extras>div { display: flex; justify-content: space-between; gap: 12px; min-width: 0; }
+.quota-extras strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; color: #476750; font-variant-numeric: tabular-nums; }
+.quota-extras.stale strong { color: #98a5a6; }
+.device-subscription .quota-extras { position: absolute; width: 216px; margin: 0; padding: 0; gap: 0; border-radius: 0; background: transparent; color: #afbbc6; font-size: 12px; line-height: 16px; }
+.device-subscription .quota-extras>div { height: 16px; gap: 0; }
+.device-subscription .quota-extras span { width: 72px; }
+.device-subscription .quota-extras strong { width: 144px; text-align: right; color: #edf1f4; font-weight: 400; }
+.device-subscription .quota-extras.stale strong { color: #82919d; }
 .device-screen .quota-track>div { background: #66d6aa; }
 .device-screen .quota.low .quota-value { color: #e1b974; }
 .device-screen .quota.low .quota-track>div { background-color: #e1b974; }
@@ -104,7 +122,7 @@ h1 { color: #22362b; font-size: 27px; line-height: 1.35; font-weight: 600; lette
 .device-screen .quota.unknown .quota-value, .device-screen .quota.stale .quota-value { color: #9aa8ab; }
 .device-screen .quota.stale .quota-track>div { background: #859994; }
 .device-screen .quota.unknown .quota-track>div { background: transparent; }
-.device-update { padding-top: 5px; overflow: hidden; color: #bdc8ce; font-size: 9px; line-height: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.device-update { position: absolute; top: 262px; left: 12px; width: 216px; height: 18px; padding: 0; overflow: hidden; color: #afbbc6; font-size: 12px; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
 .warning-text { color: #c29252 !important; }
 .device-screen .warning-text { color: #e1b974 !important; }
 .deepseek-balance { display: grid; gap: 8px; margin-top: 13px; }
@@ -213,7 +231,7 @@ h1 { color: #22362b; font-size: 27px; line-height: 1.35; font-weight: 600; lette
 .summary-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
 .summary-heading strong { color: #4b6151; font-size: 11px; font-weight: 600; }
 .summary-heading small { display: block; margin-top: 4px; color: #97a197; font-size: 9px; }
-.summary-bars { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 12px; }
+.summary-bars { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px; margin-top: 12px; }
 .summary-bars .quota { height: 82px; padding-top: 7px; }
 .summary-bars .quota-value { font-size: 29px; line-height: 35px; }
 .summary-bars .quota-value>span { font-size: 21px; }

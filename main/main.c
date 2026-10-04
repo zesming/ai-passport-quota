@@ -7,6 +7,7 @@
 #include "quota_ui.h"
 
 #include "esp_log.h"
+#include "esp_pm.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -24,6 +25,54 @@ static quota_display_state_t s_display;
 static uint8_t s_backlight_percent = 100;
 static int s_battery_percent = -1;
 static uint64_t s_battery_read_ms;
+static esp_pm_lock_handle_t s_cpu_lock;
+static bool s_cpu_lock_held;
+static bool s_display_power_sleeping;
+static bool s_display_power_pending;
+
+static void configure_cpu_power_management(void)
+{
+    esp_err_t err = esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "quota_awake", &s_cpu_lock);
+    if (err != ESP_OK) goto failed;
+    const esp_pm_config_t config = {
+        .max_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
+        .min_freq_mhz = 40,
+        /* ADC keys keep polling; preserve USB and all three wake gestures. */
+        .light_sleep_enable = false,
+    };
+    err = esp_pm_configure(&config);
+    if (err == ESP_OK) err = esp_pm_lock_acquire(s_cpu_lock);
+    if (err == ESP_OK) {
+        s_cpu_lock_held = true;
+        return;
+    }
+    esp_pm_lock_delete(s_cpu_lock);
+    s_cpu_lock = NULL;
+failed:
+    ESP_LOGW(TAG, "CPU power management unavailable (%s)", esp_err_to_name(err));
+}
+
+static bool set_display_power(bool sleeping)
+{
+    if (sleeping == s_display_power_sleeping && !s_display_power_pending) return true;
+    s_display_power_pending = true;
+    bsp_display_backlight(0);
+    s_backlight_percent = 0;
+    if (!sleeping && s_cpu_lock != NULL && !s_cpu_lock_held) {
+        s_cpu_lock_held = esp_pm_lock_acquire(s_cpu_lock) == ESP_OK;
+    }
+    bool ready = bsp_lvgl_set_sleeping(sleeping);
+    if (sleeping && s_cpu_lock_held && esp_pm_lock_release(s_cpu_lock) == ESP_OK) {
+        s_cpu_lock_held = false;
+    }
+    ready = ready && (s_cpu_lock == NULL || s_cpu_lock_held == !sleeping);
+    if (!ready) ESP_LOGW(TAG, "display power transition failed");
+    if (ready) {
+        s_display_power_sleeping = sleeping;
+        s_display_power_pending = false;
+    }
+    return ready;
+}
 
 static quota_input_t map_input(bsp_btn_t button, bsp_btn_ev_t event)
 {
@@ -72,12 +121,8 @@ static void render_application(void)
     quota_display_tick(&s_display, now_ms, s_view_work.screen_timeout_seconds,
                         s_view_work.pairing_active);
     quota_service_set_display_sleeping(s_display.sleeping);
-    uint8_t brightness = s_display.sleeping ? 0 : 100;
-    if (brightness != s_backlight_percent) {
-        bsp_display_backlight(brightness);
-        s_backlight_percent = brightness;
-    }
-    if (s_display.sleeping) return;
+    bool display_ready = set_display_power(s_display.sleeping);
+    if (s_display.sleeping || !display_ready) return;
     if (now_ms - s_battery_read_ms >= 30000) {
         s_battery_percent = bsp_battery_soc();
         s_battery_read_ms = now_ms;
@@ -85,6 +130,11 @@ static void render_application(void)
     if (!bsp_lvgl_lock(500)) return;
     quota_ui_render(&s_navigation, &s_view_work, s_battery_percent);
     bsp_lvgl_unlock();
+    if (s_backlight_percent != 100) {
+        if (!bsp_lvgl_refresh()) return;
+        bsp_display_backlight(100);
+        s_backlight_percent = 100;
+    }
 }
 
 static void process_button(const quota_app_event_t *event, quota_service_view_t *view)
@@ -166,7 +216,9 @@ static void application_task(void *arg)
     QueueHandle_t events = quota_service_event_queue();
     quota_app_event_t event;
     for (;;) {
-        if (xQueueReceive(events, &event, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        TickType_t wait = s_display.sleeping && !s_display_power_pending
+                        ? portMAX_DELAY : pdMS_TO_TICKS(1000);
+        if (xQueueReceive(events, &event, wait) == pdTRUE) {
             process_event(&event);
         } else {
             render_application();
@@ -185,6 +237,7 @@ void app_main(void)
     ESP_LOGI(TAG, "AI quota monitor starting");
     (void)setenv("TZ", "CST-8", 1);
     tzset();
+    configure_cpu_power_management();
 
     bsp_i2c_init();
     if (bsp_display_init() != ESP_OK || !bsp_lvgl_init()) {

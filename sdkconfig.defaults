@@ -33,6 +33,8 @@ CONFIG_LV_MEM_SIZE_KILOBYTES=24
 
 # --- 系统 ---
 CONFIG_FREERTOS_HZ=1000
+CONFIG_PM_ENABLE=y
+CONFIG_PM_DFS_INIT_AUTO=n
 
 # Quota uses Wi-Fi and USB; no Bluetooth host is required.
 CONFIG_BT_ENABLED=n

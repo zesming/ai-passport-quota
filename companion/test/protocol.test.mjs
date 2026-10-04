@@ -4,11 +4,42 @@ import { codexWindows, claudeWindows, makeSnapshot, safeText, privateIPv4, const
 
 test('Codex maps duration, not primary/secondary position, and chooses Codex bucket', () => {
   const result = codexWindows({ rateLimits: { primary: { usedPercent: 99, windowDurationMins: 300 } }, rateLimitsByLimitId: { other: { primary: { usedPercent: 99, windowDurationMins: 300 } }, codex: { primary: { usedPercent: 58, windowDurationMins: 10080, resetsAt: 2000 }, secondary: { usedPercent: 32, windowDurationMins: 300, resetsAt: 1000 } } } });
-  assert.deepEqual(result, { five_hour: { remaining_percent: 68, resets_at: 1000 }, seven_day: { remaining_percent: 42, resets_at: 2000 } });
+  assert.deepEqual(result, { five_hour: { remaining_percent: 68, resets_at: 1000 }, seven_day: { remaining_percent: 42, resets_at: 2000 }, credits: null, banked_reset: null });
 });
 test('missing duration and malformed values remain unknown; zero is real exhaustion', () => {
-  assert.deepEqual(codexWindows({ rateLimits: { primary: { usedPercent: 1 }, secondary: { usedPercent: 'bad', windowDurationMins: 300 } } }), { five_hour: null, seven_day: null });
+  assert.deepEqual(codexWindows({ rateLimits: { primary: { usedPercent: 1 }, secondary: { usedPercent: 'bad', windowDurationMins: 300 } } }), { five_hour: null, seven_day: null, credits: null, banked_reset: null });
   assert.deepEqual(claudeWindows({ rate_limits: { five_hour: { used_percentage: 100, resets_at: 2000 } } }), { five_hour: { remaining_percent: 0, resets_at: 2000 }, seven_day: null });
+});
+test('Codex extras use the selected bucket and authoritative reset count without inventing a missing window', () => {
+  const response = {
+    rateLimits: { credits: { hasCredits: true, unlimited: false, balance: '999' } },
+    rateLimitsByLimitId: {
+      other: { credits: { hasCredits: true, unlimited: false, balance: '888' } },
+      codex: { secondary: { usedPercent: 100, windowDurationMins: 10080, resetsAt: 2000 }, credits: { hasCredits: true, unlimited: false, balance: '0.00000000000000000100' } },
+    },
+    rateLimitResetCredits: { availableCount: 3, credits: [] },
+  };
+  assert.deepEqual(codexWindows(response), {
+    five_hour: null, seven_day: { remaining_percent: 0, resets_at: 2000 },
+    credits: { has_credits: true, unlimited: false, balance: '0.00000000000000000100' }, banked_reset: { available_count: 3 },
+  });
+  assert.deepEqual(codexWindows({ rateLimits: {}, rateLimitResetCredits: { availableCount: 0, credits: null } }).banked_reset, { available_count: 0 });
+  for (const availableCount of [null, -1, 1.5, '2', Number.MAX_SAFE_INTEGER + 1]) {
+    assert.equal(codexWindows({ rateLimitResetCredits: { availableCount } }).banked_reset, null);
+  }
+});
+test('Codex credits require available flags and preserve only complete bounded display strings', () => {
+  const read = credits => codexWindows({ rateLimits: { credits } }).credits;
+  assert.equal(read({ hasCredits: false, unlimited: false, balance: '0' }), null);
+  assert.equal(read({ hasCredits: true, balance: '1' }), null);
+  assert.equal(read({ hasCredits: 'true', unlimited: false, balance: '1' }), null);
+  assert.deepEqual(read({ hasCredits: false, unlimited: true }), { has_credits: false, unlimited: true, balance: null });
+  const amount = '1'.repeat(32);
+  assert.equal(read({ hasCredits: true, unlimited: false, balance: amount }).balance, amount);
+  assert.equal(read({ hasCredits: true, unlimited: false, balance: '中'.repeat(10) }).balance, '中'.repeat(10));
+  for (const balance of [null, 123, '', '1\n2', '1'.repeat(33), '中'.repeat(11)]) {
+    assert.equal(read({ hasCredits: true, unlimited: false, balance }).balance, null);
+  }
 });
 test('screen timeout accepts only supported values and stays optional for legacy settings', () => {
   const legacy = { refresh_seconds: 300, auto_refresh: true };

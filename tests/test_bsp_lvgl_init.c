@@ -8,10 +8,14 @@ static lv_display_t display;
 static int panel_present = 1, lock_depth, port_live, display_live, callback_live;
 static int fail_lock, fail_port, fail_display, fail_event, init_calls, unlocked_flushes;
 static int panel_token, io_token;
+static lv_timer_t refresh;
+static lv_obj_t screen;
+static int fail_sleep, fail_on, panel_sleeping, panel_on = 1, invalidations, wakes;
+static int refresh_calls, pixels_pending;
 esp_lcd_panel_handle_t bsp_display_panel(void) { return panel_present ? &panel_token : NULL; }
 esp_lcd_panel_io_handle_t bsp_display_io(void) { return &io_token; }
 esp_err_t lvgl_port_init(const lvgl_port_cfg_t *cfg) {
-    (void)cfg; ++init_calls; assert(!port_live);
+    assert(cfg->task_max_sleep_ms == 60000); ++init_calls; assert(!port_live);
     if (fail_port) return ESP_ERR_NO_MEM;
     port_live = 1; return ESP_OK;
 }
@@ -53,6 +57,41 @@ uint32_t lv_display_get_event_count(lv_display_t *disp) {
     assert(disp == &display && lock_depth);
     return 1 + callback_live; // The display already owns an internal callback.
 }
+lv_timer_t *lv_display_get_refr_timer(lv_display_t *disp) {
+    assert(disp == &display && lock_depth); return &refresh;
+}
+lv_obj_t *lv_display_get_screen_active(lv_display_t *disp) {
+    assert(disp == &display && lock_depth); return &screen;
+}
+void lv_timer_pause(lv_timer_t *timer) {
+    assert(timer == &refresh && lock_depth); timer->paused = true;
+}
+void lv_timer_resume(lv_timer_t *timer) {
+    assert(timer == &refresh && lock_depth && !panel_sleeping && panel_on);
+    timer->paused = false;
+}
+void lv_obj_invalidate(lv_obj_t *obj) {
+    assert(obj == &screen && lock_depth && !refresh.paused); ++invalidations;
+}
+void lv_refr_now(lv_display_t *disp) {
+    assert(disp == &display && lock_depth && !refresh.paused);
+    ++refresh_calls; pixels_pending = 1;
+}
+esp_err_t lvgl_port_task_wake(int event, lv_display_t *disp) {
+    assert(event == LVGL_PORT_EVENT_DISPLAY && disp == &display && !lock_depth);
+    ++wakes; return ESP_OK;
+}
+esp_err_t esp_lcd_panel_disp_on_off(esp_lcd_panel_handle_t panel, bool on) {
+    assert(panel == &panel_token && lock_depth);
+    if (!on) assert(refresh.paused);
+    if (fail_on) return ESP_ERR_NO_MEM;
+    panel_on = on; pixels_pending = 0; return ESP_OK;
+}
+esp_err_t esp_lcd_panel_disp_sleep(esp_lcd_panel_handle_t panel, bool sleeping) {
+    assert(panel == &panel_token && lock_depth && refresh.paused);
+    if (fail_sleep) return ESP_ERR_NO_MEM;
+    panel_sleeping = sleeping; return ESP_OK;
+}
 static void expect_failure(void) {
     assert(bsp_lvgl_init() == NULL);
     assert(!s_disp && !lock_depth && !display_live);
@@ -82,5 +121,23 @@ int main(void) {
     lv_event_t ev = { .target = &display, .area = &area };
     rounded_flush_event(&ev);
     assert(pixels[0] == 0 && pixels[BSP_LCD_W - 1] == 0 && pixels[BSP_LCD_W / 2] == 0xffff);
+    fail_lock = 1;
+    assert(!bsp_lvgl_set_sleeping(true) && !refresh.paused && panel_on);
+    fail_lock = 0;
+    assert(bsp_lvgl_set_sleeping(true) && refresh.paused && panel_sleeping && !panel_on);
+    assert(wakes == 0);
+    fail_sleep = 1;
+    assert(!bsp_lvgl_set_sleeping(false) && refresh.paused && panel_sleeping && !panel_on);
+    assert(wakes == 0 && invalidations == 0);
+    fail_sleep = 0; fail_on = 1;
+    assert(!bsp_lvgl_set_sleeping(false) && refresh.paused && !panel_sleeping);
+    assert(wakes == 0 && invalidations == 0);
+    fail_on = 0;
+    assert(bsp_lvgl_set_sleeping(false) && !refresh.paused && !panel_sleeping && panel_on);
+    assert(wakes == 1 && invalidations == 1 && !lock_depth);
+    assert(bsp_lvgl_refresh() && refresh_calls == 1 && !pixels_pending && !lock_depth);
+    fail_on = 1;
+    assert(!bsp_lvgl_refresh() && !lock_depth);
+    fail_on = 0;
     puts("BSP LVGL initialization tests: PASS");
 }

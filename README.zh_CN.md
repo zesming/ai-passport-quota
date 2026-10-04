@@ -19,7 +19,7 @@ npm start
 打开 **http://127.0.0.1:4317/**。macOS 可用 `start-dashboard.command` 启动已构建的应用，请保留终端窗口。可选覆盖项：`AIQ_CODEX_BIN`、`AIQ_CLAUDE_BIN`、`AIQ_STATE_DIR`。
 
 1. 在账号管理中添加 Codex 或 Claude，并完成官方授权。每个账号使用独立 profile，不导入已有 CLI 凭证。
-2. Codex 显示 **Codex 用量**，不代表全部 ChatGPT 消息限制。缺失的额度窗口保持未知。
+2. Codex 显示 **Codex 用量**，不代表全部 ChatGPT 消息限制。五小时与周窗口独立显示，缺失窗口隐藏，真实 0% 仍显示。官方来源提供可用 Credits 或大于零的储备重置次数时才展示，不推断 Credits 的货币单位。
 3. Claude 需复制页面的会话启动命令，正常使用该 profile。正常响应后的 statusline 回调提供额度；刷新不发送付费模型提示。
 4. DeepSeek 使用[官方平台](https://platform.deepseek.com/api_keys)的 API key。页面通过[余额接口](https://api-docs.deepseek.com/api/get-user-balance/)显示人民币可用余额，包含赠款和充值。名称是本地标签。密钥只留在电脑端。不支持消费历史、请求次数或累计 token 总数。
 5. 自动刷新可选 1、5、15 或 30 分钟；息屏可选从不、30 秒或 1/2/5/10 分钟，默认 2 分钟。
@@ -34,7 +34,7 @@ npm start
 
 上下键切换账号；短按 OK 刷新或确认；长按 OK 打开设置或返回。亮屏时长按 DOWN 息屏。息屏后的第一个功能键手势仅唤醒。独立电源键保留硬件长按关机行为。配对期间不自动息屏。
 
-息屏暂停设备网络操作。唤醒后静默读取电脑端缓存，保留原账号刷新截止时间；已启用且到期的刷新随后执行。电脑端维持独立刷新计划。离线数据保留状态标识；过期或缺失窗口不会变成满额。
+息屏关闭设备 Wi-Fi，让 LCD 进入 Sleep In，暂停显示刷新与工作任务轮询，允许 CPU 动态降频到 40 MHz，保留功能键检测。唤醒先显示缓存，再重连并静默读取电脑端缓存，不重置账号刷新截止时间，也不触发来源刷新进度；已启用且到期的刷新随后执行。电脑端维持独立计划。过期窗口等待新来源数据。实际电流降低及续航尚未测量。
 
 状态栏显示 Wi-Fi 连接、同步后的时间和绿色比例电量。斜线表示电量读取不可用。绿色只是样式，不表示充电；目前没有已验证的软件充电状态来源。时钟同步前显示 `--:--`。
 
@@ -42,10 +42,11 @@ npm start
 
 截图使用隔离的合成示例账号。设备预览是网页渲染，不是真机照片；其时钟使用电脑时间，指示图标不能证明实时板卡遥测。
 
-![账号看板与设备预览](docs/screenshots/dashboard.jpg)
-![刷新设置](docs/screenshots/settings.jpg)
+![ChatGPT Pro 周额度、可用重置和 Credits](docs/screenshots/quota-pro.jpg)
+![Claude 额度和设备预览](docs/screenshots/claude.jpg)
 ![DeepSeek 余额](docs/screenshots/deepseek.jpg)
-![USB 设备配置](docs/screenshots/device-setup.jpg)
+
+[完整账户看板](docs/screenshots/dashboard.jpg) · [刷新设置](docs/screenshots/settings.jpg) · [USB 设备配置](docs/screenshots/device-setup.jpg)
 
 ## 开发
 

@@ -39,6 +39,9 @@ typedef struct {
     lv_obj_t *metric_reset[2];
     lv_obj_t *metric_value[2];
     lv_obj_t *metric_bar[2];
+    lv_obj_t *extra_name[2];
+    lv_obj_t *extra_value[2];
+    lv_obj_t *home_empty;
     lv_obj_t *balance_heading[QUOTA_BALANCE_CURRENCIES];
     lv_obj_t *balance_total[QUOTA_BALANCE_CURRENCIES];
     lv_obj_t *home_status;
@@ -208,7 +211,15 @@ static void create_home_page(void)
         s_ui.balance_total[i] = create_label(s_page, 12, y + 17, 216, 26,
                                              &lv_font_montserrat_20, UI_INK, LV_TEXT_ALIGN_LEFT, "");
     }
-    s_ui.home_status = create_label(s_page, 12, 254, 216, 18, &quota_font_12,
+    for (size_t i = 0; i < 2; i++) {
+        s_ui.extra_name[i] = create_label(s_page, 12, 228 + (int)i * 16, 72, 16,
+                                          &quota_font_12, UI_MUTED, LV_TEXT_ALIGN_LEFT, "");
+        s_ui.extra_value[i] = create_label(s_page, 84, 228 + (int)i * 16, 144, 16,
+                                           &quota_font_12, UI_INK, LV_TEXT_ALIGN_RIGHT, "");
+    }
+    s_ui.home_empty = create_label(s_page, 12, 119, 216, 22, &quota_font_16,
+                                    UI_MUTED, LV_TEXT_ALIGN_LEFT, "等待额度数据");
+    s_ui.home_status = create_label(s_page, 12, 262, 216, 18, &quota_font_12,
                                     UI_MUTED, LV_TEXT_ALIGN_LEFT, "等待电脑数据");
     create_footer("UP/DOWN 切换  OK 刷新  长按设置");
 }
@@ -385,8 +396,15 @@ static void metric_reset_text(const quota_window_t *window, uint64_t now,
 }
 
 static void render_metric(size_t index, const quota_window_t *window, uint64_t now,
-                          bool stale, bool include_date)
+                          bool stale, bool include_date, int y, bool single)
 {
+    lv_obj_set_y(s_ui.metric_name[index], y);
+    lv_obj_set_y(s_ui.metric_reset[index], y);
+    lv_obj_set_y(s_ui.metric_value[index], y + 18);
+    lv_obj_set_y(s_ui.metric_bar[index], y + (single ? 62 : 46));
+    lv_obj_clear_flag(s_ui.metric_name[index], LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(s_ui.metric_reset[index], LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(s_ui.metric_value[index], LV_OBJ_FLAG_HIDDEN);
     char reset_text[32];
     metric_reset_text(window, now, include_date, reset_text, sizeof(reset_text));
     set_label_text(s_ui.metric_reset[index], reset_text);
@@ -419,11 +437,22 @@ static void render_metric(size_t index, const quota_window_t *window, uint64_t n
     lv_obj_clear_flag(s_ui.metric_bar[index], LV_OBJ_FLAG_HIDDEN);
 }
 
+static void render_extra(size_t index, const char *name, const char *value, int y, bool stale)
+{
+    set_label_text(s_ui.extra_name[index], name);
+    set_label_text(s_ui.extra_value[index], value);
+    lv_obj_set_y(s_ui.extra_name[index], y);
+    lv_obj_set_y(s_ui.extra_value[index], y);
+    lv_obj_set_style_text_color(s_ui.extra_value[index], color(stale ? UI_DIM : UI_INK), 0);
+    lv_obj_clear_flag(s_ui.extra_name[index], LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(s_ui.extra_value[index], LV_OBJ_FLAG_HIDDEN);
+}
+
 static void render_home(const quota_navigation_t *navigation,
                         const quota_service_view_t *service)
 {
     char count[16];
-    snprintf(count, sizeof(count), "%u/%u", (unsigned)(navigation->selected_account + 1),
+    snprintf(count, sizeof(count), "%u/%u", service->snapshot.account_count == 0 ? 0 : (unsigned)(navigation->selected_account + 1),
              (unsigned)service->snapshot.account_count);
     set_label_text(s_ui.header_info, count);
     bool deepseek = service->snapshot.account_count > 0 &&
@@ -433,25 +462,17 @@ static void render_home(const quota_navigation_t *navigation,
         lv_obj_t *balance_objects[] = {s_ui.balance_heading[i], s_ui.balance_total[i]};
         for (size_t j = 0; j < 2; j++) lv_obj_add_flag(balance_objects[j], LV_OBJ_FLAG_HIDDEN);
         lv_obj_t *quota_objects[] = {s_ui.metric_name[i], s_ui.metric_reset[i], s_ui.metric_value[i], s_ui.metric_bar[i]};
-        for (size_t j = 0; j < 4; j++) {
-            if (deepseek) lv_obj_add_flag(quota_objects[j], LV_OBJ_FLAG_HIDDEN);
-            else lv_obj_clear_flag(quota_objects[j], LV_OBJ_FLAG_HIDDEN);
-        }
+        for (size_t j = 0; j < 4; j++) lv_obj_add_flag(quota_objects[j], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_ui.extra_name[i], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_ui.extra_value[i], LV_OBJ_FLAG_HIDDEN);
     }
-    lv_obj_set_y(s_ui.home_status, deepseek ? 262 : 254);
+    lv_obj_add_flag(s_ui.home_empty, LV_OBJ_FLAG_HIDDEN);
     if (service->snapshot.account_count == 0) {
         lv_obj_add_flag(s_ui.home_logo, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_style_text_font(s_ui.home_provider, &quota_font_16, 0);
         set_label_text(s_ui.home_provider, "暂无账户");
         set_label_text(s_ui.home_plan, service->configured ? "请在电脑端添加账户" : "等待电脑配对");
         set_label_text(s_ui.home_email, "");
-        for (size_t i = 0; i < 2; i++) {
-            set_label_text(s_ui.metric_value[i], "未提供");
-            lv_obj_set_style_text_font(s_ui.metric_value[i], &quota_font_12, 0);
-            lv_obj_set_style_text_color(s_ui.metric_value[i], color(UI_DIM), 0);
-            lv_obj_add_flag(s_ui.metric_bar[i], LV_OBJ_FLAG_HIDDEN);
-            set_label_text(s_ui.metric_reset[i], "重置时间未知");
-        }
         set_label_text(s_ui.home_status, service->configured ? "等待额度快照" : "请先完成 USB 配置");
         return;
     }
@@ -507,8 +528,32 @@ static void render_home(const quota_navigation_t *navigation,
             lv_obj_clear_flag(s_ui.balance_total[0], LV_OBJ_FLAG_HIDDEN);
         }
     } else {
-        render_metric(0, &account->five_hour, service->now_epoch, stale, false);
-        render_metric(1, &account->seven_day, service->now_epoch, stale, true);
+        const quota_window_t *windows[] = {&account->five_hour, &account->seven_day};
+        unsigned window_count = account->five_hour.present + account->seven_day.present;
+        unsigned row = 0;
+        for (size_t i = 0; i < 2; i++) {
+            if (!windows[i]->present) continue;
+            render_metric(i, windows[i], service->now_epoch, stale, i == 1,
+                          109 + (int)row++ * 60, window_count == 1);
+        }
+        const quota_codex_extras_t *extras = &service->snapshot.codex_extras[selected];
+        int extra_y = window_count == 2 ? 228 : window_count == 1 ? 199 : 151;
+        unsigned extra_row = 0;
+        if (!is_claude && extras->has_banked_reset && extras->available_resets > 0) {
+            char value[32];
+            snprintf(value, sizeof(value), "%llu 次", (unsigned long long)extras->available_resets);
+            render_extra(extra_row++, "可用重置", value, extra_y, stale);
+        }
+        if (!is_claude && extras->has_credits) {
+            char value[QUOTA_CREDITS_BALANCE_BYTES + 1];
+            quota_copy_display_ascii(extras->credits_balance, value, sizeof(value));
+            render_extra(extra_row, "Credits", extras->unlimited_credits ? "不限量" :
+                         value[0] != '\0' ? value : "可用", extra_y + (int)extra_row * 16, stale);
+        }
+        if (window_count == 0) {
+            set_label_text(s_ui.home_empty, account->status == QUOTA_STATUS_OK ? "未提供额度窗口" : "等待额度数据");
+            lv_obj_clear_flag(s_ui.home_empty, LV_OBJ_FLAG_HIDDEN);
+        }
     }
 
     char status[48];

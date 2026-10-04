@@ -183,15 +183,15 @@ function quotaView(windowValue, nowSeconds) {
 
 function QuotaBar({ label, windowValue, nowSeconds, stale = false, compact = false }) {
   const quota = quotaView(windowValue, nowSeconds);
-  const tone = quota.value === null ? 'unknown' : quota.value <= 10 ? 'critical' : quota.value <= 20 ? 'low' : 'available';
-  const resetText = quota.expired ? '重置时间已过 · 等待新数据' : quota.reset ? `${quota.reset} 重置` : '重置时间未知';
+  const tone = quota.value === null ? 'unknown' : quota.value <= 5 ? 'critical' : quota.value <= 20 ? 'low' : 'available';
+  const resetText = quota.expired ? '等待新数据' : quota.reset ? `${compact && label === '5h' ? formatLocalClock(windowValue.resets_at) : quota.reset} 重置` : '重置时间未知';
   return (
     <section className={`quota ${tone} ${stale ? 'stale' : ''} ${compact ? 'compact' : ''}`}>
       <div className="quota-label">
         <strong>{label} 剩余</strong>
         <span>{quota.value === null ? (quota.expired ? '等待新数据' : '未提供') : resetText}</span>
       </div>
-      <div className="quota-value">{quota.value === null ? '—' : <>{quota.value}<span>%</span></>}</div>
+      <div className="quota-value">{quota.value === null ? compact ? quota.expired ? '等待新数据' : '未提供' : '—' : <>{quota.value}<span>%</span></>}</div>
       <div
         className="quota-track"
         role="progressbar"
@@ -205,6 +205,31 @@ function QuotaBar({ label, windowValue, nowSeconds, stale = false, compact = fal
       </div>
     </section>
   );
+}
+
+function visibleWindows(account) {
+  return [['five_hour', '5h'], ['seven_day', '7 天']]
+    .filter(([key]) => account[key] != null);
+}
+
+function SubscriptionQuota({ account, nowSeconds, stale, compact = false }) {
+  const windows = visibleWindows(account);
+  const extras = [];
+  if (account.provider === 'codex') {
+    if (account.banked_reset?.available_count > 0) extras.push(['可用重置', `${account.banked_reset.available_count} 次`]);
+    if (account.credits?.has_credits || account.credits?.unlimited) {
+      extras.push(['Credits', account.credits.unlimited ? '不限量' : account.credits.balance || '可用']);
+    }
+  }
+  return <div className={compact ? `device-subscription ${windows.length === 1 ? 'single-window' : ''}` : 'subscription-quota'}>
+    <div className={compact ? 'device-windows' : 'summary-bars'}>
+      {windows.map(([key, label]) => <QuotaBar key={key} label={label} windowValue={account[key]} nowSeconds={nowSeconds} stale={stale} compact={compact} />)}
+      {!windows.length && <div className="no-windows">{account.status === 'ok' ? '未提供额度窗口' : '等待额度数据'}</div>}
+    </div>
+    {extras.length > 0 && <div className={`quota-extras ${stale ? 'stale' : ''}`} style={compact ? { top: windows.length === 2 ? 119 : windows.length === 1 ? 90 : 42 } : undefined}>
+      {extras.map(([label, value]) => <div key={label}><span>{label}</span><strong title={value}>{compact && label === 'Credits' && !account.credits.unlimited && account.credits.balance ? deviceSafeText(value) : value}</strong></div>)}
+    </div>}
+  </div>;
 }
 
 function byteLength(value) {
@@ -740,11 +765,8 @@ export function App() {
                 {previewScreen === 'home' && <>
                   <DeviceHeader title="AI 额度" info={previewAccount ? `${previewAccountIndex + 1}/${authenticatedAccounts.length}` : '0/0'} nowSeconds={nowSeconds} previewStatus={previewStatus} />
                   {previewAccount ? <>
-                    <div className={`identity ${previewAccount.provider === 'deepseek' ? 'deepseek-identity' : ''}`}><Logo provider={previewAccount.provider} size={38} /><div><h3>{previewAccount.provider === 'deepseek' ? 'DeepSeek' : providerName(previewAccount.provider)}</h3><p>{previewAccount.provider === 'deepseek' ? '开放平台 · API' : planLabel(previewAccount.plan) || '订阅信息未知'}</p><div className="email" title={previewAccount.provider === 'deepseek' ? '本机别名' : previewAccount.email}>{previewAccount.provider === 'deepseek' ? deviceSafeText(previewAccount.label || 'DeepSeek API') : previewAccount.email || '邮箱未知'}</div></div></div>
-                    {previewAccount.provider === 'deepseek' ? <DeepSeekBalance balance={previewAccount.balance} compact /> : <>
-                      <QuotaBar label="5 小时" windowValue={previewAccount.five_hour} nowSeconds={nowSeconds} stale={previewCached} compact />
-                      <QuotaBar label="7 天" windowValue={previewAccount.seven_day} nowSeconds={nowSeconds} stale={previewCached} compact />
-                    </>}
+                    <div className={`identity ${previewAccount.provider === 'deepseek' ? 'deepseek-identity' : ''}`}><Logo provider={previewAccount.provider} size={36} /><div><h3>{previewAccount.provider === 'deepseek' ? 'DeepSeek' : previewAccount.provider === 'codex' ? 'ChatGPT' : 'Claude'}</h3><p>{previewAccount.provider === 'deepseek' ? '开放平台 · API' : `${previewAccount.provider === 'codex' ? 'Codex' : 'Claude Code'} · ${planLabel(previewAccount.plan)}`}</p><div className="email" title={previewAccount.provider === 'deepseek' ? '本机别名' : previewAccount.email}>{previewAccount.provider === 'deepseek' ? deviceSafeText(previewAccount.label || 'DeepSeek API') : deviceSafeText(previewAccount.email)}</div></div></div>
+                    {previewAccount.provider === 'deepseek' ? <DeepSeekBalance balance={previewAccount.balance} compact /> : <SubscriptionQuota account={previewAccount} nowSeconds={nowSeconds} stale={previewCached} compact />}
                     <div className={`device-update ${previewAccount.provider === 'deepseek' ? 'deepseek-update' : ''} ${previewCached || previewAccount.status !== 'ok' ? 'warning-text' : ''}`}>{previewCached ? '缓存数据 · ' : ''}{previewAccount.provider === 'deepseek' && deepSeekRmbDisplay(previewAccount.balance).info && previewAccount.status === 'ok' && previewAccount.balance?.is_available === false ? '人民币余额不可用' : accountStatus(previewAccount)} · {formatAge(previewAccount.observed_at, nowSeconds)}{previewAccount.provider === 'deepseek' && Number.isFinite(previewAccount.observed_at) ? ` · ${formatDate(previewAccount.observed_at)}` : ''}</div>
                   </> : <div className="empty-device"><strong>{apiState ? '尚无已授权账户' : '连接本机应用中'}</strong><span>{apiState ? '完成电脑端官方登录并采集到额度后，数据会显示在这里。' : '正在读取本机账户状态。'}</span></div>}
                   <div className="device-footer"><span>↑↓ 切换 · OK 刷新</span><span>长按设置</span></div>
@@ -800,7 +822,7 @@ export function App() {
             <button type="button" onClick={() => direction(1)} aria-label="下键">↓</button>
           </div>
           <p className="control-hint">也可用键盘 ↑ / ↓、Enter 短按、Esc 长按。屏幕会跟随所选账户更新。</p>
-          <div className="device-data-note">预览只呈现本机服务返回的状态。未知或过期窗口显示为“—”。</div>
+          <div className="device-data-note">缺失的额度窗口不显示；过期窗口等待新数据。</div>
         </section>
 
         <section className="companion-panel" aria-label="电脑端控制台">
@@ -819,7 +841,7 @@ export function App() {
                 <button type="button" className="account-select" onClick={() => setSelectedId(item.id)} aria-pressed={account?.id === item.id} aria-label={`选择 ${providerName(item.provider, item.label)} 账户 ${item.provider === 'deepseek' ? '' : item.email || ''}`}>
                   <Logo provider={item.provider} size={34} />
                   <span className="account-detail"><span><strong>{providerName(item.provider, item.label)}</strong><em className={`status-chip ${statusTone(item)}`}>{accountStatus(item)}</em></span><small>{item.provider === 'deepseek' ? 'DeepSeek API · 本机别名' : `${item.email || '邮箱信息未提供'}${item.plan ? ` · ${planLabel(item.plan)}` : ''}`}</small></span>
-                  {item.provider === 'deepseek' ? <span className="row-balances"><span>{deepSeekRmbDisplay(item.balance).info?.total_balance ?? '—'}<small>人民币</small></span></span> : <span className="row-quotas"><span>{item.five_hour ? `${quotaView(item.five_hour, nowSeconds).value ?? '—'}%` : '—'}<small>5h</small></span><span>{item.seven_day ? `${quotaView(item.seven_day, nowSeconds).value ?? '—'}%` : '—'}<small>7d</small></span></span>}
+                  {item.provider === 'deepseek' ? <span className="row-balances"><span>{deepSeekRmbDisplay(item.balance).info?.total_balance ?? '—'}<small>人民币</small></span></span> : <span className="row-quotas">{visibleWindows(item).map(([key, label]) => <span key={key}>{quotaView(item[key], nowSeconds).value === null ? '—' : `${quotaView(item[key], nowSeconds).value}%`}<small>{label}</small></span>)}</span>}
                 </button>
                 <button type="button" className="remove-account" onClick={() => removeAccount(item.id)} disabled={Boolean(busyAction)} aria-label={`移除 ${item.provider === 'deepseek' ? item.label || 'DeepSeek API' : item.email || '此账户'}`}>移除</button>
               </div>)}
@@ -827,7 +849,7 @@ export function App() {
 
             {account && <div className="account-summary">
               <div className="summary-heading"><div><strong>所选账户 · {providerName(account.provider, account.label)}</strong><small>{account.provider === 'deepseek' ? 'DeepSeek API · 本机别名' : account.email || '邮箱信息未提供'}</small></div><span className={`status-chip ${statusTone(account)}`}>{accountStatus(account)}</span></div>
-              {account.provider === 'deepseek' ? <DeepSeekBalance balance={account.balance} /> : <div className="summary-bars"><QuotaBar label="5 小时" windowValue={account.five_hour} nowSeconds={nowSeconds} stale={selectedCached} /><QuotaBar label="7 天" windowValue={account.seven_day} nowSeconds={nowSeconds} stale={selectedCached} /></div>}
+              {account.provider === 'deepseek' ? <DeepSeekBalance balance={account.balance} /> : <SubscriptionQuota account={account} nowSeconds={nowSeconds} stale={selectedCached} />}
               <div className={`freshness ${selectedCached ? 'warning-text' : ''}`}><span className="freshness-dot" />{statusText}{Number.isFinite(account.observed_at) ? ` · ${formatDate(account.observed_at)}` : ''}</div>
               {account.provider === 'deepseek' && <><button type="button" className="secondary deepseek-refresh" onClick={() => refreshAccount(account.id)} disabled={Boolean(busyAction)}>{busyAction.includes(`/accounts/${account.id}/refresh`) ? '正在查询…' : '立即查询余额'}</button><form className="deepseek-key-form" onSubmit={event => updateDeepSeekAccount(event, account.id)}>
                 <label className="field"><span>本机别名 <small>{byteLength(accountDeepSeekLabel)} / 32 字节</small></span><input type="text" value={accountDeepSeekLabel} onChange={event => setAccountDeepSeekLabel(event.target.value)} disabled={Boolean(busyAction)} /></label>
