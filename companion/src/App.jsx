@@ -168,6 +168,15 @@ function friendlyLoginError(code) {
   return '请重新开始官方登录流程。';
 }
 
+function remainingDuration(seconds) {
+  if (seconds < 60) return '不足1分钟';
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes < 60) return `${minutes}分钟`;
+  if (minutes < 1440) return `${Math.floor(minutes / 60)}小时${minutes % 60 ? `${minutes % 60}分` : ''}`;
+  const hours = Math.floor(minutes % 1440 / 60);
+  return `${Math.floor(minutes / 1440)}天${hours ? `${hours}小时` : ''}`;
+}
+
 function quotaView(windowValue, nowSeconds) {
   if (!windowValue || !Number.isInteger(windowValue.remaining_percent)) {
     return { value: null, reset: '', expired: false };
@@ -176,7 +185,7 @@ function quotaView(windowValue, nowSeconds) {
   const expired = Number.isFinite(resetAt) && resetAt <= nowSeconds;
   return {
     value: expired ? null : Math.max(0, Math.min(100, windowValue.remaining_percent)),
-    reset: Number.isFinite(resetAt) ? formatDate(resetAt) : '',
+    reset: Number.isFinite(resetAt) && !expired ? `${remainingDuration(resetAt - nowSeconds)}后重置` : '',
     expired,
   };
 }
@@ -184,7 +193,7 @@ function quotaView(windowValue, nowSeconds) {
 function QuotaBar({ label, windowValue, nowSeconds, stale = false, compact = false }) {
   const quota = quotaView(windowValue, nowSeconds);
   const tone = quota.value === null ? 'unknown' : quota.value <= 5 ? 'critical' : quota.value <= 20 ? 'low' : 'available';
-  const resetText = quota.expired ? '等待新数据' : quota.reset ? `${compact && label === '5h' ? formatLocalClock(windowValue.resets_at) : quota.reset} 重置` : '重置时间未知';
+  const resetText = quota.expired ? '等待新数据' : quota.reset || '重置时间未知';
   return (
     <section className={`quota ${tone} ${stale ? 'stale' : ''} ${compact ? 'compact' : ''}`}>
       <div className="quota-label">
@@ -216,9 +225,17 @@ function SubscriptionQuota({ account, nowSeconds, stale, compact = false }) {
   const windows = visibleWindows(account);
   const extras = [];
   if (account.provider === 'codex') {
-    if (account.banked_reset?.available_count > 0) extras.push(['可用重置', `${account.banked_reset.available_count} 次`]);
+    if (account.banked_reset?.available_count > 0) {
+      const expiry = account.banked_reset.next_expires_at;
+      const date = Number.isFinite(expiry) ? compact
+        ? `${new Intl.DateTimeFormat(undefined, { month: '2-digit', day: '2-digit' }).format(new Date(expiry * 1000))} ${formatLocalClock(expiry)}`
+        : formatDate(expiry) : '';
+      extras.push(['可用重置', date
+        ? `${account.banked_reset.available_count}次 · ${expiry <= nowSeconds ? '等待更新' : `${date}到期`}`
+        : `${account.banked_reset.available_count} 次`]);
+    }
     if (account.credits?.has_credits || account.credits?.unlimited) {
-      extras.push(['Credits', account.credits.unlimited ? '不限量' : account.credits.balance || '可用']);
+      extras.push(['剩余额度', account.credits.unlimited ? '不限量' : account.credits.balance || '可用']);
     }
   }
   return <div className={compact ? `device-subscription ${windows.length === 1 ? 'single-window' : ''}` : 'subscription-quota'}>
@@ -227,7 +244,7 @@ function SubscriptionQuota({ account, nowSeconds, stale, compact = false }) {
       {!windows.length && <div className="no-windows">{account.status === 'ok' ? '未提供额度窗口' : '等待额度数据'}</div>}
     </div>
     {extras.length > 0 && <div className={`quota-extras ${stale ? 'stale' : ''}`} style={compact ? { top: windows.length === 2 ? 119 : windows.length === 1 ? 90 : 42 } : undefined}>
-      {extras.map(([label, value]) => <div key={label}><span>{label}</span><strong title={value}>{compact && label === 'Credits' && !account.credits.unlimited && account.credits.balance ? deviceSafeText(value) : value}</strong></div>)}
+      {extras.map(([label, value]) => <div key={label}><span>{label}</span><strong title={value}>{compact && label === '剩余额度' && !account.credits.unlimited && account.credits.balance ? deviceSafeText(value) : value}</strong></div>)}
     </div>}
   </div>;
 }

@@ -19,7 +19,7 @@ npm start
 打开 **http://127.0.0.1:4317/**。macOS 可用 `start-dashboard.command` 启动已构建的应用，请保留终端窗口。可选覆盖项：`AIQ_CODEX_BIN`、`AIQ_CLAUDE_BIN`、`AIQ_STATE_DIR`。
 
 1. 在账号管理中添加 Codex 或 Claude，并完成官方授权。每个账号使用独立 profile，不导入已有 CLI 凭证。
-2. Codex 显示 **Codex 用量**，不代表全部 ChatGPT 消息限制。五小时与周窗口独立显示，缺失窗口隐藏，真实 0% 仍显示。官方来源提供可用 Credits 或大于零的储备重置次数时才展示，不推断 Credits 的货币单位。
+2. Codex 显示 **Codex 用量**，不代表全部 ChatGPT 消息限制。五小时与周窗口独立显示，重置时间显示为剩余倒计时；缺失窗口隐藏，真实 0% 仍显示。来源提供可用 Credits（显示为「剩余额度」）或正数的可用重置次数时才展示；重置明细完整时标注最近到期时间，不推断剩余额度的货币单位。
 3. Claude 需复制页面的会话启动命令，正常使用该 profile。正常响应后的 statusline 回调提供额度；刷新不发送付费模型提示。
 4. DeepSeek 使用[官方平台](https://platform.deepseek.com/api_keys)的 API key。页面通过[余额接口](https://api-docs.deepseek.com/api/get-user-balance/)显示人民币可用余额，包含赠款和充值。名称是本地标签。密钥只留在电脑端。不支持消费历史、请求次数或累计 token 总数。
 5. 自动刷新可选 1、5、15 或 30 分钟；息屏可选从不、30 秒或 1/2/5/10 分钟，默认 2 分钟。
@@ -42,7 +42,7 @@ npm start
 
 截图使用隔离的合成示例账号。设备预览是网页渲染，不是真机照片；其时钟使用电脑时间，指示图标不能证明实时板卡遥测。
 
-![ChatGPT Pro 周额度、可用重置和 Credits](docs/screenshots/quota-pro.jpg)
+![ChatGPT Pro 周额度、可用重置和剩余额度](docs/screenshots/quota-pro.jpg)
 ![Claude 额度和设备预览](docs/screenshots/claude.jpg)
 ![DeepSeek 余额](docs/screenshots/deepseek.jpg)
 

@@ -6,10 +6,10 @@ import { createApplication } from '../server/index.mjs';
 
 const now = Math.floor(Date.now() / 1000);
 const accounts = [
-  { id: '1'.repeat(32), provider: 'codex', email: 'codex@example.com', plan: 'Plus', authenticated: true, status: 'ok', observed_at: now, five_hour: { remaining_percent: 16, resets_at: now + 7200 }, seven_day: { remaining_percent: 42, resets_at: now + 172800 }, banked_reset: { available_count: 2 }, credits: { has_credits: true, unlimited: false, balance: '45.00' } },
+  { id: '1'.repeat(32), provider: 'codex', email: 'codex@example.com', plan: 'Plus', authenticated: true, status: 'ok', observed_at: now, five_hour: { remaining_percent: 16, resets_at: now + 7200 }, seven_day: { remaining_percent: 42, resets_at: now + 172800 }, banked_reset: { available_count: 2, next_expires_at: now + 3600 }, credits: { has_credits: true, unlimited: false, balance: '45.00' } },
   { id: '2'.repeat(32), provider: 'claude', email: 'claude@example.com', plan: 'Pro', authenticated: true, status: 'ok', observed_at: now, five_hour: { remaining_percent: 68, resets_at: now + 10800 }, seven_day: { remaining_percent: 72, resets_at: now + 259200 } },
   { id: '3'.repeat(32), provider: 'deepseek', email: '', plan: 'API', label: 'DeepSeek API', authenticated: true, status: 'ok', observed_at: now, balance: { is_available: true, balance_infos: [{ currency: 'CNY', total_balance: '128.50', granted_balance: '10.00', topped_up_balance: '118.50' }] }, five_hour: null, seven_day: null },
-  { id: '4'.repeat(32), provider: 'codex', email: 'pro@example.com', plan: 'pro', authenticated: true, status: 'ok', observed_at: now, five_hour: null, seven_day: { remaining_percent: 82, resets_at: now + 172800 }, banked_reset: { available_count: 3 }, credits: { has_credits: true, unlimited: false, balance: '125.50' } },
+  { id: '4'.repeat(32), provider: 'codex', email: 'pro@example.com', plan: 'pro', authenticated: true, status: 'ok', observed_at: now, five_hour: null, seven_day: { remaining_percent: 82, resets_at: now + 172800 }, banked_reset: { available_count: 3, next_expires_at: now + 900 }, credits: { has_credits: true, unlimited: false, balance: '125.50' } },
 ];
 const directory = await mkdtemp(path.join(os.tmpdir(), 'aiq-readme-preview-'));
 const application = await createApplication({

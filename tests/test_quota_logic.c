@@ -550,8 +550,8 @@ static void test_codex_extras_contract(void)
         "\"observed_at\":1700000000,\"five_hour\":null,"
         "\"seven_day\":{\"remaining_percent\":0,\"resets_at\":null},";
     const char *cases[] = {
-        "\"banked_reset\":{\"available_count\":3},\"credits\":{\"has_credits\":true,\"unlimited\":false,\"balance\":\"12.340000001\"}}",
-        "\"banked_reset\":{\"available_count\":0},\"credits\":{\"has_credits\":false,\"unlimited\":true,\"balance\":null}}",
+        "\"banked_reset\":{\"available_count\":3,\"next_expires_at\":1700000222},\"credits\":{\"has_credits\":true,\"unlimited\":false,\"balance\":\"12.340000001\"}}",
+        "\"banked_reset\":{\"available_count\":0,\"next_expires_at\":null},\"credits\":{\"has_credits\":false,\"unlimited\":true,\"balance\":null}}",
         "\"banked_reset\":null,\"credits\":null}",
     };
     quota_snapshot_t snapshot = {0};
@@ -565,6 +565,8 @@ static void test_codex_extras_contract(void)
         const quota_codex_extras_t *extras = &snapshot.codex_extras[0];
         assert(extras->has_banked_reset == (i < 2));
         assert(extras->available_resets == (i == 0 ? 3 : 0));
+        assert(extras->has_next_reset_expiry == (i == 0));
+        assert(extras->next_reset_expires_at == (i == 0 ? 1700000222 : 0));
         assert(extras->has_credits == (i < 2));
         assert(extras->unlimited_credits == (i == 1));
         assert(strcmp(extras->credits_balance, i == 0 ? "12.340000001" : "") == 0);
@@ -573,6 +575,9 @@ static void test_codex_extras_contract(void)
         "\"banked_reset\":{\"available_count\":-1}}",
         "\"banked_reset\":{\"available_count\":1.5}}",
         "\"banked_reset\":{\"available_count\":9007199254740992}}",
+        "\"banked_reset\":{\"available_count\":2,\"next_expires_at\":-1}}",
+        "\"banked_reset\":{\"available_count\":2,\"next_expires_at\":1700000222.5}}",
+        "\"banked_reset\":{\"available_count\":2,\"next_expires_at\":4294967296}}",
         "\"credits\":{\"has_credits\":1,\"unlimited\":false,\"balance\":\"1\"}}",
         "\"credits\":{\"has_credits\":true,\"unlimited\":false,\"balance\":1}}",
         "\"credits\":{\"has_credits\":true,\"unlimited\":false,\"balance\":\"12345678901234567890123456789012345\"}}",
@@ -584,11 +589,44 @@ static void test_codex_extras_contract(void)
             "{\"refresh_seconds\":300,\"auto_refresh\":true}");
         assert(!quota_parse_snapshot(json, length, &snapshot));
     }
+    /* Count-only peers remain compatible and do not reuse an old expiry. */
+    snprintf(account, sizeof(account), "%s\"banked_reset\":{\"available_count\":2}}", prefix);
+    size_t legacy_length = make_snapshot(json, sizeof(json), account,
+        "{\"refresh_seconds\":300,\"auto_refresh\":true}");
+    assert(quota_parse_snapshot(json, legacy_length, &snapshot));
+    assert(snapshot.codex_extras[0].has_banked_reset);
+    assert(!snapshot.codex_extras[0].has_next_reset_expiry);
     /* A legacy snapshot clears optional RAM metadata instead of reusing old credits. */
     size_t length = make_snapshot(json, sizeof(json), valid_account,
         "{\"refresh_seconds\":300,\"auto_refresh\":true}");
     assert(quota_parse_snapshot(json, length, &snapshot));
     assert(!snapshot.codex_extras[0].has_credits && !snapshot.codex_extras[0].has_banked_reset);
+}
+
+static void test_remaining_duration(void)
+{
+    const struct { uint64_t seconds; const char *text; } cases[] = {
+        {1, "不足1分钟"}, {59, "不足1分钟"}, {60, "1分钟"},
+        {61, "2分钟"}, {3599, "1小时"}, {3600, "1小时"},
+        {3601, "1小时1分"}, {8100, "2小时15分"},
+        {86400, "1天"}, {97200, "1天3小时"}, {604800, "7天"},
+    };
+    char output[48], expected[48];
+    quota_window_t window = {.present = true, .has_resets_at = true};
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        window.resets_at = 1700000000 + cases[i].seconds;
+        quota_format_reset_time(&window, 1700000000, true, output, sizeof(output));
+        snprintf(expected, sizeof(expected), "%s后重置", cases[i].text);
+        assert(strcmp(output, expected) == 0);
+    }
+    /* Cached boot time is not a current-clock observation. */
+    quota_format_reset_time(&window, 1700000000, false, output, sizeof(output));
+    assert(strcmp(output, "时间待同步") == 0);
+    quota_format_reset_time(&window, window.resets_at, true, output, sizeof(output));
+    assert(strcmp(output, "等待新数据") == 0);
+    window.has_resets_at = false;
+    quota_format_reset_time(&window, 1700000000, true, output, sizeof(output));
+    assert(strcmp(output, "重置时间未知") == 0);
 }
 
 int main(void)
@@ -607,6 +645,7 @@ int main(void)
     test_screen_timeout_settings_compatibility();
     test_deepseek_balance_contract();
     test_codex_extras_contract();
+    test_remaining_duration();
     puts("quota logic tests passed");
     return 0;
 }

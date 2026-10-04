@@ -244,7 +244,7 @@ export class AccountManager {
         else {
           if (!await this.setIdentity(account, identity.account)) return;
           this.finishCodexLoginFromIdentity(id, loginJob, identity.account.email);
-          const result = await client.request('account/rateLimits/read', { excludeResetCreditDetails: true });
+          const result = await client.request('account/rateLimits/read', { excludeResetCreditDetails: false });
           if (!this.live(account)) return;
           Object.assign(account, codexWindows(result), { status: 'ok', observed_at: epoch() });
         }

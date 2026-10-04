@@ -8,6 +8,14 @@
 
 ## Unreleased
 
+### 2026-10-04 — Reset countdowns and expiry labels
+
+Both subscription views show time remaining until each quota reset. Uncalibrated device clocks wait for synchronization; elapsed deadlines still wait for new source data. Credits use the localized label for remaining credits. Codex polling requests reset details and displays the earliest expiry only when the available rows are complete and valid. Counts remain authoritative; missing/capped details hide the date, and cached expired dates wait for an update. Private reset rows are excluded from public state; device extras remain RAM-only with unchanged NVS layouts.
+
+Build: **PASS** — complete ESP-IDF 5.5.3 gate and verified archive; app 1,500,944 bytes. Host tests: **PASS** — firmware/runtime/font checks and 52 companion tests; Vite build passed. Independent review identified and verified the cold-boot clock fix. Browser checks passed for Pro, two-window Codex, Claude, expired/unknown dates, short countdowns and 390-pixel layout; synthetic screenshots were updated. The updated live companion returned an earliest expiry from the real account while preserving accounts, settings and pairing.
+
+Verified bundle: `build/firmware/2696d04b1e14ec43ff9a7941b4ac765e36db8757fcd5ecb12d1a4f824a4d563e/`. Matching ELF SHA-256: `a6235641c1cfc421f038cbf365837a9a7289633d819475339170987b92cc07be`; app version `a6b43a2-dirty`. Device tests: **NOT RUN** — this bundle has not been flashed; the latest installed image remains `a3251c5c…`. Unverified: physical countdown/expiry rendering and cold-boot clock behavior. Raw account data and logs remain local.
+
 ### 2026-10-04 — Device upgrade and acceptance
 
 Installed the verified `a3251c5c…` bundle described below after the owner's request. The device partition table matched the archive; all three component writes at `0x0` / `0x8000` / `0x10000` passed hash verification. NVS and PHY regions were untouched. The companion was restarted with the updated collector, preserving accounts, settings and pairing.

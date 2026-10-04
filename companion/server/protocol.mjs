@@ -37,10 +37,14 @@ export function codexWindows(response) {
   const candidates = map && typeof map === 'object' ? Object.entries(map) : [];
   const preferred = candidates.find(([id, bucket]) => id === 'codex' || bucket?.limitId === 'codex');
   const bucket = preferred?.[1] ?? (candidates.length === 1 ? candidates[0][1] : response?.rateLimits);
+  const resetCredits = response?.rateLimitResetCredits;
   const result = {
     five_hour: null, seven_day: null,
     credits: publicCredits({ has_credits: bucket?.credits?.hasCredits, unlimited: bucket?.credits?.unlimited, balance: bucket?.credits?.balance }),
-    banked_reset: publicBankedReset({ available_count: response?.rateLimitResetCredits?.availableCount }),
+    banked_reset: publicBankedReset({
+      available_count: resetCredits?.availableCount,
+      next_expires_at: nextAvailableResetExpiry(resetCredits),
+    }),
   };
   for (const window of [bucket?.primary, bucket?.secondary]) {
     if (window?.windowDurationMins === 300) result.five_hour = percentWindow(window.usedPercent, window.resetsAt);
@@ -57,7 +61,25 @@ function publicCredits(value) {
 }
 function publicBankedReset(value) {
   return value && !Array.isArray(value) && Number.isSafeInteger(value.available_count) && value.available_count >= 0
-    ? { available_count: value.available_count } : null;
+    ? {
+      available_count: value.available_count,
+      next_expires_at: value.next_expires_at === null || value.next_expires_at === undefined
+        ? null
+        : Number.isSafeInteger(value.next_expires_at) && value.next_expires_at > 0 ? value.next_expires_at : null,
+    } : null;
+}
+function nextAvailableResetExpiry(summary) {
+  if (!summary || Array.isArray(summary) || !Number.isSafeInteger(summary.availableCount) || summary.availableCount < 0
+    || !Array.isArray(summary.credits) || summary.credits.length !== summary.availableCount) return null;
+  let earliest = null;
+  for (const credit of summary.credits) {
+    if (!credit || Array.isArray(credit) || typeof credit !== 'object'
+      || credit.status !== 'available' || credit.resetType !== 'codexRateLimits' || !Object.hasOwn(credit, 'expiresAt')) return null;
+    if (credit.expiresAt === null) continue;
+    if (!Number.isSafeInteger(credit.expiresAt) || credit.expiresAt <= 0) return null;
+    if (earliest === null || credit.expiresAt < earliest) earliest = credit.expiresAt;
+  }
+  return earliest;
 }
 export function claudeWindows(payload) {
   const five = payload?.rate_limits?.five_hour;

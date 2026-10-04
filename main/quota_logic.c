@@ -447,6 +447,10 @@ static bool parse_codex_extras(const cJSON *account, quota_codex_extras_t *extra
             !json_uint(json_field(reset, "available_count"), 9007199254740991ULL,
                        &extras->available_resets)) return false;
         extras->has_banked_reset = true;
+        const cJSON *expiry = json_field(reset, "next_expires_at");
+        if (expiry != NULL &&
+            !parse_optional_epoch(expiry, &extras->has_next_reset_expiry,
+                                  &extras->next_reset_expires_at)) return false;
     }
     const cJSON *credits = json_field(account, "credits");
     if (credits == NULL || cJSON_IsNull(credits)) return true;
@@ -462,6 +466,46 @@ static bool parse_codex_extras(const cJSON *account, quota_codex_extras_t *extra
     extras->has_credits = cJSON_IsTrue(available) || cJSON_IsTrue(unlimited);
     extras->unlimited_credits = cJSON_IsTrue(unlimited);
     return true;
+}
+
+static void quota_format_duration(uint64_t seconds, char *output, size_t capacity)
+{
+    if (output == NULL || capacity == 0) return;
+    uint64_t minutes = seconds / 60 + (seconds % 60 != 0);
+    if (seconds < 60) {
+        snprintf(output, capacity, "不足1分钟");
+    } else if (minutes < 60) {
+        snprintf(output, capacity, "%llu分钟", (unsigned long long)minutes);
+    } else if (minutes < 1440) {
+        if (minutes % 60 == 0) {
+            snprintf(output, capacity, "%llu小时", (unsigned long long)(minutes / 60));
+        } else {
+            snprintf(output, capacity, "%llu小时%llu分", (unsigned long long)(minutes / 60),
+                     (unsigned long long)(minutes % 60));
+        }
+    } else if (minutes % 1440 / 60 == 0) {
+        snprintf(output, capacity, "%llu天", (unsigned long long)(minutes / 1440));
+    } else {
+        snprintf(output, capacity, "%llu天%llu小时", (unsigned long long)(minutes / 1440),
+                 (unsigned long long)(minutes % 1440 / 60));
+    }
+}
+
+void quota_format_reset_time(const quota_window_t *window, uint64_t now,
+                             bool clock_synchronized, char *output, size_t capacity)
+{
+    if (output == NULL || capacity == 0) return;
+    if (window == NULL || !window->present || !window->has_resets_at) {
+        snprintf(output, capacity, "重置时间未知");
+    } else if (!clock_synchronized) {
+        snprintf(output, capacity, "时间待同步");
+    } else if (now >= window->resets_at) {
+        snprintf(output, capacity, "等待新数据");
+    } else {
+        char remaining[32];
+        quota_format_duration(window->resets_at - now, remaining, sizeof(remaining));
+        snprintf(output, capacity, "%s后重置", remaining);
+    }
 }
 
 bool quota_refresh_seconds_is_valid(uint64_t seconds)

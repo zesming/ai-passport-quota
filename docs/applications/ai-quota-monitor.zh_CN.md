@@ -12,9 +12,9 @@
 | Claude | 官方订阅登录及正常响应后的 statusline 回调 | 回调绑定到已验证隔离账号；缓存回调保留来源时间 |
 | DeepSeek | 私有 API key 调用 `GET https://api.deepseek.com/user/balance` | 可用余额；无验证邮箱、消费历史、请求次数或累计 token 总数 |
 
-额度/余额刷新不发送模型提示。保留 `observed_at`；读取缓存或快照 revision 变化不代表新服务观察。五小时/七日窗口独立处理：缺失窗口保持未知并在两端隐藏，有效 0% 仍显示。重置时间到期后该窗口等待新来源数据，不能自动恢复为 100%。缺失余额不是零。旧数据、离线和过期状态须明确标识。
+额度/余额刷新不发送模型提示。保留 `observed_at`；读取缓存或快照 revision 变化不代表新服务观察。五小时/七日窗口独立处理：缺失窗口保持未知并在两端隐藏，有效 0% 仍显示。重置时间显示为剩余时长（分钟/小时，较长时间用天/小时）。到期后该窗口等待新来源数据，不能自动恢复为 100%。缺失余额不是零。旧数据、离线和过期状态须明确标识。
 
-Codex 从官方选中的限额 bucket 读取 Credits，从账户级 `rateLimitResetCredits.availableCount` 读取储备重置次数。可选快照字段为 `credits: {has_credits, unlimited, balance}` 和 `banked_reset: {available_count}`。Credit 标志为布尔值，balance 为不含控制字符、最多 32 个 UTF-8 字节的来源字符串或 null。不得推断货币单位、换算或合成余额。重置次数为非负安全整数，仅大于零时显示。Credits 仅在 `has_credits` 或 `unlimited` 为 true 时显示；不可用扩展项独立于窗口隐藏。Claude statusline 没有对应扩展项，不得伪造。
+Codex 从官方选中的限额 bucket 读取 Credits，从账户级 `rateLimitResetCredits.availableCount` 读取储备重置次数。可选快照字段为 `credits: {has_credits, unlimited, balance}` 和 `banked_reset: {available_count, next_expires_at}`。Credit 标志为布尔值，balance 为不含控制字符、最多 32 个 UTF-8 字节的来源字符串或 null。不得推断货币单位、换算或合成余额。重置次数为非负安全整数，仅大于零时显示。Credits 显示为「剩余额度」，仅在 `has_credits` 或 `unlimited` 为 true 时显示；不可用扩展项独立于窗口隐藏。用 `excludeResetCreditDetails: false` 请求重置明细。仅当 `available_count` 条明细全部为可用 Codex 重置且到期值有效或明确为 null 时，将最早的有限到期时间写入 `next_expires_at`；缺失、截断或无效明细时为 null。保留官方次数，不公开私有明细；缓存的到期时间已过时显示「等待更新」。Claude statusline 没有对应扩展项，不得伪造。
 
 DeepSeek 密钥存于仅限当前用户的 `profiles/<id>/deepseek/api-key.json`，不得进入公开状态、设备快照或 USB。金额保留有符号十进制字符串，CNY/USD 独立。当前视图仅选择 CNY `total_balance`，包含赠款和充值，不展开其组成、不换汇、不回退 USD。正常刷新失败保留带状态的缓存，更换密钥则在验证前清除旧钱包。本地标签不是授权邮箱。单请求模型用量不代表账户级平台历史。
 

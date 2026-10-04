@@ -76,6 +76,8 @@ typedef struct {
 typedef struct {
     bool has_banked_reset;
     uint64_t available_resets;
+    bool has_next_reset_expiry;
+    uint64_t next_reset_expires_at;
     bool has_credits;
     bool unlimited_credits;
     char credits_balance[QUOTA_CREDITS_BALANCE_BYTES + 1];
@@ -191,6 +193,8 @@ bool quota_url_is_private_ipv4(const char *url, char host_out[16]);
 bool quota_pair_token_is_valid(const char *token);
 void quota_copy_display_ascii(const char *source, char *destination, size_t capacity);
 void quota_copy_display_plan(const char *source, char *destination, size_t capacity);
+void quota_format_reset_time(const quota_window_t *window, uint64_t now,
+                             bool clock_synchronized, char *output, size_t capacity);
 bool quota_refresh_seconds_is_valid(uint64_t seconds);
 bool quota_screen_timeout_is_valid(uint64_t seconds);
 bool quota_balance_is_valid(const quota_balance_t *balance);

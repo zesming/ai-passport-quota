@@ -215,7 +215,7 @@ test('changed Codex identity clears old quota and extras even when the new reque
   assert.equal(account.email, 'new@example.com'); assert.equal(account.five_hour, null); assert.equal(account.observed_at, null); assert.equal(account.status, 'error');
   assert.equal(account.credits, null); assert.equal(account.banked_reset, null);
 });
-test('Codex polling keeps count-only reads and clears extras when the source stops providing them', async t => {
+test('Codex polling requests reset details, preserves count-only expiry as unknown, and clears missing extras', async t => {
   const store = await fixture(t); const id = '1'.repeat(32);
   store.state.accounts.push({ id, provider: 'codex', email: 'test@example.com', authenticated: true, status: 'ok', observed_at: 1000 });
   let response = { rateLimits: { credits: { hasCredits: true, unlimited: false, balance: '12.3400' } }, rateLimitResetCredits: { availableCount: 2, credits: null } };
@@ -228,10 +228,20 @@ test('Codex polling keeps count-only reads and clears extras when the source sto
   const manager = new AccountManager(store, { codex: '/fake/codex' }, { codexFactory: () => client });
   t.after(() => manager.close());
   await manager.refresh(id);
-  assert.deepEqual(client.calls.find(call => call.method === 'account/rateLimits/read').params, { excludeResetCreditDetails: true });
+  assert.deepEqual(client.calls.find(call => call.method === 'account/rateLimits/read').params, { excludeResetCreditDetails: false });
   assert.deepEqual(manager.publicAccounts()[0].credits, { has_credits: true, unlimited: false, balance: '12.3400' });
-  assert.deepEqual(manager.publicAccounts()[0].banked_reset, { available_count: 2 });
+  assert.deepEqual(manager.publicAccounts()[0].banked_reset, { available_count: 2, next_expires_at: null });
   assert.equal(manager.publicAccounts()[0].five_hour, null);
+
+  response = { rateLimits: {}, rateLimitResetCredits: { availableCount: 2, credits: [
+    { id: 'PRIVATE_RESET_ID_1', title: 'Private reset title', status: 'available', resetType: 'codexRateLimits', expiresAt: 1700000200 },
+    { id: 'PRIVATE_RESET_ID_2', title: 'Private reset title', status: 'available', resetType: 'codexRateLimits', expiresAt: null },
+  ] } };
+  await manager.refresh(id);
+  assert.deepEqual(manager.publicAccounts()[0].banked_reset, { available_count: 2, next_expires_at: 1700000200 });
+  assert.equal(JSON.stringify(manager.publicAccounts()[0]).includes('PRIVATE_RESET'), false);
+  assert.equal(JSON.stringify(manager.publicAccounts()[0]).includes('Private reset'), false);
+
   response = { rateLimits: {}, rateLimitResetCredits: null };
   await manager.refresh(id);
   assert.equal(manager.publicAccounts()[0].credits, null); assert.equal(manager.publicAccounts()[0].banked_reset, null);

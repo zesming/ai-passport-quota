@@ -21,11 +21,45 @@ test('Codex extras use the selected bucket and authoritative reset count without
   };
   assert.deepEqual(codexWindows(response), {
     five_hour: null, seven_day: { remaining_percent: 0, resets_at: 2000 },
-    credits: { has_credits: true, unlimited: false, balance: '0.00000000000000000100' }, banked_reset: { available_count: 3 },
+    credits: { has_credits: true, unlimited: false, balance: '0.00000000000000000100' }, banked_reset: { available_count: 3, next_expires_at: null },
   });
-  assert.deepEqual(codexWindows({ rateLimits: {}, rateLimitResetCredits: { availableCount: 0, credits: null } }).banked_reset, { available_count: 0 });
+  assert.deepEqual(codexWindows({ rateLimits: {}, rateLimitResetCredits: { availableCount: 0, credits: null } }).banked_reset, { available_count: 0, next_expires_at: null });
   for (const availableCount of [null, -1, 1.5, '2', Number.MAX_SAFE_INTEGER + 1]) {
     assert.equal(codexWindows({ rateLimitResetCredits: { availableCount } }).banked_reset, null);
+  }
+});
+test('banked reset expiry uses only complete, known available Codex reset details', () => {
+  const reset = rateLimitResetCredits => codexWindows({ rateLimitResetCredits }).banked_reset;
+  const available = (expiresAt, extra = {}) => ({ status: 'available', resetType: 'codexRateLimits', expiresAt, ...extra });
+  const complete = reset({ availableCount: 3, credits: [
+    available(1900, { id: 'PRIVATE_RESET_ID_1', title: 'Private title', description: 'Private description' }),
+    available(null, { id: 'PRIVATE_RESET_ID_3' }),
+    available(1700, { id: 'PRIVATE_RESET_ID_4' }),
+  ] });
+  assert.deepEqual(complete, { available_count: 3, next_expires_at: 1700 });
+  assert.equal(JSON.stringify(complete).includes('PRIVATE_'), false);
+  assert.deepEqual(reset({ availableCount: 2, credits: [available(1700), available(null)] }), { available_count: 2, next_expires_at: 1700 });
+  assert.deepEqual(reset({ availableCount: 2, credits: [available(null), available(null)] }), { available_count: 2, next_expires_at: null });
+  assert.deepEqual(reset({ availableCount: 1, credits: [available(1500)] }), { available_count: 1, next_expires_at: 1500 });
+
+  // Count-only, capped, missing or ambiguous detail rows preserve the count but never guess a deadline.
+  for (const [availableCount, details] of [
+    [1, null],
+    [1, []],
+    [2, [available(1800)]],
+    [1, [available(1800), available(1900)]],
+    [1, [{ status: 'redeemed', resetType: 'codexRateLimits', expiresAt: 1800 }]],
+    [1, [{ status: 'unknown', resetType: 'codexRateLimits', expiresAt: 1800 }]],
+    [1, [{ resetType: 'codexRateLimits', expiresAt: 1800 }]],
+    [1, [available(1800, { resetType: 'unknown' })]],
+    [1, [available(undefined)]],
+    [1, [available(0)]],
+    [1, [available(-1)]],
+    [1, [available(1.5)]],
+    [1, [available(Number.MAX_SAFE_INTEGER + 1)]],
+    [1, [null]],
+  ]) {
+    assert.deepEqual(reset({ availableCount, credits: details }), { available_count: availableCount, next_expires_at: null });
   }
 });
 test('Codex credits require available flags and preserve only complete bounded display strings', () => {

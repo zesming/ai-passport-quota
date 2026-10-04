@@ -19,7 +19,7 @@ npm start
 Open **http://127.0.0.1:4317/**. On macOS, `start-dashboard.command` starts an already built installation; keep its terminal open. Optional overrides: `AIQ_CODEX_BIN`, `AIQ_CLAUDE_BIN`, `AIQ_STATE_DIR`.
 
 1. Add Codex or Claude in Account management and complete official authorization. Each account gets an independent profile; existing CLI credentials are not imported.
-2. Codex reports **Codex usage**, not all ChatGPT message limits. The five-hour and weekly windows display independently; missing windows are hidden, while a real 0% stays visible. Officially available Credits and positive banked-reset counts appear when supplied; Credits have no inferred currency.
+2. Codex reports **Codex usage**, not all ChatGPT message limits. The five-hour and weekly windows display independently with reset countdowns; missing windows are hidden, while a real 0% stays visible. Available Credits and banked-reset counts appear when supplied, with the earliest expiry when complete reset details are known. Credits have no inferred currency.
 3. For Claude, copy the page's session launch command and use that profile normally. A statusline callback after a normal response supplies quota; refresh never sends a paid model prompt.
 4. For DeepSeek, add an API key from the [official portal](https://platform.deepseek.com/api_keys). The page shows RMB available balance, including grants and top-ups, from the [balance API](https://api-docs.deepseek.com/api/get-user-balance/). The name is a local label. Keys stay on the computer. Spending history, request counts and cumulative token totals are not supported.
 5. Set automatic refresh to 1, 5, 15 or 30 minutes. Screen timeout accepts Never, 30 seconds, or 1/2/5/10 minutes; the default is 2 minutes.

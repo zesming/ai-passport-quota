@@ -381,22 +381,8 @@ static void format_clock(uint64_t epoch, bool include_date, char *output, size_t
     }
 }
 
-static void metric_reset_text(const quota_window_t *window, uint64_t now,
-                              bool include_date, char *output, size_t capacity)
-{
-    if (window == NULL || !window->present || !window->has_resets_at) {
-        snprintf(output, capacity, "重置时间未知");
-    } else if (now >= window->resets_at) {
-        snprintf(output, capacity, "等待新数据");
-    } else {
-        char clock_text[20];
-        format_clock(window->resets_at, include_date, clock_text, sizeof(clock_text));
-        snprintf(output, capacity, "%s 重置", clock_text);
-    }
-}
-
 static void render_metric(size_t index, const quota_window_t *window, uint64_t now,
-                          bool stale, bool include_date, int y, bool single)
+                          bool stale, bool clock_synchronized, int y, bool single)
 {
     lv_obj_set_y(s_ui.metric_name[index], y);
     lv_obj_set_y(s_ui.metric_reset[index], y);
@@ -405,8 +391,8 @@ static void render_metric(size_t index, const quota_window_t *window, uint64_t n
     lv_obj_clear_flag(s_ui.metric_name[index], LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(s_ui.metric_reset[index], LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(s_ui.metric_value[index], LV_OBJ_FLAG_HIDDEN);
-    char reset_text[32];
-    metric_reset_text(window, now, include_date, reset_text, sizeof(reset_text));
+    char reset_text[48];
+    quota_format_reset_time(window, now, clock_synchronized, reset_text, sizeof(reset_text));
     set_label_text(s_ui.metric_reset[index], reset_text);
     quota_metric_state_t state = quota_metric_state(window, now);
     if (state == QUOTA_METRIC_UNAVAILABLE) {
@@ -533,21 +519,34 @@ static void render_home(const quota_navigation_t *navigation,
         unsigned row = 0;
         for (size_t i = 0; i < 2; i++) {
             if (!windows[i]->present) continue;
-            render_metric(i, windows[i], service->now_epoch, stale, i == 1,
+            render_metric(i, windows[i], service->now_epoch, stale, service->clock_synchronized,
                           109 + (int)row++ * 60, window_count == 1);
         }
         const quota_codex_extras_t *extras = &service->snapshot.codex_extras[selected];
         int extra_y = window_count == 2 ? 228 : window_count == 1 ? 199 : 151;
         unsigned extra_row = 0;
         if (!is_claude && extras->has_banked_reset && extras->available_resets > 0) {
-            char value[32];
-            snprintf(value, sizeof(value), "%llu 次", (unsigned long long)extras->available_resets);
+            char value[64];
+            if (extras->has_next_reset_expiry && !service->clock_synchronized) {
+                snprintf(value, sizeof(value), "%llu次 · 时间待同步",
+                         (unsigned long long)extras->available_resets);
+            } else if (extras->has_next_reset_expiry && extras->next_reset_expires_at > service->now_epoch) {
+                char expiry[20];
+                format_clock(extras->next_reset_expires_at, true, expiry, sizeof(expiry));
+                snprintf(value, sizeof(value), "%llu次 · %s到期",
+                         (unsigned long long)extras->available_resets, expiry);
+            } else if (extras->has_next_reset_expiry) {
+                snprintf(value, sizeof(value), "%llu次 · 等待更新",
+                         (unsigned long long)extras->available_resets);
+            } else {
+                snprintf(value, sizeof(value), "%llu 次", (unsigned long long)extras->available_resets);
+            }
             render_extra(extra_row++, "可用重置", value, extra_y, stale);
         }
         if (!is_claude && extras->has_credits) {
             char value[QUOTA_CREDITS_BALANCE_BYTES + 1];
             quota_copy_display_ascii(extras->credits_balance, value, sizeof(value));
-            render_extra(extra_row, "Credits", extras->unlimited_credits ? "不限量" :
+            render_extra(extra_row, "剩余额度", extras->unlimited_credits ? "不限量" :
                          value[0] != '\0' ? value : "可用", extra_y + (int)extra_row * 16, stale);
         }
         if (window_count == 0) {

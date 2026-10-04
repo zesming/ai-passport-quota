@@ -26,7 +26,8 @@ def font_codepoints(filename):
 
 class QuotaFonts(unittest.TestCase):
     def test_every_interface_character_is_in_both_fonts(self):
-        ui = (ROOT / "main/quota_ui.c").read_text(encoding="utf-8")
+        ui = "\n".join((ROOT / filename).read_text(encoding="utf-8")
+                       for filename in ("main/quota_ui.c", "main/quota_logic.c"))
         literals = re.findall(r'"(?:\\.|[^"\\])*"', ui)
         required = {ord(character) for literal in literals for character in literal if ord(character) > 127}
         self.assertTrue(required)
