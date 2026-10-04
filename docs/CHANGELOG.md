@@ -8,6 +8,14 @@
 
 ## Unreleased
 
+### 2026-10-04 — Device upgrade and acceptance
+
+Installed the verified `a3251c5c…` bundle described below after the owner's request. The device partition table matched the archive; all three component writes at `0x0` / `0x8000` / `0x10000` passed hash verification. NVS and PHY regions were untouched. The companion was restarted with the updated collector, preserving accounts, settings and pairing.
+
+Build and Host tests: **PASS**, reusing this exact bundle's complete gate; archive verification passed again before writing. Device tests: **PASS for component writes, startup and owner-observed behavior**. The boot version `d18d939-dirty` and ELF prefix `30f7bf01a` match the retained artifact; the cache and battery gauge initialized without an observed crash during the 30-second startup capture. Real Codex Credits and available reset counts were returned and displayed. The owner confirmed screen off, cached wake without account switching and restored Wi-Fi connectivity; a bounded observation also captured reconnection and authenticated device requests.
+
+Initial extras appeared after the companion restart and subsequent cache synchronization. Extras remain in RAM across screen off; cold boots obtain them again from the companion. Unverified: measured sleep current or battery-life improvement, extended/offline recovery and active-request sleep transitions. Raw logs remain local.
+
 ### 2026-10-04 — Codex extras, independent windows and screen-off power controls
 
 Subscription windows display independently in both views: missing windows are hidden, real 0% remains visible, and expired windows wait for new source data. Codex reads Credits from the selected official bucket and account-level banked-reset availability; show Credits only when available/unlimited and reset counts only above zero. Preserve source balance strings without assigning currency. Claude has no equivalent statusline extras. Device extras stay in RAM and remain hidden after cold boot until synchronization; NVS layouts are unchanged.
