@@ -11,6 +11,7 @@
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -49,6 +50,7 @@ static bool s_refreshing, s_failed, s_cache_dirty;
 static uint32_t s_display_generation;
 static uint64_t s_setup_deadline, s_close_at, s_next_refresh, s_cache_at;
 static uint64_t s_connect_at, s_retry_at, s_login_deadline;
+static uint64_t s_login_trace_at;
 static uint8_t s_refresh_slot;
 static bool s_cycle;
 static esp_netif_t *s_ap;
@@ -527,17 +529,28 @@ static void complete_login(quota_direct_result_code_t code)
     if (ok) { lock(); s_refresh = true; unlock(); }
     changed();
 }
+static void trace_login(const char *phase, int code)
+{
+    ESP_LOGI(TAG, "login phase=%s result=%d free=%lu largest=%lu stack_low_water=%lu", phase, code,
+             (unsigned long)esp_get_free_heap_size(),
+             (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
+             (unsigned long)uxTaskGetStackHighWaterMark(NULL));
+}
 static void login_tick(void)
 {
     if (!s_login || s_view.login_state == QUOTA_PORTABLE_LOGIN_QUEUED) return;
     if (millis() >= s_login_deadline) { quota_direct_login_cancel(s_direct); complete_login(QUOTA_DIRECT_EXPIRED); return; }
     if (s_view.network_state != QUOTA_PORTABLE_NETWORK_READY) return;
+    bool trace = millis() >= s_login_trace_at;
+    const char *phase = !s_login_started ? "code" : s_view.login_state == QUOTA_PORTABLE_LOGIN_EXCHANGING ? "exchange" : "poll";
+    if (trace) { s_login_trace_at = millis() + 15000; trace_login(phase, -1); }
     quota_direct_result_t result;
     if (!s_login_started) {
         lock(); s_view.login_state = QUOTA_PORTABLE_LOGIN_REQUESTING_CODE; unlock(); changed();
         result = quota_direct_login_begin(s_direct, s_login, millis(), epoch());
         s_login_started = result.code == QUOTA_DIRECT_WAITING || result.code == QUOTA_DIRECT_OK;
     } else result = quota_direct_login_step(s_direct, s_login, millis(), epoch());
+    if (trace) trace_login(phase, result.code);
     if (result.code == QUOTA_DIRECT_DEFERRED) return;
     quota_direct_login_view_t view; quota_direct_login_view(s_direct, millis(), &view);
     bool transient = view.active && (result.code == QUOTA_DIRECT_RATE_LIMITED || result.code == QUOTA_DIRECT_NETWORK_ERROR || result.code == QUOTA_DIRECT_NO_MEMORY || result.code == QUOTA_DIRECT_TIME_REQUIRED);
@@ -672,6 +685,7 @@ void quota_portable_service_tick(bool sleeping, uint32_t generation)
     /* Received token rotations must commit even after a display/mode change. */
     if (quota_direct_has_pending_persist(s_direct)) {
         quota_direct_result_t result = quota_direct_retry_persist(s_direct);
+        if (millis() >= s_login_trace_at) { s_login_trace_at = millis() + 15000; trace_login("save", result.code); }
         if (result.code == QUOTA_DIRECT_OK && s_login) complete_login(QUOTA_DIRECT_OK);
     }
     bool persistence_pending = quota_direct_has_pending_persist(s_direct);

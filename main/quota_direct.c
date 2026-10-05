@@ -410,7 +410,22 @@ static bool append_form(char *body, size_t capacity, const char *name, const cha
 
 static char *exchange_body(const quota_direct_authorization_t *code)
 {
-    size_t capacity = QUOTA_DIRECT_CODE_BYTES * 3 + QUOTA_DIRECT_VERIFIER_BYTES * 3 + 1024;
+    if (!code || !quota_direct_token_is_safe(code->authorization_code, QUOTA_DIRECT_CODE_BYTES) ||
+        !quota_direct_token_is_safe(code->code_verifier, QUOTA_DIRECT_VERIFIER_BYTES)) return NULL;
+    /* Field names, separators and NUL, plus the actual escaped values. Avoid
+     * reserving the maximum code size throughout the TLS handshake. */
+    size_t capacity = sizeof("grant_type=&client_id=&code=&redirect_uri=&code_verifier=");
+    const char *values[] = { "authorization_code", QUOTA_DIRECT_CODEX_CLIENT_ID,
+        code->authorization_code, AUTH_CALLBACK_URL, code->code_verifier };
+    for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); ++i) {
+        for (const unsigned char *p = (const unsigned char *)values[i]; *p; ++p) {
+            bool plain = (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+                (*p >= '0' && *p <= '9') || *p == '-' || *p == '_' || *p == '.' || *p == '~';
+            size_t bytes = plain ? 1 : 3;
+            if (bytes > QUOTA_DIRECT_BODY_BYTES + 1 - capacity) return NULL;
+            capacity += bytes;
+        }
+    }
     char *body = calloc(1, capacity);
     if (!body) return NULL;
     bool valid = append_form(body, capacity, "grant_type", "authorization_code") &&

@@ -61,4 +61,6 @@ A merged `full.bin` written at `0x0` includes padded gaps and can reset NVS/PHY 
 
 ## Acceptance and reporting
 
+Keep the native USB serial connection open throughout authorization and avoid modem-line changes. Reconnecting a monitor can reset the C3 and invalidate that acceptance run.
+
 Report `Build`, `Host tests`, `Device tests` and `Unverified` separately, with the checks actually performed. Browser screenshots and host simulations do not prove board rendering, physical USB pairing or provider authorization. Relevant checks include independent/missing windows, real 0%, expired-window waiting, conditional Codex extras and their absence before cold-boot sync. Device acceptance also covers fonts/buttons, pairing, certificate rejection, Wi-Fi stop/reconnect, LCD Sleep In/out, silent cached wake, preserved refresh deadlines and reboot persistence. Compare measured awake/asleep current under stated USB/battery conditions; configuration and host tests alone establish no current reduction. Real DeepSeek credentials and extended/offline timing still need their own acceptance evidence; consult the [changelog](../CHANGELOG.md) for dated results rather than transferring prior acceptance to a new build.

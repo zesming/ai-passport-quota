@@ -174,6 +174,71 @@ int main(void) {
 
 
 class DirectProviderRuntime(unittest.TestCase):
+    def test_exchange_body_allocation(self):
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(prefix="quota-direct-form-") as directory:
+            temporary = Path(directory)
+            source = temporary / "form-runtime.c"
+            source.write_text(r'''
+#include <assert.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+#include "quota_direct.h"
+static size_t allocation_bytes;
+static bool reject_allocation;
+static void *tracked_calloc(size_t count, size_t bytes) {
+    allocation_bytes = count * bytes;
+    return reject_allocation ? NULL : calloc(count, bytes);
+}
+#define calloc tracked_calloc
+#include "quota_direct.c"
+#undef calloc
+int main(void) {
+    quota_direct_authorization_t code = {0};
+    strcpy(code.authorization_code, "once+&=");
+    strcpy(code.code_verifier, "proof-verifier");
+    char *body = exchange_body(&code); assert(body);
+    assert(allocation_bytes == strlen(body) + 1 && allocation_bytes < 512);
+    assert(strstr(body, "code=once%2B%26%3D&"));
+    assert(strstr(body, "redirect_uri=https%3A%2F%2Fauth.openai.com%2Fdeviceauth%2Fcallback&"));
+    free_body(body);
+    /* Every permitted printable character agrees with the encoder. */
+    for (unsigned i = 0; i < 94; ++i) code.authorization_code[i] = (char)(0x21 + i);
+    code.authorization_code[94] = 0;
+    body = exchange_body(&code); assert(body);
+    assert(allocation_bytes == strlen(body) + 1); free_body(body);
+    /* Both bounded inputs at their maximum, all requiring three-byte escapes. */
+    memset(code.authorization_code, '+', QUOTA_DIRECT_CODE_BYTES);
+    code.authorization_code[QUOTA_DIRECT_CODE_BYTES] = 0;
+    memset(code.code_verifier, '%', QUOTA_DIRECT_VERIFIER_BYTES);
+    code.code_verifier[QUOTA_DIRECT_VERIFIER_BYTES] = 0;
+    body = exchange_body(&code); assert(body);
+    assert(allocation_bytes == strlen(body) + 1 && allocation_bytes < 13696);
+    assert(strlen(body) > 3 * QUOTA_DIRECT_CODE_BYTES && strlen(body) <= QUOTA_DIRECT_BODY_BYTES);
+    const char *encoded = strstr(body, "&code=") + strlen("&code=");
+    for (unsigned i = 0; i < QUOTA_DIRECT_CODE_BYTES; ++i) assert(!memcmp(encoded + 3 * i, "%2B", 3));
+    assert(encoded[3 * QUOTA_DIRECT_CODE_BYTES] == '&'); free_body(body);
+    reject_allocation = true; assert(exchange_body(&code) == NULL); reject_allocation = false;
+    /* Missing terminator at the input bound is rejected before allocation. */
+    memset(code.authorization_code, '+', sizeof(code.authorization_code));
+    allocation_bytes = 0; assert(exchange_body(&code) == NULL && allocation_bytes == 0);
+    puts("exchange allocation: PASS"); return 0;
+}
+''')
+            executable = temporary / "form-runtime"
+            command = [os.environ.get("CC", "cc"), "-std=c11", "-Wall", "-Wextra", "-Werror",
+                       "-Wno-deprecated-declarations", "-fsanitize=address,undefined",
+                       "-fno-omit-frame-pointer", "-I", str(root / "main"),
+                       "-I", str(root / "tests/cjson"), str(source),
+                       str(root / "main/quota_direct_logic.c"), str(root / "tests/cjson/cJSON.c"),
+                       "-lm", "-o", str(executable)]
+            compilation = subprocess.run(command, cwd=root, capture_output=True, text=True)
+            self.assertEqual(compilation.returncode, 0, compilation.stderr)
+            completed = subprocess.run([str(executable)], cwd=root, capture_output=True, text=True)
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            self.assertIn("exchange allocation: PASS", completed.stdout)
+
     def test_actual_esp_transport(self):
         root = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory(prefix="quota-direct-esp-") as directory:

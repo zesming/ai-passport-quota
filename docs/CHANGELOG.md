@@ -8,13 +8,21 @@
 
 ## Unreleased
 
+### 2026-10-05 — Bounded allocation for code exchange
+
+During a continuous, non-resetting capture the owner remained at authorization completion, including after sleep/wake. Code inspection identified silent retries for request allocation and credential persistence. The exchange form now allocates its actual escaped length instead of reserving 13,696 bytes. Login diagnostics distinguish code, polling, exchange and save, with heap/stack measurements at most every fifteen seconds; no credential contents are logged. Received credentials and the rule against replaying an uncertain exchange are preserved.
+
+Host tests: **PASS**, three targeted ASan/UBSan provider checks and three controller checks. Coverage includes a short exchange under 512 bytes, maximum escaped inputs, invalid boundaries and allocation failure. Build and Device tests: **NOT RUN yet**; the installed image remains `3c7ac7e5…`. The actual stuck phase remains unverified until the new diagnostics run on the device.
+
 ### 2026-10-05 — TLS allocation during device authorization
 
 After reopening phone setup, the owner started Codex authorization and the device reported failure. The serial capture showed `mbedtls_ssl_setup` returning allocation error `-0x7F00`. Enabled ESP-IDF's dynamic TLS record buffers, retaining the 16 KiB incoming/4 KiB outgoing limits and certificate verification. Terminal login results now log only result codes and heap measurements.
 
 Build and Host tests: **PASS**, the complete ESP-IDF 5.5.3 gate and independent compatibility review. Generated configuration retains IN 16384/OUT 4096 and peer certificates, without FREE_CONFIG_DATA/CA; the linked map contains the dynamic setup/read/write wrappers. Installed bundle `3c7ac7e5ebf43d6677ad09b5e4a52b40d3fcff0d4afb9754e96b567fda8b20fd`, app 1,715,600 bytes, version `8a0d003`, matching ELF SHA-256 `a945454167e81f1e24bdb6adbbef19bf32c6650ca2a0db07ee61088f3de16635`.
 
-Device tests: **PASS for three hash-verified writes and startup**. At the owner's subsequent request, erased only legacy NVS (`0x9000`, `0x6000` bytes) and portable NVS (`0x7c0000`, `0x40000` bytes) to simulate a new device. Both erases completed; firmware/PHY were retained. Fresh startup matched the archive, selected DIRECT mode, initialized storage and opened phone setup. Real authorization, quota reads and TLS heap margins remain acceptance checks.
+Device tests: **PASS for three hash-verified writes and startup**. At the owner's subsequent request, erased only legacy NVS (`0x9000`, `0x6000` bytes) and portable NVS (`0x7c0000`, `0x40000` bytes) to simulate a new device. Both erases completed; firmware/PHY were retained. Fresh startup matched the archive, selected DIRECT mode, initialized storage and opened phone setup. The owner confirmed the phone page opened and a Codex authorization code appeared; no recurrence of the initial TLS allocation error was observed. GitHub static/companion and firmware checks passed. Completed authorization, quota reads and worst-case TLS heap margins remain acceptance checks.
+
+The owner reported a white screen/reboot after approving authorization. The next serial capture began with reset reason `0x15` (USB UART) and a saved PC in CPU idle, without panic markers. A timed capture had just closed and reopened the monitor; that can change the native USB modem lines and reset the C3. This strongly supports test-tool interference but does not establish completed authorization. Replaced the monitor with one continuous passive connection without control-line writes and requested a new-code authorization attempt. Focused review found no concrete crash defect in token receipt/persistence; worst-case stack headroom remains unmeasured.
 
 ### 2026-10-05 — Phone setup on the dual-stack HTTP socket
 
