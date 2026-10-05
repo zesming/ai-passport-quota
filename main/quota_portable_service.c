@@ -521,6 +521,9 @@ static void complete_login(quota_direct_result_code_t code)
     finish_job(s_login_job, ok ? NULL : result_error(code));
     if (!ok && s_login_new && s_login) { remove_snapshot(s_login->id); lock(); memset(&s_accounts[s_login->slot], 0, sizeof(s_accounts[0])); unlock(); }
     free_credential(&s_login); s_login_started = false;
+    ESP_LOGI(TAG, "login result=%u free=%lu minimum=%lu largest=%lu", (unsigned)code,
+             (unsigned long)esp_get_free_heap_size(), (unsigned long)esp_get_minimum_free_heap_size(),
+             (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
     if (ok) { lock(); s_refresh = true; unlock(); }
     changed();
 }

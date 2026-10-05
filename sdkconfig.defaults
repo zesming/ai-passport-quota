@@ -40,6 +40,8 @@ CONFIG_PM_DFS_INIT_AUTO=n
 # Verify public provider HTTPS using the IDF root certificate bundle.
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+# Allocate TLS record buffers on demand on the C3's limited heap.
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 
 # Quota uses Wi-Fi and USB; no Bluetooth host is required.
 CONFIG_BT_ENABLED=n

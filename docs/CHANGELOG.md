@@ -8,13 +8,19 @@
 
 ## Unreleased
 
+### 2026-10-05 — TLS allocation during device authorization
+
+After reopening phone setup, the owner started Codex authorization and the device reported failure. The serial capture showed `mbedtls_ssl_setup` returning allocation error `-0x7F00`. Enabled ESP-IDF's dynamic TLS record buffers, retaining the 16 KiB incoming/4 KiB outgoing limits and certificate verification. Terminal login results now log only result codes and heap measurements.
+
+Build and Device tests: **NOT RUN yet** for this change. Independent SDK compatibility review, the complete gate and another physical authorization attempt are required before acceptance.
+
 ### 2026-10-05 — Phone setup on the dual-stack HTTP socket
 
 The owner joined the device hotspot and scanned the second QR while its countdown remained active, but the static page returned `setup_closed`. The installed ELF and IDF/lwIP source confirmed that the HTTP server uses an IPv6 dual-stack socket, which reports IPv4 clients as IPv4-mapped IPv6 addresses. The AP gate accepted only `AF_INET`.
 
 The gate now receives a full socket address and normalizes IPv4 or strict `::ffff:IPv4` mappings before applying the same AP-local/subnet restriction. Native IPv6, IPv4-compatible, wrong-interface and truncated addresses remain denied. Responses distinguish `session_expired` from `unauthorized` using the page's existing error codes.
 
-Host tests: **PASS**, three portable suites, including mapped/mixed address families, socket errors, rejected boundaries and both IPv6-enabled/disabled compilation. The previous commit's GitHub static/companion and firmware checks passed. Build and Device tests for this repair: **NOT RUN yet**; the installed image remains `8efa9b06…`. Physical webpage access remains an acceptance check.
+Build and Host tests: **PASS**, the complete ESP-IDF 5.5.3 gate, including mapped/mixed address families, socket errors, rejected boundaries and both IPv6-enabled/disabled host compilation. Installed bundle `f5d4161b2b474884e2e98c4bc59ca463e9515c38dad8c53058f7943b2ebdbef6`, app 1,711,136 bytes, version `2bec2e2`, matching ELF SHA-256 `172197d98c9cb5ebaf3e03e5db742cf49518430d304eaa7f44a843f9db26b5f3`. Device tests: **PASS for three hash-verified component writes, startup, cache restoration and AP readiness**; NVS/PHY were untouched. The owner subsequently started authorization from the phone page; provider authorization failed with the TLS allocation error recorded above. Full provisioning and provider acceptance remain unverified.
 
 ### 2026-10-05 — Experimental device-owned accounts and phone setup
 

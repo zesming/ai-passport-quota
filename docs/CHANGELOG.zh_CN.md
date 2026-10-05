@@ -8,13 +8,19 @@
 
 ## Unreleased
 
+### 2026-10-05 — 设备授权的 TLS 内存分配
+
+手机设置恢复后，用户开始 Codex 授权，设备提示失败。串口捕获到 `mbedtls_ssl_setup` 返回分配错误 `-0x7F00`。启用 ESP-IDF 的动态 TLS 记录缓冲，保留 16 KiB 接收/4 KiB 发送上限及证书验证。授权结束日志仅记录结果代码与堆内存测量。
+
+本改动 Build 与 Device tests：**尚未运行**。验收前需完成独立 SDK 兼容复核、完整检查及再次真机授权。
+
 ### 2026-10-05 — 手机设置的双栈 HTTP 兼容
 
 用户连接设备热点、在倒计时有效时扫描第二步二维码，静态网页却返回 `setup_closed`。已安装 ELF 与 IDF/lwIP 源码确认：HTTP 服务使用 IPv6 双栈套接字，IPv4 客户端以 IPv4-mapped IPv6 地址返回，原热点校验只接受 `AF_INET`。
 
 现完整接收套接字地址，将 IPv4 或严格 `::ffff:IPv4` 映射归一化后，保持原热点本地地址/子网限制。继续拒绝原生 IPv6、IPv4-compatible、错误接口与截断地址。错误使用页面既有代码，区分 `session_expired` 与 `unauthorized`。
 
-Host tests：**PASS**，三个便携检查，覆盖映射/混合地址类型、套接字错误、拒绝边界及 IPv6 启用/关闭两种编译。前一提交的 GitHub 静态/电脑端和固件检查通过。本修复 Build 与 Device tests：**尚未运行**；当前已安装镜像仍为 `8efa9b06…`。手机网页实际打开仍需验收。
+Build 与 Host tests：**PASS**，ESP-IDF 5.5.3 完整检查，覆盖映射/混合地址类型、套接字错误、拒绝边界及 IPv6 启用/关闭两种主机编译。已安装归档 `f5d4161b2b474884e2e98c4bc59ca463e9515c38dad8c53058f7943b2ebdbef6`，应用 1,711,136 字节，版本 `2bec2e2`，匹配 ELF SHA-256 `172197d98c9cb5ebaf3e03e5db742cf49518430d304eaa7f44a843f9db26b5f3`。Device tests：**三段写入哈希校验、启动、缓存恢复和热点就绪 PASS**；未写入 NVS/PHY。随后用户已从手机网页开始授权；来源授权因上方记录的 TLS 分配错误失败。完整配网及来源验收尚未完成。
 
 ### 2026-10-05 — 实验性设备账户与手机设置
 
