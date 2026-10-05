@@ -20,6 +20,8 @@ Build: **PASS**, final complete ESP-IDF 5.5.3 gate and archive verification; app
 
 Installed bundle: `build/firmware/8efa9b06f73fb16ed75f7f09d3a1351fe05f74ff487da84724a0f03e0a9052a1/`; matching ELF SHA-256 `71ddcc75179377d5f369100ee6ceee686c8e307aef779cc12709cd99eb05f099`, version `ad2dab9-dirty`. Device tests: **PASS for all three component writes, startup and legacy cache restoration**. Writes at `0x0` / `0x8000` / `0x10000` were hash-verified; no NVS/PHY write or chip erase. Before the first partition update, the new 256 KiB region was verified erased. The final 25-second capture matched the ELF prefix, initialized portable storage and reached application readiness without observed crash markers. Raw logs remain private and the serial port is released.
 
+GitHub companion tests/build also passed. The first Linux host run exposed a test-harness indentation warning and a platform-specific time declaration. The harness now stubs clock writes and uses unambiguous formatting; its three local checks pass. Production firmware is unchanged by this follow-up.
+
 Unverified: real iPhone/Android/HarmonyOS provisioning, independent provider authorization/renewal and computer-off quota reads, real TLS/max-token heap margins, physical new QR/font/button regression, extended offline recovery and measured current. Host/browser evidence does not replace these checks.
 
 ### 2026-10-05 — Remove desktop autostart; portable connectivity research

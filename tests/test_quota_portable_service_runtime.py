@@ -17,6 +17,10 @@ class PortableServiceRuntime(unittest.TestCase):
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
+#define settimeofday test_settimeofday
+static int test_settimeofday(const struct timeval *value, const void *zone) {
+    (void)value; (void)zone; return 0;
+}
 typedef struct {
     bool (*wifi_ready)(void);bool (*wifi_stop)(void);void (*notify)(void);void (*wake)(void);
     bool (*display_current)(uint32_t generation);
@@ -44,7 +48,8 @@ static bool quota_store_load_config(quota_portable_config_t *out) {
 }
 static bool quota_store_save_config(const quota_portable_config_t *out) {(void)out;return true;}
 static bool quota_store_load_credential(uint8_t slot,quota_direct_credential_t *out) {
-    if(slot>1)return false;memset(out,0,sizeof(*out));out->slot=slot;out->generation=1;
+    if(slot>1) return false;
+    memset(out,0,sizeof(*out));out->slot=slot;out->generation=1;
     out->provider=slot?QUOTA_PROVIDER_DEEPSEEK:QUOTA_PROVIDER_CODEX;
     snprintf(out->id,sizeof(out->id),"%032x",slot+1);out->auth_state=QUOTA_PORTABLE_AUTH_PENDING;
     out->refresh_inflight=slot==0;return true;
