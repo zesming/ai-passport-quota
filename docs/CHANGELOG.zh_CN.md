@@ -12,7 +12,9 @@
 
 手机设置恢复后，用户开始 Codex 授权，设备提示失败。串口捕获到 `mbedtls_ssl_setup` 返回分配错误 `-0x7F00`。启用 ESP-IDF 的动态 TLS 记录缓冲，保留 16 KiB 接收/4 KiB 发送上限及证书验证。授权结束日志仅记录结果代码与堆内存测量。
 
-本改动 Build 与 Device tests：**尚未运行**。验收前需完成独立 SDK 兼容复核、完整检查及再次真机授权。
+Build 与 Host tests：**PASS**，ESP-IDF 5.5.3 完整检查及独立兼容复核。生成配置保留 IN 16384/OUT 4096 和对端证书，未开启 FREE_CONFIG_DATA/CA；链接映射包含动态 setup/read/write 包装函数。已安装归档 `3c7ac7e5ebf43d6677ad09b5e4a52b40d3fcff0d4afb9754e96b567fda8b20fd`，应用 1,715,600 字节，版本 `8a0d003`，匹配 ELF SHA-256 `a945454167e81f1e24bdb6adbbef19bf32c6650ca2a0db07ee61088f3de16635`。
+
+Device tests：**三段写入哈希校验和启动 PASS**。应用户随后要求，仅擦除旧 NVS（`0x9000`，`0x6000` 字节）和 portable NVS（`0x7c0000`，`0x40000` 字节），模拟新机。两次擦除均完成，保留固件/PHY。全新启动匹配归档，选择 DIRECT 方式、初始化存储并打开手机设置。真实授权、额度读取和 TLS 内存余量仍待验收。
 
 ### 2026-10-05 — 手机设置的双栈 HTTP 兼容
 

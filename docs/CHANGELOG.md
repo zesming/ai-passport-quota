@@ -12,7 +12,9 @@
 
 After reopening phone setup, the owner started Codex authorization and the device reported failure. The serial capture showed `mbedtls_ssl_setup` returning allocation error `-0x7F00`. Enabled ESP-IDF's dynamic TLS record buffers, retaining the 16 KiB incoming/4 KiB outgoing limits and certificate verification. Terminal login results now log only result codes and heap measurements.
 
-Build and Device tests: **NOT RUN yet** for this change. Independent SDK compatibility review, the complete gate and another physical authorization attempt are required before acceptance.
+Build and Host tests: **PASS**, the complete ESP-IDF 5.5.3 gate and independent compatibility review. Generated configuration retains IN 16384/OUT 4096 and peer certificates, without FREE_CONFIG_DATA/CA; the linked map contains the dynamic setup/read/write wrappers. Installed bundle `3c7ac7e5ebf43d6677ad09b5e4a52b40d3fcff0d4afb9754e96b567fda8b20fd`, app 1,715,600 bytes, version `8a0d003`, matching ELF SHA-256 `a945454167e81f1e24bdb6adbbef19bf32c6650ca2a0db07ee61088f3de16635`.
+
+Device tests: **PASS for three hash-verified writes and startup**. At the owner's subsequent request, erased only legacy NVS (`0x9000`, `0x6000` bytes) and portable NVS (`0x7c0000`, `0x40000` bytes) to simulate a new device. Both erases completed; firmware/PHY were retained. Fresh startup matched the archive, selected DIRECT mode, initialized storage and opened phone setup. Real authorization, quota reads and TLS heap margins remain acceptance checks.
 
 ### 2026-10-05 — Phone setup on the dual-stack HTTP socket
 
