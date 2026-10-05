@@ -9,8 +9,6 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "service:install": "node scripts/macos-service.mjs install",
-    "service:remove": "node scripts/macos-service.mjs remove",
     "preview:readme": "node scripts/readme-preview.mjs"
   },
   "dependencies": {

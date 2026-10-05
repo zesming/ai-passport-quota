@@ -69,10 +69,6 @@ export async function createApplication({ directory = process.env.AIQ_STATE_DIR 
   };
   pairing = new PairingService(directory, dataHandler, { dataPort, interfaces });
   if (autoRestore) await pairing.restore();
-  const pairingRestoreTimer = autoRestore ? setInterval(() => {
-    if (!pairing.publicState().enabled) pairing.restore().catch(() => {});
-  }, 15000) : null;
-  pairingRestoreTimer?.unref();
   const frontend = path.resolve(fileURLToPath(new URL('../dist/client/', import.meta.url)));
   const admin = http.createServer(async (request, response) => {
     try {
@@ -124,7 +120,7 @@ export async function createApplication({ directory = process.env.AIQ_STATE_DIR 
   return {
     admin, store, manager, pairing,
     async listen() { await new Promise((resolve, reject) => { admin.once('error', reject); admin.listen(adminPort, '127.0.0.1', resolve); }); for (const account of store.state.accounts) manager.schedule(account.id); return admin.address(); },
-    async close() { clearInterval(pairingRestoreTimer); clearInterval(refreshTimer); manager.close(); await pairing.close(); if (admin.listening) { admin.closeAllConnections(); await new Promise(resolve => admin.close(resolve)); } await store.pendingWrite.catch(() => {}); },
+    async close() { clearInterval(refreshTimer); manager.close(); await pairing.close(); if (admin.listening) { admin.closeAllConnections(); await new Promise(resolve => admin.close(resolve)); } await store.pendingWrite.catch(() => {}); },
   };
 }
 async function main() {

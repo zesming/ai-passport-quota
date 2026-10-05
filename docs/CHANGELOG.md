@@ -8,6 +8,14 @@
 
 ## Unreleased
 
+### 2026-10-05 — Remove desktop autostart; portable connectivity research
+
+Removed the installed macOS LaunchAgent, installer commands, supervision and paired-endpoint retry timer at the owner's request. Restored manual companion startup and removed the feature's tests and README instructions. Account profiles, settings and pairing remain in place; no service is listening on 4317/4318.
+
+Recorded the [portable connectivity proposal](development/portable-connectivity.md): device-owned authorization and direct HTTPS, QR/SoftAP phone setup, hotspot fallback and optional enterprise EAP or native BLE relay. Provider authorization/support and real-device resource checks remain prerequisites; this is not implemented functionality.
+
+Build: **PASS**, companion production build. Host tests: **PASS**, 52 companion tests and repository checks. Device tests: **NOT RUN**; firmware is unchanged and was not flashed. Unverified: standalone provider login/renewal, phone provisioning, enterprise Wi-Fi and BLE relay.
+
 ### 2026-10-05 — Companion startup and network restoration
 
 The reported wake/manual-refresh failures were traced to the desktop companion not running after a computer restart. Restarting it restored the paired endpoint and provider collection; the owner confirmed device refresh recovered. Added a user-level macOS login service with restart supervision, install/remove commands, preserved configuration on reinstall and bounded startup checks. A loaded-job replacement retries transient launchd unregister errors. No credentials are stored in its plist; logs remain private.
