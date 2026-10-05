@@ -853,7 +853,7 @@ quota_action_t quota_navigation_handle(quota_navigation_t *navigation,
         } else if (navigation->screen == QUOTA_SCREEN_NETWORK) {
             navigation->network_focus = wrap_index(navigation->network_focus, direction, 2);
         } else if (navigation->screen == QUOTA_SCREEN_PHONE) {
-            navigation->phone_step = wrap_index(navigation->phone_step, direction, 2);
+            navigation->phone_step = wrap_index(navigation->phone_step, direction, 3);
         }
         return QUOTA_ACTION_NONE;
     }
@@ -940,10 +940,7 @@ quota_action_t quota_navigation_handle(quota_navigation_t *navigation,
             navigation->phone_step = 0;
             return QUOTA_ACTION_OPEN_PHONE;
         case QUOTA_SCREEN_PHONE:
-            if (navigation->phone_step == 0) {
-                navigation->phone_step = 1;
-                return QUOTA_ACTION_RENEW_PHONE;
-            }
+            navigation->phone_step = wrap_index(navigation->phone_step, 1, 3);
             return QUOTA_ACTION_RENEW_PHONE;
         case QUOTA_SCREEN_AUTH:
             return QUOTA_ACTION_NONE;

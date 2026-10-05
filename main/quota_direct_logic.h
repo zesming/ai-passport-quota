@@ -37,11 +37,18 @@ typedef struct {
 /* Metadata decoding only. This does not verify a JWT signature. Input tokens
  * must come exclusively from the fixed, certificate-verified auth endpoint. */
 bool quota_direct_parse_identity(const char *jwt, quota_direct_identity_t *identity);
-bool quota_direct_parse_tokens(const char *body, size_t length,
+typedef struct quota_direct_tokens quota_direct_tokens_t;
+/* Prepare owns detached token strings, never the input body. The HTTP owner
+ * releases its body between stages, after the envelope DOM has been deleted.
+ * Finish parses one JWT at a time and writes outputs only after all checks.
+ * Destroy wipes every detached secret, including after failed validation. */
+bool quota_direct_tokens_prepare(const char *body, size_t length, quota_direct_tokens_t **tokens);
+bool quota_direct_tokens_finish(const quota_direct_tokens_t *tokens,
                                const quota_direct_identity_t *expected,
                                char *access, size_t access_capacity,
                                char *refresh, size_t refresh_capacity,
                                quota_direct_identity_t *identity);
+void quota_direct_tokens_destroy(quota_direct_tokens_t *tokens);
 bool quota_direct_parse_device_code(const char *body, size_t length,
                                     quota_direct_device_code_t *code);
 bool quota_direct_parse_authorization(const char *body, size_t length,

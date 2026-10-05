@@ -42,6 +42,9 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
 # Allocate TLS record buffers on demand on the C3's limited heap.
 CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+# Release verified peer certificates after the handshake; TLS 1.2 remains enabled.
+CONFIG_MBEDTLS_SSL_KEEP_PEER_CERTIFICATE=n
+CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=n
 
 # Quota uses Wi-Fi and USB; no Bluetooth host is required.
 CONFIG_BT_ENABLED=n

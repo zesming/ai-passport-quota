@@ -100,3 +100,10 @@ test('oversized outbound configuration is rejected before USB transmission', asy
   await assert.rejects(session.send(new Uint8Array(4097)), error => error.code === 'frame_too_long');
   assert.equal(events.includes('write'), false);
 });
+
+test('partial-save mode switch failure tells the user the pairing config was saved', () => {
+  assert.equal(
+    serialErrorMessage({ code: 'device_mode_switch_failed' }),
+    '电脑连接配置已保存，但切换到电脑同步模式失败。请重试配对或在小屏设置中切换模式。',
+  );
+});

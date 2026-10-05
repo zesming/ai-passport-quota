@@ -47,7 +47,7 @@ static bool valid_utf8(const unsigned char *bytes, size_t length)
 
 static bool unique_tree(const cJSON *node, unsigned depth, unsigned *nodes)
 {
-    if (!node || depth > 24 || ++*nodes > 4096) return false;
+    if (!node || depth > 24 || ++*nodes > 128) return false;
     if (cJSON_IsObject(node)) {
         for (const cJSON *item = node->child; item; item = item->next) {
             if (!item->string) return false;
@@ -60,11 +60,22 @@ static bool unique_tree(const cJSON *node, unsigned depth, unsigned *nodes)
     return true;
 }
 
+static void secure_json_delete(cJSON *json)
+{
+    if (!json) return;
+    for (cJSON *item = json; item; item = item->next) {
+        secure_json_delete(item->child); item->child = NULL;
+        if (cJSON_IsString(item) && item->valuestring)
+            quota_direct_secure_clear(item->valuestring, strlen(item->valuestring));
+    }
+    cJSON_Delete(json);
+}
+
 static cJSON *parse_json(const char *body, size_t length)
 {
     if (!body || !length || length > QUOTA_DIRECT_BODY_BYTES ||
         !valid_utf8((const unsigned char *)body, length)) return NULL;
-    bool string = false, escaped = false; unsigned depth = 0;
+    bool string = false, escaped = false; unsigned depth = 0, complexity = 1;
     for (size_t i = 0; i < length; ++i) {
         char byte = body[i];
         if (escaped) {
@@ -74,7 +85,8 @@ static cJSON *parse_json(const char *body, size_t length)
         }
         if (string && byte == '\\') { escaped = true; continue; }
         if (byte == '"') { string = !string; continue; }
-        if (!string && (byte == '{' || byte == '[')) { if (++depth > 24) return NULL; }
+        if (!string && (byte == '{' || byte == '[')) { if (++depth > 24 || ++complexity > 128) return NULL; }
+        if (!string && byte == ',' && ++complexity > 128) return NULL;
         if (!string && (byte == '}' || byte == ']')) { if (!depth) return NULL; --depth; }
     }
     const char *end = NULL;
@@ -84,7 +96,7 @@ static cJSON *parse_json(const char *body, size_t length)
         if (*tail != ' ' && *tail != '\t' && *tail != '\r' && *tail != '\n') complete = false;
     unsigned nodes = 0;
     if (!complete || !cJSON_IsObject(json) || !unique_tree(json, 0, &nodes)) {
-        cJSON_Delete(json); return NULL;
+        secure_json_delete(json); return NULL;
     }
     return json;
 }
@@ -177,48 +189,72 @@ bool quota_direct_parse_identity(const char *jwt, quota_direct_identity_t *ident
         optional_string(email, parsed.email, sizeof(parsed.email)) &&
         optional_string(field(auth, "chatgpt_plan_type"), parsed.plan, sizeof(parsed.plan)) &&
         (!expiry || uint_field(expiry, 9007199254740991ULL, &parsed.expires_at));
-    cJSON_Delete(root);
+    secure_json_delete(root);
     if (valid) *identity = parsed;
     return valid;
 }
 
-bool quota_direct_parse_tokens(const char *body, size_t length,
+struct quota_direct_tokens { cJSON *access, *refresh, *id; };
+
+void quota_direct_tokens_destroy(quota_direct_tokens_t *tokens)
+{
+    if (!tokens) return;
+    secure_json_delete(tokens->access); secure_json_delete(tokens->refresh); secure_json_delete(tokens->id);
+    quota_direct_secure_clear(tokens, sizeof(*tokens)); free(tokens);
+}
+
+bool quota_direct_tokens_prepare(const char *body, size_t length, quota_direct_tokens_t **tokens)
+{
+    if (!tokens) return false;
+    *tokens = NULL;
+    cJSON *root = parse_json(body, length);
+    if (!root) return false;
+    cJSON *a = cJSON_GetObjectItemCaseSensitive(root, "access_token");
+    cJSON *r = cJSON_GetObjectItemCaseSensitive(root, "refresh_token");
+    cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "id_token");
+    bool valid = cJSON_IsString(a) && quota_direct_token_is_safe(a->valuestring, QUOTA_DIRECT_ACCESS_BYTES) &&
+        (!r || cJSON_IsNull(r) || (cJSON_IsString(r) && quota_direct_token_is_safe(r->valuestring, QUOTA_DIRECT_REFRESH_BYTES))) &&
+        (!id || cJSON_IsNull(id) || (cJSON_IsString(id) && quota_direct_token_is_safe(id->valuestring, QUOTA_DIRECT_ID_TOKEN_BYTES)));
+    quota_direct_tokens_t *parsed = valid ? calloc(1, sizeof(*parsed)) : NULL;
+    if (parsed) {
+        parsed->access = cJSON_DetachItemViaPointer(root, a);
+        if (r && !cJSON_IsNull(r)) parsed->refresh = cJSON_DetachItemViaPointer(root, r);
+        if (id && !cJSON_IsNull(id)) parsed->id = cJSON_DetachItemViaPointer(root, id);
+        *tokens = parsed;
+    }
+    secure_json_delete(root); return parsed != NULL;
+}
+
+bool quota_direct_tokens_finish(const quota_direct_tokens_t *tokens,
                                const quota_direct_identity_t *expected,
                                char *access, size_t access_capacity,
                                char *refresh, size_t refresh_capacity,
                                quota_direct_identity_t *identity)
 {
-    if (!access || !refresh || !identity) return false;
-    cJSON *root = parse_json(body, length);
-    if (!root) return false;
-    const cJSON *a = field(root, "access_token"), *r = field(root, "refresh_token");
-    if (cJSON_IsNull(r)) r = NULL; /* serde Option in the official client. */
-    const cJSON *id = field(root, "id_token");
+    if (!tokens || !access || !refresh || !identity) return false;
+    const cJSON *a = tokens->access, *r = tokens->refresh, *id = tokens->id;
     quota_direct_identity_t parsed = {0};
-    bool valid = cJSON_IsString(a) &&
-        quota_direct_token_is_safe(a->valuestring, QUOTA_DIRECT_ACCESS_BYTES) &&
-        strlen(a->valuestring) < access_capacity &&
-        (r ? cJSON_IsString(r) && quota_direct_token_is_safe(r->valuestring, QUOTA_DIRECT_REFRESH_BYTES) &&
-             strlen(r->valuestring) < refresh_capacity : expected && quota_direct_token_is_safe(refresh, QUOTA_DIRECT_REFRESH_BYTES));
+    bool valid = a && strlen(a->valuestring) < access_capacity &&
+        (r ? strlen(r->valuestring) < refresh_capacity : expected && quota_direct_token_is_safe(refresh, QUOTA_DIRECT_REFRESH_BYTES));
+    if (valid) {
+        /* ID metadata tree is released before the access JWT is decoded. */
+        if (id) valid = quota_direct_parse_identity(id->valuestring, &parsed);
+        else if (expected) parsed = *expected;
+        else valid = false;
+    }
     if (valid) {
         cJSON *access_root = jwt_object(a->valuestring);
         valid = access_root != NULL;
-        if (id && !cJSON_IsNull(id)) {
-            valid = valid && cJSON_IsString(id) && quota_direct_parse_identity(id->valuestring, &parsed);
-        } else if (expected) parsed = *expected;
-        else valid = false;
         const cJSON *auth = field(access_root, "https://api.openai.com/auth");
         valid = valid && (!auth || cJSON_IsNull(auth) || cJSON_IsObject(auth));
-        const cJSON *aid = field(auth, "chatgpt_account_id");
-        const cJSON *uid = field(auth, "chatgpt_user_id");
+        const cJSON *aid = field(auth, "chatgpt_account_id"), *uid = field(auth, "chatgpt_user_id");
         if (!uid) uid = field(auth, "user_id");
         if (aid) valid = valid && cJSON_IsString(aid) && !strcmp(aid->valuestring, parsed.account_id);
         if (uid) valid = valid && cJSON_IsString(uid) && !strcmp(uid->valuestring, parsed.user_id);
         valid = valid && uint_field(field(access_root, "exp"), 9007199254740991ULL, &parsed.expires_at) && parsed.expires_at;
-        cJSON_Delete(access_root);
+        secure_json_delete(access_root);
         if (expected) {
-            valid = valid && strcmp(expected->account_id, parsed.account_id) == 0 &&
-                strcmp(expected->user_id, parsed.user_id) == 0;
+            valid = valid && !strcmp(expected->account_id, parsed.account_id) && !strcmp(expected->user_id, parsed.user_id);
             if (!parsed.email[0]) memcpy(parsed.email, expected->email, sizeof(parsed.email));
             if (!parsed.plan[0]) memcpy(parsed.plan, expected->plan, sizeof(parsed.plan));
         }
@@ -226,17 +262,10 @@ bool quota_direct_parse_tokens(const char *body, size_t length,
     if (valid) {
         quota_direct_secure_clear(access, access_capacity);
         memcpy(access, a->valuestring, strlen(a->valuestring) + 1);
-        if (r) {
-            quota_direct_secure_clear(refresh, refresh_capacity);
-            memcpy(refresh, r->valuestring, strlen(r->valuestring) + 1);
-        }
+        if (r) { quota_direct_secure_clear(refresh, refresh_capacity); memcpy(refresh, r->valuestring, strlen(r->valuestring) + 1); }
         *identity = parsed;
     }
-    /* cJSON owns copies of credentials. Wipe before freeing. */
-    if (cJSON_IsString(a)) quota_direct_secure_clear(a->valuestring, strlen(a->valuestring));
-    if (cJSON_IsString(r)) quota_direct_secure_clear(r->valuestring, strlen(r->valuestring));
-    if (cJSON_IsString(id)) quota_direct_secure_clear(id->valuestring, strlen(id->valuestring));
-    cJSON_Delete(root); return valid;
+    return valid;
 }
 
 bool quota_direct_parse_device_code(const char *body, size_t length,
@@ -264,7 +293,7 @@ bool quota_direct_parse_device_code(const char *body, size_t length,
     valid = valid && seconds >= 1 && seconds <= 300;
     parsed.interval_seconds = (uint32_t)seconds;
     if (valid) *code = parsed;
-    cJSON_Delete(root); return valid;
+    secure_json_delete(root); return valid;
 }
 
 bool quota_direct_parse_authorization(const char *body, size_t length,
@@ -280,7 +309,7 @@ bool quota_direct_parse_authorization(const char *body, size_t length,
     const cJSON *auth = field(root, "authorization_code"), *verifier = field(root, "code_verifier");
     if (cJSON_IsString(auth)) quota_direct_secure_clear(auth->valuestring, strlen(auth->valuestring));
     if (cJSON_IsString(verifier)) quota_direct_secure_clear(verifier->valuestring, strlen(verifier->valuestring));
-    cJSON_Delete(root); return valid;
+    secure_json_delete(root); return valid;
 }
 
 static bool parse_usage_window(const cJSON *value, quota_account_t *account)
@@ -341,7 +370,7 @@ bool quota_direct_parse_codex_usage(const char *body, size_t length,
         ex.has_banked_reset = valid;
     }
     if (valid) { *account = parsed; *extras = ex; }
-    cJSON_Delete(root); return valid;
+    secure_json_delete(root); return valid;
 }
 
 static int64_t civil_days(int year, unsigned month, unsigned day)
@@ -432,7 +461,7 @@ bool quota_direct_parse_reset_details(const char *body, size_t length, quota_cod
         extras->has_next_reset_expiry = complete && next;
         extras->next_reset_expires_at = complete ? next : 0;
     }
-    cJSON_Delete(root); return valid;
+    secure_json_delete(root); return valid;
 }
 
 static bool decimal_string(const cJSON *value, char *output, size_t capacity)
@@ -464,7 +493,7 @@ bool quota_direct_parse_deepseek(const char *body, size_t length, quota_balance_
             decimal_string(field(entry, "topped_up_balance"), out->topped_up_balance, sizeof(out->topped_up_balance));
     }
     if (valid) *balance = parsed;
-    cJSON_Delete(root); return valid;
+    secure_json_delete(root); return valid;
 }
 
 bool quota_direct_form_encode(const char *value, char *output, size_t capacity)

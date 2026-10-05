@@ -61,6 +61,13 @@ int main(void) {
     assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"settings_save\",\"refresh_seconds\":301,\"auto_refresh\":false,\"screen_timeout_seconds\":0}"));
     assert(parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"refresh\"}"));
     assert(parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"reconnect\"}"));
+    assert(parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"operation_cancel\",\"target_request_id\":\"abcdef02\"}"));
+    assert(command.op == QUOTA_PORTABLE_OP_OPERATION_CANCEL && !strcmp(command.target_request_id, "abcdef02"));
+    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"operation_cancel\"}"));
+    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"operation_cancel\",\"target_request_id\":\"ABCDEF02\"}"));
+    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"operation_cancel\",\"target_request_id\":\"abcdef023\"}"));
+    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"refresh\",\"accepted_mode\":0}"));
+    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"refresh\",\"accepted_config_generation\":1}"));
     assert(!parse("{\"v\":1,\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"refresh\"}"));
     assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"refresh\",\"unknown\":1}"));
     assert(!parse("{\"v\":1,\"request_id\":\"ABCDEF01\",\"op\":\"refresh\"}"));
@@ -68,6 +75,28 @@ int main(void) {
     assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"deepseek_save\",\"label\":\"X\\nY\",\"api_key\":\"sk-fake\"}"));
     assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"refresh\"}junk"));
     assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"refresh\",\"x\":[[[[1]]]]}"));
+    assert(parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"account_activate\",\"account_id\":\"0123456789abcdef0123456789abcdef\"}"));
+    assert(command.op == QUOTA_PORTABLE_OP_ACCOUNT_ACTIVATE);
+    assert(parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"account_activate\",\"account_id\":\"0123456789abcdef0123456789abcdef\",\"replace_active_id\":\"abcdef0123456789abcdef0123456789\"}"));
+    assert(command.op == QUOTA_PORTABLE_OP_ACCOUNT_ACTIVATE);
+    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"account_activate\",\"account_id\":\"0123456789abcdef0123456789abcdef\",\"replace_active_id\":\"0123456789abcdef0123456789abcdef\"}"));
+    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"account_activate\"}"));
+    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"account_activate\",\"account_id\":\"0123456789abcdef0123456789abcdef\",\"replace_active_id\":\"bad\"}"));
+    assert(parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"account_deactivate\",\"account_id\":\"0123456789abcdef0123456789abcdef\"}"));
+    assert(command.op == QUOTA_PORTABLE_OP_ACCOUNT_DEACTIVATE);
+    assert(parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"external_import\",\"remote_account_id\":\"0123456789abcdef0123456789abcdef\"}"));
+    assert(command.op == QUOTA_PORTABLE_OP_EXTERNAL_IMPORT);
+    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"external_import\",\"remote_account_id\":\"bad\"}"));
+    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"external_import\",\"remote_account_id\":\"0123456789abcdef0123456789abcdef\",\"provider\":\"codex\"}"));
+    assert(parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"network_activate\",\"replace_index\":2}"));
+    assert(command.op == QUOTA_PORTABLE_OP_NETWORK_ACTIVATE);
+    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"network_activate\",\"replace_index\":3}"));
+    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"network_activate\"}"));
+    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"network_activate\",\"replace_index\":1.5}"));
+    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"account_activate\",\"account_id\":\"0123456789abcdef0123456789abcdef\",\"row_generation\":1}"));
+    assert(parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"mode_select\",\"mode\":\"direct\"}"));
+    assert(command.op == QUOTA_PORTABLE_OP_MODE_SELECT);
+    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"refresh\",\"endpoint_epoch\":1}"));
     unsigned char zero[sizeof(command)] = {0};
     assert(memcmp(&command, zero, sizeof(command)) == 0); /* Rejected secrets cleared. */
     char huge[QUOTA_PORTABLE_COMMAND_BYTES + 2]; memset(huge, ' ', sizeof(huge));
@@ -219,10 +248,12 @@ static item_t items[10],pending;
 static size_t item_count;
 static bool fail_commit;
 static int commits;
+static esp_err_t open_error, query_error, data_error;
 esp_err_t nvs_flash_init_partition(const char *part) {assert(!strcmp(part,"portable"));return ESP_OK;}
 esp_err_t nvs_open_from_partition(const char *part,const char *space,int mode,nvs_handle_t *out) {
     assert(!strcmp(part,"portable")&&!strcmp(space,"quota_port"));
-    assert(mode==NVS_READONLY||mode==NVS_READWRITE);*out=1;return ESP_OK;
+    assert(mode==NVS_READONLY||mode==NVS_READWRITE);
+    if(open_error!=ESP_OK)return open_error;*out=1;return ESP_OK;
 }
 void nvs_close(nvs_handle_t h) {assert(h==1);memset(&pending,0,sizeof(pending));}
 static item_t *find(const char *key) {
@@ -230,9 +261,10 @@ static item_t *find(const char *key) {
     return NULL;
 }
 esp_err_t nvs_get_blob(nvs_handle_t h,const char *key,void *out,size_t *bytes) {
-    assert(h==1);item_t *item=find(key);if (!item) return 1;
-    if (!out) {*bytes=item->length;return ESP_OK;}
-    if (*bytes<item->length) return 1;
+    assert(h==1);item_t *item=find(key);if (!item) return ESP_ERR_NVS_NOT_FOUND;
+    if (!out) {if(query_error!=ESP_OK)return query_error;*bytes=item->length;return ESP_OK;}
+    if(data_error!=ESP_OK)return data_error;
+    if (*bytes<item->length) return ESP_FAIL;
     memcpy(out,item->data,item->length);*bytes=item->length;return ESP_OK;
 }
 esp_err_t nvs_set_blob(nvs_handle_t h,const char *key,const void *value,size_t bytes) {
@@ -245,8 +277,9 @@ esp_err_t nvs_commit(nvs_handle_t h) {
     *item=pending;return ESP_OK;
 }
 static void assert_workspace_clear(void) {
-    const unsigned char *p=(const void *)&s_credential_record;
-    for(size_t i=0;i<sizeof(s_credential_record);i++) assert(p[i]==0);
+    if (!s_credential_record) return;
+    const unsigned char *p=(const void *)s_credential_record;
+    for(size_t i=0;i<sizeof(*s_credential_record);i++) assert(p[i]==0);
 }
 int main(void) {
     assert(quota_store_init());
@@ -255,12 +288,68 @@ int main(void) {
     config.network_count=1;strcpy(config.networks[0].ssid,"Fake hotspot");strcpy(config.networks[0].password,"password");
     assert(quota_store_save_config(&config));assert(quota_store_load_config(&restored_config));
     assert(!strcmp(restored_config.networks[0].ssid,"Fake hotspot"));
+    memset(&restored_config,0xa5,sizeof(restored_config));
+    open_error=ESP_ERR_NVS_NOT_FOUND;
+    assert(quota_store_load_config_result(&restored_config)==QUOTA_STORE_READ_MISSING);
+    assert(!restored_config.network_count);
+    assert(!quota_store_load_config(&restored_config)); /* Legacy bool wrapper keeps its false result. */
+    open_error=ESP_ERR_NVS_PART_NOT_FOUND;
+    assert(quota_store_load_config_result(&restored_config)==QUOTA_STORE_READ_IO_ERROR);
+    open_error=ESP_FAIL;
+    assert(quota_store_load_config_result(&restored_config)==QUOTA_STORE_READ_IO_ERROR);
+    open_error=ESP_ERR_NO_MEM;
+    assert(quota_store_load_config_result(&restored_config)==QUOTA_STORE_READ_NO_MEMORY);
+    open_error=ESP_OK;query_error=ESP_FAIL;
+    assert(quota_store_load_config_result(&restored_config)==QUOTA_STORE_READ_IO_ERROR);
+    query_error=ESP_OK;
+    item_t *stored_config=find("config");assert(stored_config);
+    size_t saved_config_length=stored_config->length;
+    stored_config->length--;
+    assert(quota_store_load_config_result(&restored_config)==QUOTA_STORE_READ_INVALID);
+    assert(!quota_store_load_config(&restored_config));stored_config->length=saved_config_length;
+    config_record_t saved_config_record;memcpy(&saved_config_record,stored_config->data,sizeof(saved_config_record));
+    stored_config->data[offsetof(config_record_t,crc)]^=1;
+    assert(quota_store_load_config_result(&restored_config)==QUOTA_STORE_READ_INVALID);
+    memcpy(stored_config->data,&saved_config_record,sizeof(saved_config_record));
+    config_record_t malformed_config=saved_config_record;
+    malformed_config.value.network_count=QUOTA_PORTABLE_NETWORKS+1;
+    malformed_config.crc=store_crc(&malformed_config,offsetof(config_record_t,crc));
+    memcpy(stored_config->data,&malformed_config,sizeof(malformed_config));
+    assert(quota_store_load_config_result(&restored_config)==QUOTA_STORE_READ_INVALID);
+    memcpy(stored_config->data,&saved_config_record,sizeof(saved_config_record));
     quota_portable_credential_t *c=calloc(1,sizeof(*c)),*read=calloc(1,sizeof(*read));assert(c&&read);
     strcpy(c->id,"0123456789abcdef0123456789abcdef");c->generation=1;c->slot=0;
     c->provider=QUOTA_PROVIDER_CODEX;c->auth_state=QUOTA_PORTABLE_AUTH_READY;
     strcpy(c->server_account_id,"fake-workspace");strcpy(c->access_token,"old-access");strcpy(c->refresh_token,"old-refresh");
     unsigned allocations=store_allocations;reject_store_allocation=true;
-    assert(quota_store_save_credential(0,c));assert(quota_store_load_credential(0,read));
+    assert(!quota_store_credential_acquire());
+    assert(!quota_store_save_credential(0,c)); assert(!s_credential_record);
+    reject_store_allocation=false;
+    open_error=ESP_OK;query_error=ESP_OK;data_error=ESP_OK;
+    memset(read,0xa5,sizeof(*read));
+    assert(quota_store_load_credential_result(3,read)==QUOTA_STORE_READ_MISSING);
+    assert(read->id[0]==0&&read->refresh_token[0]==0);
+    assert(!quota_store_load_credential(3,read));
+    reject_store_allocation=true;
+    assert(quota_store_load_credential_result(0,read)==QUOTA_STORE_READ_NO_MEMORY);
+    assert(read->id[0]==0&&read->refresh_token[0]==0);
+    reject_store_allocation=false;
+    assert(quota_store_save_credential(0,c));
+    assert(quota_store_load_credential_result(0,read)==QUOTA_STORE_READ_OK);
+    item_t *stored_credential=find("account0");assert(stored_credential);
+    size_t saved_credential_length=stored_credential->length;
+    stored_credential->length--;
+    assert(quota_store_load_credential_result(0,read)==QUOTA_STORE_READ_INVALID);
+    assert(!quota_store_load_credential(0,read));stored_credential->length=saved_credential_length;
+    open_error=ESP_FAIL;
+    assert(quota_store_load_credential_result(0,read)==QUOTA_STORE_READ_IO_ERROR);
+    assert(read->id[0]==0&&read->refresh_token[0]==0);
+    open_error=ESP_OK;query_error=ESP_FAIL;
+    assert(quota_store_load_credential_result(0,read)==QUOTA_STORE_READ_IO_ERROR);
+    query_error=ESP_OK;data_error=ESP_FAIL;
+    assert(quota_store_load_credential_result(0,read)==QUOTA_STORE_READ_IO_ERROR);
+    data_error=ESP_OK;
+    assert(quota_store_load_credential(0,read));
     assert_workspace_clear();
     assert(!read->refresh_inflight);
     c->refresh_inflight=true;assert(quota_store_save_credential(0,c));
@@ -274,7 +363,7 @@ int main(void) {
     int before=commits;memset(c->access_token,'x',sizeof(c->access_token));
     assert(!quota_store_save_credential(0,c)&&commits==before);
     strcpy(c->access_token,"new-access");
-    assert(store_allocations==allocations); /* External callers no longer need a 13 KiB scratch allocation. */
+    assert(store_allocations>allocations && !s_credential_record); /* External records are temporary. */
     reject_store_allocation=false;
     quota_snapshot_t snapshot={0},restored;
     snapshot.refresh_seconds=300;snapshot.account_count=1;snapshot.revision=7;snapshot.server_time=1800000000;
@@ -291,8 +380,18 @@ int main(void) {
     assert(restored.account_count==0); /* Replaced credential never inherits old quota. */
     ref.generation=1;assert(!quota_store_load_snapshot(&ref,1,1800000000+31ULL*86400,&restored));
 
-    quota_portable_credential_t *workspace=quota_store_credential_buffer();
-    assert(workspace==quota_store_credential_buffer());
+    quota_portable_credential_t *workspace=quota_store_credential_acquire(); assert(workspace);
+    assert(!quota_store_credential_acquire()); /* Exclusive borrowing lifetime. */
+    strcpy(workspace->refresh_token,"pending-rotation");workspace->refresh_inflight=true;
+    quota_portable_credential_t pending_copy=*workspace;
+    strcpy(read->email,"caller-buffer");
+    assert(quota_store_load_credential_result(0,read)==QUOTA_STORE_READ_BUSY);
+    assert(!strcmp(read->email,"caller-buffer"));
+    assert(!memcmp(workspace,&pending_copy,sizeof(pending_copy)));
+    assert(!quota_store_load_credential(0,read));assert(!strcmp(read->email,"caller-buffer"));
+    assert(!quota_store_save_credential(0,c));
+    assert(!quota_store_remove_credential(0,c->id,2));
+    quota_portable_clear_secret(&pending_copy,sizeof(pending_copy));
     legacy_credential_record_t legacy={0};
     legacy.magic=CREDENTIAL_MAGIC;legacy.version=1;legacy.bytes=sizeof(legacy);legacy.value=*c;
     legacy.value.slot=1;legacy.value.generation=7;strcpy(legacy.value.id,"11111111111111111111111111111111");
@@ -319,15 +418,27 @@ int main(void) {
     assert(quota_store_save_snapshot(&snapshot,&ref,1,1800000000));
     assert(quota_store_load_snapshot(&ref,1,1800000010,&restored));
     assert(!memcmp(workspace,&legacy.value,sizeof(*workspace))); /* Config/cache leave a borrowed credential alone. */
+    quota_store_credential_release(workspace); assert(!s_credential_record);
+    assert(quota_store_remove_credential(1,legacy.value.id,8)); assert(!s_credential_record);
+    workspace=quota_store_credential_acquire(); assert(workspace);
     allocations=store_allocations;reject_store_allocation=true;
-    assert(quota_store_remove_credential(1,workspace->id,8));assert_workspace_clear();
     assert(quota_store_load_credential(1,workspace));
     assert(workspace->tombstone&&workspace->generation==8&&!strcmp(workspace->id,legacy.value.id));
     assert(!quota_store_load_credential(QUOTA_MAX_ACCOUNTS,workspace));assert_workspace_clear();
-    item_t *bad=find("account1");assert(bad);bad->data[20]^=1;
-    assert(!quota_store_load_credential(1,workspace));assert_workspace_clear();
+    item_t *bad=find("account1");assert(bad);
+    credential_record_t valid_credential;memcpy(&valid_credential,bad->data,sizeof(valid_credential));
+    credential_record_t malformed_credential=valid_credential;
+    malformed_credential.value.provider=(quota_provider_t)99;
+    malformed_credential.crc=store_crc(&malformed_credential,offsetof(credential_record_t,crc));
+    memcpy(bad->data,&malformed_credential,sizeof(malformed_credential));
+    assert(quota_store_load_credential_result(1,workspace)==QUOTA_STORE_READ_INVALID);assert_workspace_clear();
+    memcpy(bad->data,&valid_credential,sizeof(valid_credential));bad->data[20]^=1;
+    assert(quota_store_load_credential_result(1,workspace)==QUOTA_STORE_READ_INVALID);assert_workspace_clear();
     assert(store_allocations==allocations);
-    assert(quota_store_remove_credential(0,c->id,2));assert(quota_store_load_credential(0,read));
+    quota_store_credential_release(workspace); assert(!s_credential_record);
+    reject_store_allocation=false;
+    assert(quota_store_remove_credential(0,c->id,2));
+    assert(quota_store_load_credential_result(0,read)==QUOTA_STORE_READ_OK);
     assert(read->tombstone&&read->generation==2&&read->access_token[0]==0&&read->refresh_token[0]==0);
     item_t *record=find("account0");assert(record);record->data[20]^=1;
     assert(!quota_store_load_credential(0,read));assert(read->id[0]==0&&read->refresh_token[0]==0);
@@ -339,7 +450,9 @@ int main(void) {
 #include <stddef.h>
 typedef int nvs_handle_t;
 typedef int esp_err_t;
-enum { ESP_OK=0, NVS_READONLY=1, NVS_READWRITE=2 };
+enum { ESP_OK=0, NVS_READONLY=1, NVS_READWRITE=2, ESP_FAIL=3, ESP_ERR_NO_MEM=4,
+       ESP_ERR_NVS_NOT_FOUND=5, ESP_ERR_NVS_PART_NOT_FOUND=6,
+       ESP_ERR_NVS_TYPE_MISMATCH=7 };
 esp_err_t nvs_open_from_partition(const char*,const char*,int,nvs_handle_t*);
 void nvs_close(nvs_handle_t);
 esp_err_t nvs_get_blob(nvs_handle_t,const char*,void*,size_t*);
@@ -355,7 +468,7 @@ esp_err_t nvs_commit(nvs_handle_t);
                             "-Wno-deprecated-declarations",
                             "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
                             "-I"+str(path), "-I"+str(ROOT / "main"), "-I"+str(ROOT / "tests/cjson"),
-                            str(path / "test.c"), str(ROOT / "main/quota_logic.c"),
+                            str(path / "test.c"), str(ROOT / "main/quota_logic.c"), str(ROOT / "main/quota_catalog.c"),
                             str(ROOT / "tests/cjson/cJSON.c"), "-lm", "-o", str(path / "test")], check=True)
             subprocess.run([str(path / "test")], check=True)
 

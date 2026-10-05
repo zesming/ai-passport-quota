@@ -9,7 +9,7 @@
 | Firmware input and display lifecycle | `main/main.c` |
 | Pure state, parsing and timing | `main/quota_logic.c`, `main/quota_logic.h` |
 | Network worker and legacy USB/companion | `main/quota_service.c` |
-| Portable controller, auth/query, storage and phone page | `main/quota_portable_service.c`, `main/quota_direct*.c`, `main/quota_store.c`, `main/quota_portal.c`, `main/portable_setup.html` |
+| Account catalog, controller, auth/query, storage and setup page | `main/quota_catalog.c`, `main/quota_portable_service.c`, `main/quota_direct*.c`, `main/quota_store.c`, `main/quota_portal.c`, `main/portable_setup.html` |
 | Dashboard and display assets | `main/quota_ui.c`, `main/quota_brand_assets.c`, `assets/` |
 | Board drivers | `components/bsp/include/`, `components/bsp/src/` |
 | Desktop UI and USB | `companion/src/` |
@@ -47,7 +47,7 @@ python3 tools/archive_firmware.py verify <bundle-directory>
 
 Use the matching ELF when decoding a crash. A later rebuild may have a different identity. Failed runs can leave previous outputs intact; report the exact successful bundle path and image hash. Generated firmware/debug bundles stay outside commits and are not uploaded automatically. Additional custom partition payloads are not retained separately in this bundle.
 
-For the embedded phone page, `node tools/preview_portable.mjs` serves the exact production HTML with synthetic fixtures at `http://127.0.0.1:4328/#s=synthetic-preview-only`. This is a manual development preview, not a data collector. See [portable design](portable-connectivity.md) before changing device-owned authorization.
+For the embedded device setup page, `node tools/preview_portable.mjs` serves the exact production HTML with synthetic fixtures; open the URL printed at startup. `http://127.0.0.1:4328/__preview/manual` tests manual connection with a fixture key of 43 consecutive `s` characters. This is a manual development preview, not a data collector. See [portable design](portable-connectivity.md) before changing device-owned authorization.
 
 For frontend iteration, run `AIQ_DEV_ORIGIN=http://127.0.0.1:5173 npm start` in `companion/`, then `npm run dev` in another terminal and open that exact origin. For documentation screenshots, `npm run preview:readme` serves isolated synthetic accounts at `http://127.0.0.1:4327/`.
 
@@ -63,4 +63,4 @@ A merged `full.bin` written at `0x0` includes padded gaps and can reset NVS/PHY 
 
 Keep the native USB serial connection open throughout authorization and avoid modem-line changes. Reconnecting a monitor can reset the C3 and invalidate that acceptance run.
 
-Report `Build`, `Host tests`, `Device tests` and `Unverified` separately, with the checks actually performed. Browser screenshots and host simulations do not prove board rendering, physical USB pairing or provider authorization. Relevant checks include independent/missing windows, real 0%, expired-window waiting, conditional Codex extras and their absence before cold-boot sync. Device acceptance also covers fonts/buttons, pairing, certificate rejection, Wi-Fi stop/reconnect, LCD Sleep In/out, silent cached wake, preserved refresh deadlines and reboot persistence. Compare measured awake/asleep current under stated USB/battery conditions; configuration and host tests alone establish no current reduction. Real DeepSeek credentials and extended/offline timing still need their own acceptance evidence; consult the [changelog](../CHANGELOG.md) for dated results rather than transferring prior acceptance to a new build.
+Report `Build`, `Host tests`, `Device tests` and `Unverified` separately, with the checks actually performed. Browser screenshots and host simulations do not prove board rendering, physical USB pairing or provider authorization. Relevant checks include independent/missing windows, real 0%, expired-window waiting, conditional Codex extras and restoration of matching source-bound cached extras after reboot. Missing extras must stay absent until observed. Device acceptance also covers fonts/buttons, pairing, certificate rejection, Wi-Fi stop/reconnect, LCD Sleep In/out, silent cached wake, preserved refresh deadlines and reboot persistence. Compare measured awake/asleep current under stated USB/battery conditions; configuration and host tests alone establish no current reduction. Real DeepSeek credentials and extended/offline timing still need their own acceptance evidence; consult the [changelog](../CHANGELOG.md) for dated results rather than transferring prior acceptance to a new build.

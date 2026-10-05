@@ -114,22 +114,32 @@ static void reconcile_account_selection(const quota_service_view_t *view)
     persist_current_selection(view);
 }
 
-static void render_application(void)
+static void observe_login_navigation(quota_portable_login_state_t login, bool navigate)
 {
-    quota_service_get_view(&s_view_work);
-    uint64_t now_ms = (uint64_t)(esp_timer_get_time() / 1000);
-    quota_portable_login_state_t login = s_view_work.portable.login_state;
+    static quota_portable_login_state_t previous = QUOTA_PORTABLE_LOGIN_IDLE;
+    bool changed = login != previous;
+    previous = login;
+    if (!navigate || !changed) return;
     if ((login >= QUOTA_PORTABLE_LOGIN_CONNECTING && login <= QUOTA_PORTABLE_LOGIN_EXCHANGING) ||
         (s_navigation.screen == QUOTA_SCREEN_PHONE &&
          (login == QUOTA_PORTABLE_LOGIN_ERROR || login == QUOTA_PORTABLE_LOGIN_EXPIRED))) {
         s_navigation.screen = QUOTA_SCREEN_AUTH;
-    } else if ((s_navigation.screen == QUOTA_SCREEN_AUTH || s_navigation.screen == QUOTA_SCREEN_PHONE) && login == QUOTA_PORTABLE_LOGIN_SUCCESS) {
+    } else if ((s_navigation.screen == QUOTA_SCREEN_AUTH ||
+                s_navigation.screen == QUOTA_SCREEN_PHONE) &&
+               login == QUOTA_PORTABLE_LOGIN_SUCCESS) {
         s_navigation.screen = QUOTA_SCREEN_HOME;
     }
+}
+
+static void render_application(void)
+{
+    quota_service_get_view(&s_view_work);
+    uint64_t now_ms = (uint64_t)(esp_timer_get_time() / 1000);
+    observe_login_navigation(s_view_work.portable.login_state, true);
     quota_navigation_sync_settings(&s_navigation, s_view_work.refresh_seconds,
                                    s_view_work.auto_refresh, s_view_work.screen_timeout_seconds);
     quota_display_tick(&s_display, now_ms, s_view_work.screen_timeout_seconds,
-                        s_view_work.pairing_active || s_view_work.portable.setup_active ||
+                        s_view_work.pairing_active || s_view_work.pairing_preparing || s_view_work.portable.setup_active ||
                         s_view_work.portable.auth_hold_awake);
     quota_service_set_display_sleeping(s_display.sleeping);
     bool display_ready = set_display_power(s_display.sleeping);
@@ -160,6 +170,8 @@ static void process_button(const quota_app_event_t *event, quota_service_view_t 
     }
     if (!quota_display_handle_key(&s_display, (uint64_t)(esp_timer_get_time() / 1000),
                                   key_event, event->button == BSP_BTN_DOWN)) return;
+    /* Consume the latest service edge before a manual screen change. */
+    observe_login_navigation(view->portable.login_state, true);
     quota_navigation_sync_settings(&s_navigation, view->refresh_seconds,
                                    view->auto_refresh, view->screen_timeout_seconds);
     quota_screen_t previous_screen = s_navigation.screen;
@@ -284,7 +296,7 @@ void app_main(void)
                          s_view_work.screen_timeout_seconds,
                          s_view_work.snapshot.account_count);
     reconcile_account_selection(&s_view_work);
-    if (!s_view_work.configured) quota_service_open_pairing_window();
+    observe_login_navigation(s_view_work.portable.login_state, false);
 
     if (!bsp_lvgl_lock(1000)) {
         ESP_LOGE(TAG, "LVGL lock unavailable during startup");
@@ -303,8 +315,7 @@ void app_main(void)
         ESP_LOGE(TAG, "application event task creation failed");
         return;
     }
-    if (s_view_work.portable.mode == QUOTA_MODE_DIRECT &&
-        !s_view_work.portable.network_ssid[0] && s_view_work.snapshot.account_count == 0) {
+    if (!s_view_work.portable.network_ssid[0] && s_view_work.snapshot.account_count == 0) {
         s_navigation.screen = QUOTA_SCREEN_PHONE;
         s_navigation.setup_return_screen = QUOTA_SCREEN_HOME;
     }

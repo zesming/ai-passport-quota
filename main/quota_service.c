@@ -1,5 +1,6 @@
 #include "quota_service.h"
 #include "quota_portable_service.h"
+#include "quota_store.h"
 
 #include "cJSON.h"
 #include "esp_event.h"
@@ -15,6 +16,11 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
+#include <assert.h>
+#include <fcntl.h>
+#include <stdatomic.h>
+#include <stdlib.h>
+#include <unistd.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
@@ -24,10 +30,8 @@
 static const char *TAG = "quota_service";
 
 #define EVENT_QUEUE_DEPTH 16
-#define NETWORK_TASK_STACK 8192
-#define SERIAL_TASK_STACK 8192
+#define NETWORK_TASK_STACK 10240
 #define NETWORK_TASK_PRIORITY 5
-#define SERIAL_TASK_PRIORITY 4
 #define WIFI_RETRY_MIN_MS 2000
 #define WIFI_RETRY_MAX_MS 30000
 #define HTTP_TIMEOUT_MS 8000
@@ -110,11 +114,10 @@ typedef enum {
 static QueueHandle_t s_events;
 static SemaphoreHandle_t s_mutex;
 static TaskHandle_t s_network_task;
-static TaskHandle_t s_serial_task;
+static atomic_bool s_pairing_requested;
 static portMUX_TYPE s_display_state_mux = portMUX_INITIALIZER_UNLOCKED;
 static display_scheduler_t s_display_scheduler = {.generation = 1};
 static quota_service_view_t s_view;
-static uint32_t s_refreshing_display_generation;
 static quota_device_config_t s_config;
 static bool s_nvs_ready;
 static bool s_has_config;
@@ -130,35 +133,54 @@ static uint32_t s_wifi_retry_delay_ms = WIFI_RETRY_MIN_MS;
 static int64_t s_wifi_retry_at_ms;
 static uint32_t s_config_generation;
 static bool s_fetch_after_connect;
-static bool s_refresh_requested;
-static bool s_settings_pending;
-static uint16_t s_pending_refresh_seconds;
-static bool s_pending_auto_refresh;
-static uint16_t s_pending_screen_timeout_seconds;
 static uint16_t s_saved_screen_timeout_seconds = QUOTA_SCREEN_TIMEOUT_DEFAULT_SECONDS;
-static bool s_selection_pending;
-static char s_pending_account_id[QUOTA_ACCOUNT_ID_BYTES + 1];
 static bool s_pairing_screen_open;
 static int64_t s_pairing_opened_at_ms;
-static uint64_t s_last_server_time_persist_ms;
 static uint64_t s_snapshot_cache_saved_at;
-static uint64_t s_snapshot_cache_last_attempt_ms;
-static bool s_snapshot_cache_present;
-static bool s_snapshot_cache_dirty;
-static bool s_snapshot_cache_attempted;
-static uint64_t s_selection_persist_retry_at_ms;
 
-/* Large protocol workspaces live in BSS, never on the 4–8 KiB task stacks. */
-static http_body_t s_http_body;
-static quota_device_config_t s_network_config;
-static quota_device_config_t s_provision_config;
-static quota_snapshot_t s_snapshot_work;
-static stored_config_t s_stored_config;
-static stored_snapshot_t s_stored_snapshot;
-static cached_snapshot_t s_snapshot_cache_candidate;
-static stored_balance_t s_stored_balances;
+/* Mutually exclusive short-lived transport, migration and USB scratch. */
+typedef union {
+    struct { http_body_t http_body; quota_device_config_t network_config; };
+    struct { stored_snapshot_t stored_snapshot; stored_balance_t stored_balances; };
+    quota_device_config_t provision_config;
+} companion_workspace_t;
+
+static companion_workspace_t *s_companion_work;
+static quota_frame_decoder_t *s_usb_decoder;
 static bool s_balance_cache_present;
-static quota_frame_decoder_t s_frame_decoder;
+
+static companion_workspace_t *companion_work(void)
+{
+    assert(s_companion_work != NULL);
+    return s_companion_work;
+}
+
+/* Keep the existing protocol helpers on one explicitly leased workspace. */
+#define s_http_body (companion_work()->http_body)
+#define s_network_config (companion_work()->network_config)
+#define s_provision_config (companion_work()->provision_config)
+#define s_stored_snapshot (companion_work()->stored_snapshot)
+#define s_stored_balances (companion_work()->stored_balances)
+
+static bool acquire_companion_work(void)
+{
+    if (!s_companion_work) s_companion_work = calloc(1, sizeof(*s_companion_work));
+    return s_companion_work != NULL;
+}
+
+static void release_companion_work(void)
+{
+    if (s_companion_work) {
+        quota_portable_clear_secret(s_companion_work, sizeof(*s_companion_work));
+        free(s_companion_work);
+        s_companion_work = NULL;
+    }
+}
+
+static bool pairing_requested(void)
+{
+    return atomic_load(&s_pairing_requested);
+}
 
 static void mutex_lock(void)
 {
@@ -201,16 +223,7 @@ static bool display_generation_is_current(uint32_t generation)
     return current;
 }
 
-static void finish_wake_fetch(uint32_t generation, bool connection_current)
-{
-    if (!connection_current) return;
-    portENTER_CRITICAL(&s_display_state_mux);
-    if (!s_display_scheduler.sleeping &&
-        s_display_scheduler.generation == generation) {
-        s_display_scheduler.wake_fetch_pending = false;
-    }
-    portEXIT_CRITICAL(&s_display_state_mux);
-}
+
 
 static uint32_t crc32_update(uint32_t crc, const void *data, size_t length)
 {
@@ -263,54 +276,20 @@ static bool config_is_well_formed(const quota_device_config_t *config)
            strstr(config->server_cert_pem, "-----END CERTIFICATE-----") != NULL;
 }
 
-static bool nvs_save_config_locked(const quota_device_config_t *config)
-{
-    if (!s_nvs_ready || !config_is_well_formed(config)) return false;
-    memset(&s_stored_config, 0, sizeof(s_stored_config));
-    s_stored_config.magic = STORED_CONFIG_MAGIC;
-    s_stored_config.version = STORED_CONFIG_VERSION;
-    s_stored_config.config_size = sizeof(*config);
-    s_stored_config.config = *config;
-    s_stored_config.crc32 = crc32_bytes(&s_stored_config.config,
-                                        sizeof(s_stored_config.config));
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (err == ESP_OK) {
-        err = nvs_set_blob(handle, NVS_CONFIG_KEY, &s_stored_config,
-                           sizeof(s_stored_config));
-        if (err == ESP_OK) err = nvs_commit(handle);
-        nvs_close(handle);
-    }
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "device config save failed (%s)", esp_err_to_name(err));
-        return false;
-    }
-    return true;
-}
 
-static bool nvs_load_config(void)
-{
-    if (!s_nvs_ready) return false;
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
-    if (err != ESP_OK) return false;
-    memset(&s_stored_config, 0, sizeof(s_stored_config));
-    size_t length = sizeof(s_stored_config);
-    err = nvs_get_blob(handle, NVS_CONFIG_KEY, &s_stored_config, &length);
-    nvs_close(handle);
-    if (err != ESP_OK || length != sizeof(s_stored_config) ||
-        s_stored_config.magic != STORED_CONFIG_MAGIC ||
-        s_stored_config.version != STORED_CONFIG_VERSION ||
-        s_stored_config.config_size != sizeof(s_stored_config.config) ||
-        s_stored_config.crc32 != crc32_bytes(&s_stored_config.config,
-                                             sizeof(s_stored_config.config)) ||
-        !config_is_well_formed(&s_stored_config.config)) {
-        return false;
-    }
-    s_config = s_stored_config.config;
-    return true;
-}
 
+
+
+static quota_store_read_result_t nvs_read_config_result(quota_device_config_t *out)
+{
+    if(!s_nvs_ready||!out)return QUOTA_STORE_READ_IO_ERROR;
+    stored_config_t *record=calloc(1,sizeof(*record));if(!record)return QUOTA_STORE_READ_NO_MEMORY;
+    nvs_handle_t handle;esp_err_t err=nvs_open(NVS_NAMESPACE,NVS_READONLY,&handle);size_t length=sizeof(*record);
+    if(err==ESP_OK){err=nvs_get_blob(handle,NVS_CONFIG_KEY,record,&length);nvs_close(handle);}
+    quota_store_read_result_t result=err==ESP_ERR_NVS_NOT_FOUND?QUOTA_STORE_READ_MISSING:(err==ESP_OK||err==ESP_ERR_NVS_INVALID_LENGTH)?QUOTA_STORE_READ_INVALID:QUOTA_STORE_READ_IO_ERROR;
+    if(err==ESP_OK&&length==sizeof(*record)&&record->magic==STORED_CONFIG_MAGIC&&record->version==STORED_CONFIG_VERSION&&record->config_size==sizeof(record->config)&&record->crc32==crc32_bytes(&record->config,sizeof(record->config))&&config_is_well_formed(&record->config)){*out=record->config;result=QUOTA_STORE_READ_OK;}
+    quota_portable_clear_secret(record,sizeof(*record));free(record);return result;
+}
 /* Separate key: never change the existing device_cfg size/version/CRC contract. */
 static uint16_t nvs_load_screen_timeout(void)
 {
@@ -324,25 +303,6 @@ static uint16_t nvs_load_screen_timeout(void)
     }
     s_saved_screen_timeout_seconds = seconds;
     return seconds;
-}
-
-static bool nvs_save_screen_timeout_locked(uint16_t seconds)
-{
-    if (!s_nvs_ready || !quota_screen_timeout_is_valid(seconds)) return false;
-    if (seconds == s_saved_screen_timeout_seconds) return true;
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (err == ESP_OK) {
-        err = nvs_set_u16(handle, NVS_SCREEN_TIMEOUT_KEY, seconds);
-        if (err == ESP_OK) err = nvs_commit(handle);
-        nvs_close(handle);
-    }
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "screen timeout save failed (%s)", esp_err_to_name(err));
-        return false;
-    }
-    s_saved_screen_timeout_seconds = seconds;
-    return true;
 }
 
 static uint32_t config_cache_identity(const quota_device_config_t *config)
@@ -392,59 +352,22 @@ static bool cached_snapshot_is_well_formed(const cached_snapshot_t *snapshot)
     return true;
 }
 
-static bool nvs_erase_snapshot(void)
+static quota_store_read_result_t nvs_load_snapshot_inventory_result(const quota_device_config_t *config)
 {
-    if (!s_nvs_ready) return false;
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (err == ESP_OK) {
-        err = nvs_erase_key(handle, NVS_SNAPSHOT_KEY);
-        if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
-        if (err == ESP_OK) {
-            err = nvs_erase_key(handle, NVS_BALANCE_KEY);
-            if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
-        }
-        if (err == ESP_OK) err = nvs_commit(handle);
-        nvs_close(handle);
+    if(!s_nvs_ready||!config)return QUOTA_STORE_READ_IO_ERROR;
+    nvs_handle_t handle;esp_err_t err=nvs_open(NVS_NAMESPACE,NVS_READONLY,&handle);
+    if(err==ESP_ERR_NVS_NOT_FOUND)return QUOTA_STORE_READ_MISSING;
+    if(err!=ESP_OK)return QUOTA_STORE_READ_IO_ERROR;
+    memset(&s_stored_snapshot,0,sizeof(s_stored_snapshot));size_t length=sizeof(s_stored_snapshot);
+    err=nvs_get_blob(handle,NVS_SNAPSHOT_KEY,&s_stored_snapshot,&length);nvs_close(handle);
+    if(err==ESP_ERR_NVS_NOT_FOUND)return QUOTA_STORE_READ_MISSING;
+    if(err==ESP_ERR_NVS_INVALID_LENGTH)return QUOTA_STORE_READ_INVALID;
+    if(err!=ESP_OK)return QUOTA_STORE_READ_IO_ERROR;
+    if(length!=sizeof(s_stored_snapshot)||s_stored_snapshot.magic!=STORED_SNAPSHOT_MAGIC||s_stored_snapshot.version!=STORED_SNAPSHOT_VERSION||s_stored_snapshot.snapshot_size!=sizeof(s_stored_snapshot.snapshot)||!s_stored_snapshot.stored_at||s_stored_snapshot.stored_at>UINT32_MAX||s_stored_snapshot.crc32!=crc32_bytes(&s_stored_snapshot,offsetof(stored_snapshot_t,crc32))||!cached_snapshot_is_well_formed(&s_stored_snapshot.snapshot)){
+        memset(&s_stored_snapshot,0,sizeof(s_stored_snapshot));return QUOTA_STORE_READ_INVALID;
     }
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "quota cache cleanup failed (%s)", esp_err_to_name(err));
-        return false;
-    }
-    return true;
-}
-
-static bool nvs_load_snapshot(const quota_device_config_t *config)
-{
-    if (!s_nvs_ready || config == NULL) return false;
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
-    if (err != ESP_OK) return false;
-    memset(&s_stored_snapshot, 0, sizeof(s_stored_snapshot));
-    size_t length = sizeof(s_stored_snapshot);
-    err = nvs_get_blob(handle, NVS_SNAPSHOT_KEY, &s_stored_snapshot, &length);
-    nvs_close(handle);
-
-    uint64_t now = current_epoch();
-    bool valid = err == ESP_OK && length == sizeof(s_stored_snapshot) &&
-        s_stored_snapshot.magic == STORED_SNAPSHOT_MAGIC &&
-        s_stored_snapshot.version == STORED_SNAPSHOT_VERSION &&
-        s_stored_snapshot.snapshot_size == sizeof(s_stored_snapshot.snapshot) &&
-        s_stored_snapshot.config_identity == config_cache_identity(config) &&
-        s_stored_snapshot.stored_at > 0 && s_stored_snapshot.stored_at <= UINT32_MAX &&
-        s_stored_snapshot.crc32 == crc32_bytes(&s_stored_snapshot,
-                                               offsetof(stored_snapshot_t, crc32)) &&
-        cached_snapshot_is_well_formed(&s_stored_snapshot.snapshot) &&
-        !(now >= s_stored_snapshot.stored_at &&
-          now - s_stored_snapshot.stored_at >= SNAPSHOT_CACHE_MAX_AGE_SECONDS);
-    if (!valid) {
-        if (err != ESP_ERR_NVS_NOT_FOUND) (void)nvs_erase_snapshot();
-        memset(&s_stored_snapshot, 0, sizeof(s_stored_snapshot));
-        return false;
-    }
-    s_snapshot_cache_present = true;
-    s_snapshot_cache_saved_at = s_stored_snapshot.stored_at;
-    return true;
+    if(s_stored_snapshot.config_identity!=config_cache_identity(config)){memset(&s_stored_snapshot,0,sizeof(s_stored_snapshot));return QUOTA_STORE_READ_MISSING;}
+    s_snapshot_cache_saved_at=s_stored_snapshot.stored_at;return QUOTA_STORE_READ_OK;
 }
 
 static void nvs_load_balance_snapshot(const quota_device_config_t *config)
@@ -466,91 +389,17 @@ static void nvs_load_balance_snapshot(const quota_device_config_t *config)
         valid = quota_balance_is_valid(&s_stored_balances.balances[i]);
     }
     if (valid) {
-        memcpy(s_view.snapshot.balances, s_stored_balances.balances, sizeof(s_stored_balances.balances));
         s_balance_cache_present = true;
     } else {
         memset(&s_stored_balances, 0, sizeof(s_stored_balances));
     }
 }
 
-static void prepare_cached_snapshot(const quota_snapshot_t *snapshot,
-                                    cached_snapshot_t *cached)
-{
-    memset(cached, 0, sizeof(*cached));
-    cached->revision = snapshot->revision;
-    cached->account_count = snapshot->account_count;
-    memcpy(cached->accounts, snapshot->accounts,
-           (size_t)snapshot->account_count * sizeof(snapshot->accounts[0]));
-}
 
-static bool nvs_maybe_save_snapshot_locked(const quota_device_config_t *config,
-                                           const quota_snapshot_t *snapshot)
-{
-    if (!s_nvs_ready || !config_is_well_formed(config) || snapshot == NULL ||
-        snapshot->account_count > QUOTA_MAX_ACCOUNTS || snapshot->server_time == 0) {
-        return false;
-    }
-    prepare_cached_snapshot(snapshot, &s_snapshot_cache_candidate);
-    if (!cached_snapshot_is_well_formed(&s_snapshot_cache_candidate)) return false;
-    if (s_snapshot_cache_present && !s_snapshot_cache_dirty &&
-        memcmp(&s_snapshot_cache_candidate, &s_stored_snapshot.snapshot,
-               sizeof(s_snapshot_cache_candidate)) == 0 && s_balance_cache_present &&
-        memcmp(snapshot->balances, s_stored_balances.balances, sizeof(snapshot->balances)) == 0) {
-        return true;
-    }
 
-    uint64_t now_ms = monotonic_ms();
-    if (s_snapshot_cache_attempted &&
-        now_ms - s_snapshot_cache_last_attempt_ms < SERVER_TIME_PERSIST_MS) {
-        return true;
-    }
-    if (s_snapshot_cache_present &&
-        (snapshot->server_time < s_snapshot_cache_saved_at ||
-         snapshot->server_time - s_snapshot_cache_saved_at <
-             SNAPSHOT_CACHE_WRITE_INTERVAL_SECONDS)) {
-        return true;
-    }
 
-    s_snapshot_cache_attempted = true;
-    s_snapshot_cache_last_attempt_ms = now_ms;
-    memset(&s_stored_snapshot, 0, sizeof(s_stored_snapshot));
-    s_stored_snapshot.magic = STORED_SNAPSHOT_MAGIC;
-    s_stored_snapshot.version = STORED_SNAPSHOT_VERSION;
-    s_stored_snapshot.snapshot_size = sizeof(s_stored_snapshot.snapshot);
-    s_stored_snapshot.config_identity = config_cache_identity(config);
-    s_stored_snapshot.stored_at = snapshot->server_time;
-    s_stored_snapshot.snapshot = s_snapshot_cache_candidate;
-    s_stored_snapshot.crc32 = crc32_bytes(&s_stored_snapshot,
-                                          offsetof(stored_snapshot_t, crc32));
-    memset(&s_stored_balances, 0, sizeof(s_stored_balances));
-    s_stored_balances.magic = STORED_BALANCE_MAGIC;
-    s_stored_balances.config_identity = s_stored_snapshot.config_identity;
-    s_stored_balances.revision = snapshot->revision;
-    s_stored_balances.stored_at = snapshot->server_time;
-    memcpy(s_stored_balances.balances, snapshot->balances, sizeof(snapshot->balances));
-    s_stored_balances.crc32 = crc32_bytes(&s_stored_balances, offsetof(stored_balance_t, crc32));
 
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (err == ESP_OK) {
-        err = nvs_set_blob(handle, NVS_SNAPSHOT_KEY, &s_stored_snapshot,
-                           sizeof(s_stored_snapshot));
-        if (err == ESP_OK) err = nvs_set_blob(handle, NVS_BALANCE_KEY, &s_stored_balances,
-                                            sizeof(s_stored_balances));
-        if (err == ESP_OK) err = nvs_commit(handle);
-        nvs_close(handle);
-    }
-    if (err != ESP_OK) {
-        s_snapshot_cache_dirty = true;
-        ESP_LOGW(TAG, "quota cache save failed (%s)", esp_err_to_name(err));
-        return false;
-    }
-    s_snapshot_cache_present = true;
-    s_balance_cache_present = true;
-    s_snapshot_cache_dirty = false;
-    s_snapshot_cache_saved_at = snapshot->server_time;
-    return true;
-}
+
 
 static void post_event(const quota_app_event_t *event, TickType_t wait)
 {
@@ -743,46 +592,7 @@ static void portable_notify(void) { post_simple_event(QUOTA_APP_EVENT_SNAPSHOT);
 static void portable_wake(void) { if (s_network_task) xTaskNotifyGive(s_network_task); }
 #endif
 
-static bool apply_wifi_config(const quota_device_config_t *config,
-                              uint32_t display_generation)
-{
-    if (!display_generation_is_current(display_generation)) return false;
-    wifi_config_t wifi_config = {0};
-    size_t ssid_length = strlen(config->ssid);
-    size_t password_length = strlen(config->password);
-    if (ssid_length > sizeof(wifi_config.sta.ssid) ||
-        password_length > sizeof(wifi_config.sta.password)) return false;
-    memcpy(wifi_config.sta.ssid, config->ssid, ssid_length);
-    memcpy(wifi_config.sta.password, config->password, password_length);
-    wifi_config.sta.threshold.authmode = password_length == 0
-                                      ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK;
-    wifi_config.sta.pmf_cfg.capable = true;
-    wifi_config.sta.pmf_cfg.required = false;
-    if (!display_generation_is_current(display_generation)) return false;
-    esp_err_t err = esp_wifi_disconnect();
-    (void)err;
-    mutex_lock();
-    s_view.connected = false;
-    mutex_unlock();
-    post_simple_event(QUOTA_APP_EVENT_CONNECTION);
-    if (!display_generation_is_current(display_generation)) return false;
-    err = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Wi-Fi config failed (%s)", esp_err_to_name(err));
-        return false;
-    }
-    if (!display_generation_is_current(display_generation)) return false;
-    err = esp_wifi_connect();
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Wi-Fi connect request failed (%s)", esp_err_to_name(err));
-        return false;
-    }
-    mutex_lock();
-    s_wifi_retry_pending = true;
-    s_wifi_retry_at_ms = (int64_t)monotonic_ms() + s_wifi_retry_delay_ms;
-    mutex_unlock();
-    return true;
-}
+
 
 static esp_err_t http_event_handler(esp_http_client_event_t *event)
 {
@@ -925,601 +735,92 @@ static bool request_refresh(const quota_device_config_t *config,
     return parse_refresh_ack(&s_http_body);
 }
 
-static bool apply_settings(const quota_device_config_t *config, uint16_t seconds,
-                           bool auto_refresh, uint16_t screen_timeout_seconds,
-                           quota_settings_t *applied,
-                           uint32_t config_generation,
-                           uint32_t display_generation,
-                           http_request_outcome_t *request_outcome)
-{
-    char request[128];
-    snprintf(request, sizeof(request), "{\"refresh_seconds\":%u,\"auto_refresh\":%s,"
-             "\"screen_timeout_seconds\":%u}", (unsigned)seconds,
-             auto_refresh ? "true" : "false", (unsigned)screen_timeout_seconds);
-    return http_request(config, "/v1/settings", HTTP_METHOD_PATCH, request, 200,
-                        config_generation, display_generation, request_outcome,
-                        &s_http_body) &&
-           quota_parse_settings_ack(s_http_body.bytes, s_http_body.length, applied);
-}
-
 static bool config_generation_is_current(uint32_t generation)
 {
-    mutex_lock();
-    bool current = s_has_config && s_config_generation == generation;
-    mutex_unlock();
-    return current;
+    mutex_lock(); bool current=s_view.configured && s_config_generation==generation; mutex_unlock(); return current;
 }
-
-static bool operation_is_current(uint32_t config_generation,
-                                 uint32_t display_generation)
+static bool operation_is_current(uint32_t config_generation,uint32_t display_generation)
 {
-    if (!config_generation_is_current(config_generation)) return false;
-    return display_generation_is_current(display_generation);
+    return config_generation_is_current(config_generation) && display_generation_is_current(display_generation);
 }
-
-static bool network_operation_is_current(uint32_t config_generation,
-                                         uint32_t display_generation)
+static bool network_operation_is_current(uint32_t config_generation,uint32_t display_generation)
 {
-    mutex_lock();
-    bool connected = s_has_config && s_config_generation == config_generation &&
-                     s_view.connected;
-    mutex_unlock();
-    return connected && display_generation_is_current(display_generation);
+    if(pairing_requested())return false;
+#ifdef ESP_PLATFORM
+    if(!quota_portable_service_http_allowed())return false;
+#endif
+    mutex_lock();bool connected=s_view.configured&&s_config_generation==config_generation&&s_view.connected;mutex_unlock();
+    return connected&&display_generation_is_current(display_generation);
 }
-
-static void clear_stale_refreshing(uint32_t display_generation)
+#ifdef ESP_PLATFORM
+static bool portable_try_lock(void) { return xSemaphoreTake(s_mutex,0)==pdTRUE; }
+static uint32_t portable_config_generation_locked(void) { return s_config_generation; }
+static void portable_config_changed_locked(void) { if(s_config_generation<UINT32_MAX)s_config_generation++; }
+static quota_store_read_result_t legacy_config(quota_device_config_t *out,uint16_t *screen_timeout)
 {
-    mutex_lock();
-    if (s_refreshing_display_generation == display_generation) {
-        s_view.refreshing = false;
-    }
-    mutex_unlock();
+    quota_store_read_result_t result=nvs_read_config_result(out);
+    if(result==QUOTA_STORE_READ_OK){s_config=*out;s_has_config=true;if(screen_timeout)*screen_timeout=nvs_load_screen_timeout();}
+    else if(result==QUOTA_STORE_READ_MISSING){s_has_config=false;quota_portable_clear_secret(&s_config,sizeof(s_config));}
+    return result;
 }
-
-static bool publish_snapshot(const quota_snapshot_t *snapshot,
-                             uint32_t config_generation,
-                             uint32_t display_generation)
+static quota_store_read_result_t legacy_inventory(quota_snapshot_t *out)
 {
-    if (snapshot == NULL) return false;
-    mutex_lock();
-    if (!s_has_config || s_config_generation != config_generation) {
-        mutex_unlock();
-        return false;
+    if(!out)return QUOTA_STORE_READ_INVALID;
+    if(!s_has_config)return QUOTA_STORE_READ_MISSING;
+    if(!acquire_companion_work())return QUOTA_STORE_READ_NO_MEMORY;
+    memset(out,0,sizeof(*out));
+    quota_store_read_result_t result=nvs_load_snapshot_inventory_result(&s_config);
+    if(result==QUOTA_STORE_READ_OK) {
+        out->server_time=s_snapshot_cache_saved_at;out->revision=s_stored_snapshot.snapshot.revision;
+        out->account_count=s_stored_snapshot.snapshot.account_count;
+        memcpy(out->accounts,s_stored_snapshot.snapshot.accounts,sizeof(out->accounts));
+        nvs_load_balance_snapshot(&s_config);
+        if(s_balance_cache_present)memcpy(out->balances,s_stored_balances.balances,sizeof(out->balances));
     }
-
-    uint64_t now_epoch = current_epoch();
-    bool committed = false;
-    /* Serialize the snapshot commit with sleep transitions, without holding the
-       display critical section across NVS or other potentially slow work. */
-    portENTER_CRITICAL(&s_display_state_mux);
-    if (!s_display_scheduler.sleeping &&
-        s_display_scheduler.generation == display_generation) {
-        s_view.snapshot = *snapshot;
-        s_view.snapshot_valid = true;
-        s_view.refresh_seconds = snapshot->refresh_seconds;
-        s_view.auto_refresh = snapshot->auto_refresh;
-        if (snapshot->has_screen_timeout_seconds) {
-            s_view.screen_timeout_seconds = snapshot->screen_timeout_seconds;
-        }
-        s_view.now_epoch = now_epoch;
-        s_view.request_failed = false;
-        s_view.clock_synchronized = snapshot->server_time >= 1577836800ULL;
-        committed = true;
-    }
-    portEXIT_CRITICAL(&s_display_state_mux);
-    if (!committed) {
-        mutex_unlock();
-        return false;
-    }
-
-    if (snapshot->has_screen_timeout_seconds) {
-        if (!nvs_save_screen_timeout_locked(snapshot->screen_timeout_seconds)) {
-            ESP_LOGW(TAG, "unable to persist screen timeout");
-        }
-    }
-
-    if (s_has_config) {
-        bool config_changed = false;
-        uint64_t now_ms = monotonic_ms();
-        if (snapshot->server_time > s_config.server_time &&
-            now_ms - s_last_server_time_persist_ms >= SERVER_TIME_PERSIST_MS) {
-            s_config.server_time = snapshot->server_time;
-            s_last_server_time_persist_ms = now_ms;
-            config_changed = true;
-        }
-        if (s_config.refresh_seconds != snapshot->refresh_seconds ||
-            s_config.auto_refresh != snapshot->auto_refresh) {
-            s_config.refresh_seconds = snapshot->refresh_seconds;
-            s_config.auto_refresh = snapshot->auto_refresh;
-            config_changed = true;
-        }
-        if (config_changed && !nvs_save_config_locked(&s_config)) {
-            ESP_LOGW(TAG, "unable to persist server state");
-        }
-        (void)nvs_maybe_save_snapshot_locked(&s_config, snapshot);
-    }
-    mutex_unlock();
-    if (!display_generation_is_current(display_generation)) return true;
-    set_system_time_if_newer(snapshot->server_time);
-    post_simple_event(QUOTA_APP_EVENT_SNAPSHOT);
-    return true;
+    release_companion_work();return result;
 }
-
-static bool begin_refresh(uint32_t config_generation, uint32_t display_generation)
+static bool legacy_snapshot(const quota_legacy_endpoint_t *endpoint,bool refresh,uint32_t display_generation,quota_snapshot_t *out,bool *deferred)
 {
-    mutex_lock();
-    if (!s_has_config || s_config_generation != config_generation) {
-        mutex_unlock();
-        return false;
-    }
-    portENTER_CRITICAL(&s_display_state_mux);
-    bool current = !s_display_scheduler.sleeping &&
-                   s_display_scheduler.generation == display_generation;
-    if (current) {
-        s_refreshing_display_generation = display_generation;
-        s_view.refreshing = true;
-        s_view.request_failed = false;
-    }
-    portEXIT_CRITICAL(&s_display_state_mux);
-    mutex_unlock();
-    return current;
+    if(deferred)*deferred=false;
+    if(!endpoint||!endpoint->enabled||!out||!acquire_companion_work())return false;
+    memset(&s_network_config,0,sizeof(s_network_config));
+    snprintf(s_network_config.base_url,sizeof(s_network_config.base_url),"%s",endpoint->base_url);
+    snprintf(s_network_config.pair_token,sizeof(s_network_config.pair_token),"%s",endpoint->pair_token);
+    snprintf(s_network_config.server_cert_pem,sizeof(s_network_config.server_cert_pem),"%s",endpoint->server_cert_pem);
+    mutex_lock();uint32_t generation=s_config_generation;mutex_unlock();
+    http_request_outcome_t outcome=HTTP_REQUEST_NOT_ADMITTED;bool ok=true;
+    if(refresh)ok=request_refresh(&s_network_config,generation,display_generation,&outcome);
+    if(ok)ok=fetch_snapshot(&s_network_config,out,generation,display_generation,&outcome);
+    if(deferred)*deferred=outcome==HTTP_REQUEST_DEFERRED||!operation_is_current(generation,display_generation);
+    release_companion_work();return ok;
 }
-
-static void finish_refresh(bool success, uint32_t config_generation,
-                           uint32_t display_generation)
+#endif
+static void service_pairing_tick(bool sleeping);
+static TickType_t network_wait(bool sleeping)
 {
-    uint64_t now_epoch = current_epoch();
-    mutex_lock();
-    if (!s_has_config || s_config_generation != config_generation) {
-        if (s_refreshing_display_generation == display_generation) {
-            s_view.refreshing = false;
-        }
-        mutex_unlock();
-        return;
-    }
-    portENTER_CRITICAL(&s_display_state_mux);
-    bool current = !s_display_scheduler.sleeping &&
-                   s_display_scheduler.generation == display_generation;
-    if (current) {
-        s_view.refreshing = false;
-        s_view.request_failed = !success;
-        s_view.now_epoch = now_epoch;
-    } else if (s_refreshing_display_generation == display_generation) {
-        s_view.refreshing = false;
-    }
-    portEXIT_CRITICAL(&s_display_state_mux);
-    mutex_unlock();
-    if (!current) return;
-    post_simple_event(QUOTA_APP_EVENT_SNAPSHOT);
+    uint64_t now=monotonic_ms();uint64_t deadline=sleeping&&!s_wifi_started?UINT64_MAX:now+500;
+#ifdef ESP_PLATFORM
+    uint64_t portable=quota_portable_service_next_deadline_ms(sleeping);if(portable<deadline)deadline=portable;
+#endif
+    if(pairing_requested())deadline=now+20;
+    if(deadline==UINT64_MAX)return portMAX_DELAY;if(deadline<=now)return 0;
+    TickType_t ticks=pdMS_TO_TICKS(deadline-now);return ticks?ticks:1;
 }
-
-/* False means deferred before admission; ordinary failures retain the cadence. */
-static bool perform_refresh(const quota_device_config_t *config,
-                            uint32_t config_generation,
-                            uint32_t display_generation)
-{
-    if (!begin_refresh(config_generation, display_generation)) return false;
-    if (!operation_is_current(config_generation, display_generation)) {
-        clear_stale_refreshing(display_generation);
-        return false;
-    }
-    post_simple_event(QUOTA_APP_EVENT_SNAPSHOT);
-
-    uint64_t previous_revision = 0;
-    bool had_previous = false;
-    mutex_lock();
-    had_previous = s_view.snapshot_valid;
-    previous_revision = s_view.snapshot.revision;
-    mutex_unlock();
-
-    http_request_outcome_t post_outcome = HTTP_REQUEST_NOT_ADMITTED;
-    bool success = request_refresh(config, config_generation, display_generation,
-                                   &post_outcome);
-    if (!operation_is_current(config_generation, display_generation)) {
-        clear_stale_refreshing(display_generation);
-        return post_outcome == HTTP_REQUEST_ADMITTED;
-    }
-    bool completed_attempt = post_outcome != HTTP_REQUEST_DEFERRED;
-    bool fetched = false;
-    if (success) {
-        for (unsigned attempt = 0; attempt < 6; attempt++) {
-            if (!operation_is_current(config_generation, display_generation)) {
-                clear_stale_refreshing(display_generation);
-                return completed_attempt;
-            }
-            if (!network_operation_is_current(config_generation, display_generation)) {
-                break;
-            }
-            http_request_outcome_t get_outcome = HTTP_REQUEST_NOT_ADMITTED;
-            if (fetch_snapshot(config, &s_snapshot_work, config_generation,
-                               display_generation, &get_outcome)) {
-                if (!operation_is_current(config_generation, display_generation)) {
-                    clear_stale_refreshing(display_generation);
-                    return completed_attempt;
-                }
-                fetched = true;
-                bool changed = !had_previous ||
-                               s_snapshot_work.revision != previous_revision;
-                if (!publish_snapshot(&s_snapshot_work, config_generation,
-                                      display_generation)) {
-                    if (!operation_is_current(config_generation, display_generation)) {
-                        clear_stale_refreshing(display_generation);
-                    }
-                    return completed_attempt;
-                }
-                if (changed || attempt == 5) break;
-            } else if (get_outcome == HTTP_REQUEST_DEFERRED ||
-                       !network_operation_is_current(config_generation,
-                                                     display_generation)) {
-                break;
-            }
-            if (attempt < 5) {
-                vTaskDelay(pdMS_TO_TICKS(1000));
-                if (!operation_is_current(config_generation, display_generation)) {
-                    clear_stale_refreshing(display_generation);
-                    return completed_attempt;
-                }
-            }
-        }
-        success = success && fetched;
-    }
-    finish_refresh(success, config_generation, display_generation);
-    return completed_attempt;
-}
-
-static void perform_snapshot_fetch(const quota_device_config_t *config,
-                                   uint32_t config_generation,
-                                   uint32_t display_generation,
-                                   bool wake_fetch)
-{
-    /* GET only reads cached data. It does not start a provider quota refresh. */
-    if (!network_operation_is_current(config_generation, display_generation)) return;
-    http_request_outcome_t get_outcome = HTTP_REQUEST_NOT_ADMITTED;
-    bool success = fetch_snapshot(config, &s_snapshot_work, config_generation,
-                                  display_generation, &get_outcome);
-    if (!operation_is_current(config_generation, display_generation)) return;
-    if (success) {
-        success = publish_snapshot(&s_snapshot_work, config_generation,
-                                   display_generation);
-    } else {
-        success = false;
-    }
-    if (wake_fetch && (success ||
-        (get_outcome != HTTP_REQUEST_DEFERRED &&
-         network_operation_is_current(config_generation, display_generation)))) {
-        finish_wake_fetch(display_generation, true);
-    }
-    finish_refresh(success, config_generation, display_generation);
-}
-
-static void restore_pending_settings(uint32_t config_generation,
-                                     uint16_t requested_seconds,
-                                     bool requested_auto_refresh,
-                                     uint16_t requested_screen_timeout)
-{
-    mutex_lock();
-    if (s_has_config && s_config_generation == config_generation &&
-        !s_settings_pending) {
-        s_settings_pending = true;
-        s_pending_refresh_seconds = requested_seconds;
-        s_pending_auto_refresh = requested_auto_refresh;
-        s_pending_screen_timeout_seconds = requested_screen_timeout;
-    }
-    bool pending = s_settings_pending;
-    mutex_unlock();
-    if (pending && s_network_task != NULL) xTaskNotifyGive(s_network_task);
-}
-
-static void perform_settings_update(const quota_device_config_t *config,
-                                    uint32_t config_generation,
-                                    uint32_t display_generation,
-                                    uint16_t requested_seconds,
-                                    bool requested_auto_refresh,
-                                    uint16_t requested_screen_timeout)
-{
-    if (!operation_is_current(config_generation, display_generation)) {
-        restore_pending_settings(config_generation, requested_seconds,
-                                 requested_auto_refresh, requested_screen_timeout);
-        return;
-    }
-    quota_settings_t applied = {0};
-    http_request_outcome_t request_outcome = HTTP_REQUEST_NOT_ADMITTED;
-    bool success = apply_settings(config, requested_seconds, requested_auto_refresh,
-                                  requested_screen_timeout, &applied,
-                                  config_generation, display_generation,
-                                  &request_outcome);
-
-    if (!operation_is_current(config_generation, display_generation)) {
-        restore_pending_settings(config_generation, requested_seconds,
-                                 requested_auto_refresh, requested_screen_timeout);
-        return;
-    }
-    if (request_outcome == HTTP_REQUEST_DEFERRED) {
-        restore_pending_settings(config_generation, requested_seconds,
-                                 requested_auto_refresh, requested_screen_timeout);
-        return;
-    }
-
-    mutex_lock();
-    if (!s_has_config || s_config_generation != config_generation) {
-        mutex_unlock();
-        return;
-    }
-    portENTER_CRITICAL(&s_display_state_mux);
-    bool display_current = !s_display_scheduler.sleeping &&
-                          s_display_scheduler.generation == display_generation;
-    if (display_current && success) {
-        s_config.refresh_seconds = applied.refresh_seconds;
-        s_config.auto_refresh = applied.auto_refresh;
-        s_view.refresh_seconds = applied.refresh_seconds;
-        s_view.auto_refresh = applied.auto_refresh;
-        if (applied.has_screen_timeout_seconds) {
-            s_view.screen_timeout_seconds = applied.screen_timeout_seconds;
-        }
-    }
-    portEXIT_CRITICAL(&s_display_state_mux);
-    if (!display_current) {
-        mutex_unlock();
-        restore_pending_settings(config_generation, requested_seconds,
-                                 requested_auto_refresh, requested_screen_timeout);
-        return;
-    }
-    if (success) {
-        if (applied.has_screen_timeout_seconds) {
-            if (!nvs_save_screen_timeout_locked(applied.screen_timeout_seconds)) success = false;
-        }
-        if (!nvs_save_config_locked(&s_config)) success = false;
-    }
-    uint64_t now_epoch = current_epoch();
-    portENTER_CRITICAL(&s_display_state_mux);
-    display_current = !s_display_scheduler.sleeping &&
-                      s_display_scheduler.generation == display_generation;
-    if (display_current) {
-        s_view.request_failed = !success;
-        s_view.now_epoch = now_epoch;
-    }
-    portEXIT_CRITICAL(&s_display_state_mux);
-    if (!success) {
-        applied.refresh_seconds = s_config.refresh_seconds;
-        applied.auto_refresh = s_config.auto_refresh;
-    }
-    applied.screen_timeout_seconds = s_view.screen_timeout_seconds;
-    mutex_unlock();
-
-    quota_app_event_t event = {
-        .kind = QUOTA_APP_EVENT_SETTINGS_RESULT,
-        .success = success,
-        .refresh_seconds = applied.refresh_seconds,
-        .auto_refresh = applied.auto_refresh,
-        .screen_timeout_seconds = applied.screen_timeout_seconds,
-    };
-    if (display_current && display_generation_is_current(display_generation)) {
-        post_event(&event, 0);
-    }
-}
-
 static void network_task(void *arg)
 {
     (void)arg;
-    uint32_t applied_config_generation = 0;
-    uint64_t next_config_apply_ms = 0;
-    uint64_t next_snapshot_poll_ms = 0;
-    uint64_t next_provider_refresh_ms = 0;
-    uint64_t last_pairing_tick_ms = 0;
-    uint16_t last_refresh_seconds = 0;
-    bool last_auto_refresh = false;
+    for(;;) {
+        display_state_t waiting=display_state_snapshot();
+        (void)ulTaskNotifyTake(pdTRUE,network_wait(waiting.sleeping));
+        display_state_t display=display_state_snapshot();
+        if(!pairing_requested())service_pairing_tick(display.sleeping);
 #ifdef ESP_PLATFORM
-    bool portable_was_owner = false;
+        quota_portable_service_tick(display.sleeping,display.generation);
 #endif
-
-    for (;;) {
-        display_state_t waiting_display = display_state_snapshot();
-        TickType_t wait = waiting_display.sleeping && !s_wifi_started
-                        ? portMAX_DELAY : pdMS_TO_TICKS(500);
-        (void)ulTaskNotifyTake(pdTRUE, wait);
-        display_state_t display_state = display_state_snapshot();
-#ifdef ESP_PLATFORM
-        if (quota_portable_service_owns_network()) {
-            quota_portable_service_tick(display_state.sleeping, display_state.generation);
-            portable_was_owner = true;
-            continue;
-        }
-        if (portable_was_owner) {
-            stop_wifi_for_sleep();
-            applied_config_generation = 0;
-            next_config_apply_ms = 0;
-            portable_was_owner = false;
-        }
-#endif
-        if (display_state.sleeping) {
-            stop_wifi_for_sleep();
-            continue;
-        }
-        uint64_t now_ms = monotonic_ms();
-        bool configured;
-        bool connected;
-        bool settings_pending;
-        bool automatic;
-        uint16_t refresh_seconds;
-        uint16_t pending_seconds;
-        bool pending_auto;
-        uint16_t pending_screen_timeout;
-        bool selection_pending;
-        char selected_account_id[QUOTA_ACCOUNT_ID_BYTES + 1];
-        uint32_t config_generation;
-
-        mutex_lock();
-        configured = s_has_config;
-        if (configured) s_network_config = s_config;
-        connected = s_view.connected;
-        settings_pending = s_settings_pending;
-        automatic = s_view.auto_refresh;
-        refresh_seconds = s_view.refresh_seconds;
-        selection_pending = s_selection_pending;
-        memcpy(selected_account_id, s_pending_account_id, sizeof(selected_account_id));
-        config_generation = s_config_generation;
-        s_view.now_epoch = current_epoch();
-        s_view.pairing_active = pairing_active_locked(now_ms);
-        s_view.pairing_seconds_left = s_view.pairing_active
-            ? (uint32_t)((QUOTA_PAIRING_WINDOW_MS -
-               (now_ms - (uint64_t)s_pairing_opened_at_ms) + 999) / 1000) : 0;
-        mutex_unlock();
-
-        if (now_ms - last_pairing_tick_ms >= 1000) {
-            last_pairing_tick_ms = now_ms;
-            post_simple_event(QUOTA_APP_EVENT_PAIRING_TICK);
-        }
-        if (selection_pending && configured) {
-            mutex_lock();
-            if (s_has_config && s_config_generation == config_generation &&
-                s_selection_pending &&
-                strcmp(s_pending_account_id, selected_account_id) == 0 &&
-                now_ms >= s_selection_persist_retry_at_ms &&
-                quota_id_is_valid(selected_account_id)) {
-                memcpy(s_config.selected_account_id, selected_account_id,
-                       sizeof(s_config.selected_account_id));
-                if (nvs_save_config_locked(&s_config)) {
-                    s_selection_pending = false;
-                    s_selection_persist_retry_at_ms = 0;
-                } else {
-                    ESP_LOGW(TAG, "unable to persist selected account");
-                    s_selection_persist_retry_at_ms = now_ms + SELECTION_PERSIST_RETRY_MS;
-                }
-            }
-            mutex_unlock();
-        }
-        if (!configured) continue;
-        display_state = display_state_snapshot();
-        if (display_state.sleeping ||
-            !display_generation_is_current(display_state.generation)) continue;
-        if (!init_wifi()) {
-            vTaskDelay(pdMS_TO_TICKS(1000));
-            continue;
-        }
-        if (!display_generation_is_current(display_state.generation)) continue;
-        if (!s_wifi_started) continue;
-
-        if (config_generation != applied_config_generation && now_ms >= next_config_apply_ms) {
-            if (apply_wifi_config(&s_network_config, display_state.generation)) {
-                applied_config_generation = config_generation;
-                next_snapshot_poll_ms = now_ms + 1000;
-                next_provider_refresh_ms = now_ms + 1000;
-            } else if (display_generation_is_current(display_state.generation)) {
-                next_config_apply_ms = now_ms + 5000;
-            }
-            continue;
-        }
-
-        mutex_lock();
-        bool retry_wifi = !s_view.connected && s_wifi_retry_pending &&
-                          now_ms >= (uint64_t)s_wifi_retry_at_ms;
-        if (retry_wifi) {
-            s_wifi_retry_pending = false;
-            s_wifi_retry_at_ms = (int64_t)(now_ms + s_wifi_retry_delay_ms);
-        }
-        mutex_unlock();
-        if (retry_wifi) {
-            if (!display_generation_is_current(display_state.generation)) {
-                mutex_lock();
-                s_wifi_retry_pending = true;
-                mutex_unlock();
-                continue;
-            }
-            esp_err_t err = esp_wifi_connect();
-            if (err != ESP_OK) {
-                ESP_LOGW(TAG, "Wi-Fi retry failed (%s)", esp_err_to_name(err));
-                mutex_lock();
-                s_wifi_retry_pending = true;
-                mutex_unlock();
-            }
-        }
-        if (!connected) continue;
-
-        if (settings_pending) {
-            mutex_lock();
-            portENTER_CRITICAL(&s_display_state_mux);
-            bool display_current = !s_display_scheduler.sleeping &&
-                s_display_scheduler.generation == display_state.generation;
-            if (!s_has_config || s_config_generation != config_generation ||
-                !s_view.connected || !s_settings_pending || !display_current) {
-                portEXIT_CRITICAL(&s_display_state_mux);
-                mutex_unlock();
-                continue;
-            }
-            pending_seconds = s_pending_refresh_seconds;
-            pending_auto = s_pending_auto_refresh;
-            pending_screen_timeout = s_pending_screen_timeout_seconds;
-            /* Consume the latest request atomically; requests during HTTP remain queued. */
-            s_settings_pending = false;
-            portEXIT_CRITICAL(&s_display_state_mux);
-            mutex_unlock();
-            perform_settings_update(&s_network_config, config_generation,
-                                    display_state.generation,
-                                    pending_seconds, pending_auto, pending_screen_timeout);
-            continue;
-        }
-
-        if (refresh_seconds != last_refresh_seconds || automatic != last_auto_refresh) {
-            last_refresh_seconds = refresh_seconds;
-            last_auto_refresh = automatic;
-            next_provider_refresh_ms = now_ms + (uint64_t)refresh_seconds * 1000;
-        }
-
-        enum { NETWORK_ACTION_NONE, NETWORK_ACTION_REFRESH,
-               NETWORK_ACTION_SNAPSHOT } action = NETWORK_ACTION_NONE;
-        bool wake_fetch_work = false;
-        bool manual_refresh_work = false;
-        mutex_lock();
-        if (s_has_config && s_config_generation == config_generation && s_view.connected) {
-            portENTER_CRITICAL(&s_display_state_mux);
-            bool display_current = !s_display_scheduler.sleeping;
-            if (display_current) {
-                display_state.generation = s_display_scheduler.generation;
-                if (s_display_scheduler.wake_fetch_pending) {
-                    s_fetch_after_connect = false;
-                    wake_fetch_work = true;
-                    action = NETWORK_ACTION_SNAPSHOT;
-                } else if (s_refresh_requested ||
-                           (s_view.auto_refresh && now_ms >= next_provider_refresh_ms)) {
-                    manual_refresh_work = s_refresh_requested;
-                    s_refresh_requested = false;
-                    s_fetch_after_connect = false;
-                    action = NETWORK_ACTION_REFRESH;
-                } else if (s_fetch_after_connect || now_ms >= next_snapshot_poll_ms) {
-                    s_fetch_after_connect = false;
-                    action = NETWORK_ACTION_SNAPSHOT;
-                }
-                refresh_seconds = s_view.refresh_seconds;
-            }
-            portEXIT_CRITICAL(&s_display_state_mux);
-        }
-        mutex_unlock();
-
-        if (action == NETWORK_ACTION_REFRESH) {
-            if (perform_refresh(&s_network_config, config_generation,
-                                display_state.generation)) {
-                uint64_t completed_ms = monotonic_ms();
-                next_provider_refresh_ms = completed_ms + (uint64_t)refresh_seconds * 1000;
-                next_snapshot_poll_ms = completed_ms + SNAPSHOT_POLL_MS;
-            } else if (manual_refresh_work) {
-                /* Sleep/link transitions cannot consume an unadmitted request. */
-                mutex_lock();
-                if (s_has_config && s_config_generation == config_generation) {
-                    s_refresh_requested = true;
-                }
-                mutex_unlock();
-            }
-        } else if (action == NETWORK_ACTION_SNAPSHOT) {
-            perform_snapshot_fetch(&s_network_config, config_generation,
-                                   display_state.generation, wake_fetch_work);
-            mutex_lock();
-            bool failed = s_view.request_failed;
-            mutex_unlock();
-            uint64_t completed_ms = monotonic_ms();
-            /* Cache synchronization never postpones the provider deadline. */
-            next_snapshot_poll_ms = completed_ms +
-                (failed ? SNAPSHOT_RETRY_MS : SNAPSHOT_POLL_MS);
-        }
+        if(display.sleeping)stop_wifi_for_sleep();
+        service_pairing_tick(display.sleeping);
+        mutex_lock();s_view.pairing_active=pairing_active_locked(monotonic_ms());
+        s_view.pairing_seconds_left=s_view.pairing_active?(uint32_t)((QUOTA_PAIRING_WINDOW_MS-(monotonic_ms()-(uint64_t)s_pairing_opened_at_ms)+999)/1000):0;mutex_unlock();
     }
 }
 
@@ -1534,21 +835,21 @@ static void send_pairing_result(const char request_id[9], bool ok, const char *e
     const char *safe_id = request_valid ? request_id : empty_id;
     const char *error_json = "\"invalid_frame\"";
     if (error != NULL) {
-        static const char *const allowed_errors[] = {
-            "pairing_closed", "frame_too_long", "invalid_frame", "invalid_json",
-            "invalid_request", "unsupported_version", "unsupported_operation",
-            "invalid_config", "storage_error",
+        static const struct { const char *error; const char *json; } errors[] = {
+            {"pairing_closed", "\"pairing_closed\""},
+            {"frame_too_long", "\"frame_too_long\""},
+            {"invalid_frame", "\"invalid_frame\""},
+            {"invalid_json", "\"invalid_json\""},
+            {"invalid_request", "\"invalid_request\""},
+            {"unsupported_version", "\"unsupported_version\""},
+            {"unsupported_operation", "\"unsupported_operation\""},
+            {"invalid_config", "\"invalid_config\""},
+            {"storage_error", "\"storage_error\""},
+            {"storage_write_unknown", "\"storage_write_unknown\""},
+            {"generation_exhausted", "\"generation_exhausted\""},
         };
-        for (size_t i = 0; i < sizeof(allowed_errors) / sizeof(allowed_errors[0]); i++) {
-            if (strcmp(error, allowed_errors[i]) == 0) {
-                static const char *const json_values[] = {
-                    "\"pairing_closed\"", "\"frame_too_long\"", "\"invalid_frame\"",
-                    "\"invalid_json\"", "\"invalid_request\"", "\"unsupported_version\"",
-                    "\"unsupported_operation\"", "\"invalid_config\"", "\"storage_error\"",
-                };
-                error_json = json_values[i];
-                break;
-            }
+        for(size_t i=0;i<sizeof(errors)/sizeof(errors[0]);i++) {
+            if(!strcmp(error,errors[i].error)){error_json=errors[i].json;break;}
         }
     }
     (void)printf("@AIQ:{\"v\":1,\"op\":\"result\",\"request_id\":\"%.8s\","
@@ -1557,188 +858,95 @@ static void send_pairing_result(const char request_id[9], bool ok, const char *e
     (void)fflush(stdout);
 }
 
-static void handle_serial_frame(const char *frame, size_t length)
+static void handle_serial_frame(const char *frame,size_t length)
 {
-    if (frame == NULL || length < 5 || memcmp(frame, "@AIQ:", 5) != 0) return;
-
-    memset(&s_provision_config, 0, sizeof(s_provision_config));
-    char request_id[9] = "00000000";
-    const char *error = NULL;
-    bool valid = quota_parse_provision_frame(frame, length, &s_provision_config,
-                                             request_id, &error);
-    if (!pairing_active()) {
-        send_pairing_result(request_id, false, "pairing_closed");
-        return;
-    }
-    if (!valid) {
-        send_pairing_result(request_id, false, error);
-        quota_app_event_t event = {
-            .kind = QUOTA_APP_EVENT_CONFIGURATION_RESULT,
-            .success = false,
-        };
-        post_event(&event, 0);
-        return;
-    }
-
-    mutex_lock();
-    if (!pairing_active_locked(monotonic_ms())) {
-        mutex_unlock();
-        send_pairing_result(request_id, false, "pairing_closed");
-        return;
-    }
-    if (s_has_config) {
-        memcpy(s_provision_config.selected_account_id, s_config.selected_account_id,
-               sizeof(s_provision_config.selected_account_id));
-        s_provision_config.refresh_seconds = s_config.refresh_seconds;
-        s_provision_config.auto_refresh = s_config.auto_refresh;
-    }
-    bool saved = nvs_save_config_locked(&s_provision_config);
-    if (saved) {
-        (void)nvs_erase_snapshot();
-        memset(&s_stored_snapshot, 0, sizeof(s_stored_snapshot));
-        s_snapshot_cache_present = false;
-        s_balance_cache_present = false;
-        memset(&s_stored_balances, 0, sizeof(s_stored_balances));
-        s_snapshot_cache_dirty = false;
-        s_snapshot_cache_attempted = false;
-        s_snapshot_cache_last_attempt_ms = 0;
-        s_snapshot_cache_saved_at = 0;
-        s_config = s_provision_config;
-        s_has_config = true;
-        s_config_generation++;
-        if (s_config_generation == 0) s_config_generation = 1;
-        s_refresh_requested = false;
-        s_settings_pending = false;
-        s_selection_pending = false;
-        s_pending_account_id[0] = '\0';
-        s_selection_persist_retry_at_ms = 0;
-        s_view.configured = true;
-        memset(&s_view.snapshot, 0, sizeof(s_view.snapshot));
-        s_view.snapshot_valid = false;
-        s_view.connected = false;
-        s_view.refreshing = false;
-        s_view.refresh_seconds = s_provision_config.refresh_seconds;
-        s_view.auto_refresh = s_provision_config.auto_refresh;
-        s_view.request_failed = false;
-        s_view.clock_synchronized = s_provision_config.server_time >= 1577836800ULL;
-        s_pairing_screen_open = false;
-        s_last_server_time_persist_ms = monotonic_ms();
-        s_view.pairing_active = false;
-        s_view.pairing_seconds_left = 0;
-    }
-    mutex_unlock();
-
-    send_pairing_result(request_id, saved, saved ? NULL : "storage_error");
-    quota_app_event_t event = {
-        .kind = QUOTA_APP_EVENT_CONFIGURATION_RESULT,
-        .success = saved,
-    };
-    post_event(&event, 0);
-    if (saved) {
-        set_system_time_if_newer(s_provision_config.server_time);
-        if (s_network_task != NULL) xTaskNotifyGive(s_network_task);
-    }
+    if(!frame||length<5||memcmp(frame,"@AIQ:",5)||!s_companion_work)return;
+    memset(&s_provision_config,0,sizeof(s_provision_config));char request_id[9]="00000000";const char *error=NULL;
+    bool valid=quota_parse_provision_frame(frame,length,&s_provision_config,request_id,&error);
+    if(!pairing_active())error="pairing_closed";
+    bool saved=false;
+#ifdef ESP_PLATFORM
+    if(valid&&!error)saved=quota_portable_service_configure_legacy(&s_provision_config,&error);
+#endif
+    if(valid&&!error&&!saved)error="storage_error";
+    uint64_t server_time=s_provision_config.server_time;quota_portable_clear_secret(&s_provision_config,sizeof(s_provision_config));
+    send_pairing_result(request_id,saved,saved?NULL:error);
+    quota_app_event_t event={.kind=QUOTA_APP_EVENT_CONFIGURATION_RESULT,.success=saved};post_event(&event,0);
+    if(saved){set_system_time_if_newer(server_time);quota_service_close_pairing_window();}
 }
 
-static void serial_task(void *arg)
+/* One owner reads USB only after its physical pairing window is ready. */
+static void service_pairing_tick(bool sleeping)
 {
-    (void)arg;
-    quota_frame_decoder_init(&s_frame_decoder);
-    for (;;) {
-        if (display_state_snapshot().sleeping) {
-            quota_frame_decoder_init(&s_frame_decoder);
-            (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-            continue;
-        }
-        int input = fgetc(stdin);
-        if (input == EOF) {
-            clearerr(stdin);
-            vTaskDelay(pdMS_TO_TICKS(20));
-            continue;
-        }
-        if (display_state_snapshot().sleeping) {
-            quota_frame_decoder_init(&s_frame_decoder);
-            continue;
-        }
-        const char *frame = NULL;
-        size_t length = 0;
-        quota_frame_result_t result = quota_frame_decoder_feed(&s_frame_decoder, (char)input,
-                                                                &frame, &length);
-        if (result == QUOTA_FRAME_COMPLETE) {
-            handle_serial_frame(frame, length);
-        } else if (result == QUOTA_FRAME_TOO_LONG && pairing_active()) {
-            send_pairing_result(NULL, false, "frame_too_long");
-        }
+    if (sleeping && pairing_requested()) quota_service_close_pairing_window();
+    if (!pairing_requested()) {
+        if (s_usb_decoder) { quota_portable_clear_secret(s_usb_decoder, sizeof(*s_usb_decoder)); free(s_usb_decoder); s_usb_decoder = NULL; }
+        if (s_companion_work) release_companion_work();
+        return;
+    }
+    if (!s_usb_decoder) {
+#ifdef ESP_PLATFORM
+        if (!quota_portable_service_prepare_pairing()) return;
+#endif
+        stop_wifi_for_sleep();
+        if (!acquire_companion_work()) return;
+        s_usb_decoder = calloc(1, sizeof(*s_usb_decoder));
+        if (!s_usb_decoder) return;
+        quota_frame_decoder_init(s_usb_decoder);
+        unsigned char ignored[64];
+        while (read(STDIN_FILENO, ignored, sizeof(ignored)) > 0) {}
+        mutex_lock();
+        s_pairing_screen_open = true;
+        s_pairing_opened_at_ms = (int64_t)monotonic_ms();
+        s_view.pairing_preparing = false; s_view.pairing_active = true;
+        s_view.pairing_seconds_left = QUOTA_PAIRING_WINDOW_MS / 1000;
+        mutex_unlock();
+        post_simple_event(QUOTA_APP_EVENT_PAIRING_TICK);
+    }
+    if (!pairing_active()) { quota_service_close_pairing_window(); return; }
+    for (unsigned i = 0; i < 512 && pairing_requested(); i++) {
+        unsigned char input;
+        if (read(STDIN_FILENO, &input, 1) != 1) break;
+        if (!pairing_active()) { quota_service_close_pairing_window(); break; }
+        const char *frame = NULL; size_t length = 0;
+        quota_frame_result_t result = quota_frame_decoder_feed(s_usb_decoder, (char)input, &frame, &length);
+        if (result == QUOTA_FRAME_COMPLETE) handle_serial_frame(frame, length);
+        else if (result == QUOTA_FRAME_TOO_LONG) send_pairing_result(NULL, false, "frame_too_long");
     }
 }
 
 bool quota_service_init(void)
 {
-    if (s_events != NULL) return true;
-    s_mutex = xSemaphoreCreateMutex();
-    if (s_mutex == NULL) return false;
-    s_events = xQueueCreate(EVENT_QUEUE_DEPTH, sizeof(quota_app_event_t));
-    if (s_events == NULL) return false;
-
-    esp_err_t err = nvs_flash_init();
-    s_nvs_ready = err == ESP_OK;
-    if (!s_nvs_ready) {
-        ESP_LOGE(TAG, "NVS init failed (%s); stored credentials are unavailable", esp_err_to_name(err));
-    }
-    s_has_config = nvs_load_config();
-    s_view.screen_timeout_seconds = nvs_load_screen_timeout();
-    if (s_has_config) {
-        s_config_generation = 1;
-        s_view.configured = true;
-        s_view.refresh_seconds = s_config.refresh_seconds;
-        s_view.auto_refresh = s_config.auto_refresh;
-        s_last_server_time_persist_ms = monotonic_ms();
-        set_system_time_if_newer(s_config.server_time);
-        if (nvs_load_snapshot(&s_config)) {
-            s_view.snapshot.server_time = s_snapshot_cache_saved_at;
-            s_view.snapshot.revision = s_stored_snapshot.snapshot.revision;
-            s_view.snapshot.refresh_seconds = s_config.refresh_seconds;
-            s_view.snapshot.auto_refresh = s_config.auto_refresh;
-            s_view.snapshot.account_count = s_stored_snapshot.snapshot.account_count;
-            memcpy(s_view.snapshot.accounts, s_stored_snapshot.snapshot.accounts,
-                   (size_t)s_view.snapshot.account_count *
-                       sizeof(s_view.snapshot.accounts[0]));
-            nvs_load_balance_snapshot(&s_config);
-            s_view.snapshot_valid = true;
-            s_view.now_epoch = current_epoch();
-            set_system_time_if_newer(s_snapshot_cache_saved_at);
-            ESP_LOGI(TAG, "restored cached quota snapshot");
-        }
-    } else {
-        s_view.configured = false;
-        s_view.refresh_seconds = QUOTA_REFRESH_DEFAULT_SECONDS;
-        s_view.auto_refresh = true;
-        if (s_nvs_ready) (void)nvs_erase_snapshot();
-    }
+    if(s_events)return true;
+    s_mutex=xSemaphoreCreateMutex();if(!s_mutex)return false;
+    s_events=xQueueCreate(EVENT_QUEUE_DEPTH,sizeof(quota_app_event_t));if(!s_events)return false;
+    esp_err_t err=nvs_flash_init();s_nvs_ready=err==ESP_OK;
+    if(!s_nvs_ready)ESP_LOGE(TAG,"NVS init failed (%s); stored credentials are unavailable",esp_err_to_name(err));
+    quota_store_read_result_t legacy_result=nvs_read_config_result(&s_config);
+    s_has_config=legacy_result==QUOTA_STORE_READ_OK;s_config_generation=1;
+    s_view.screen_timeout_seconds=nvs_load_screen_timeout();
+    s_view.refresh_seconds=QUOTA_REFRESH_DEFAULT_SECONDS;s_view.auto_refresh=true;
+    if(s_has_config)set_system_time_if_newer(s_config.server_time);
 #ifdef ESP_PLATFORM
-    quota_portable_service_hooks_t portable_hooks = {
-        .wifi_ready = init_wifi, .wifi_stop = portable_wifi_stop,
-        .notify = portable_notify, .wake = portable_wake,
-        .display_current = display_generation_is_current,
-    };
-    if (!quota_portable_service_init(s_has_config ? &s_config : NULL, &portable_hooks)) return false;
+    quota_portable_service_hooks_t hooks={.view=&s_view,.lock=mutex_lock,.unlock=mutex_unlock,.try_lock=portable_try_lock,
+        .config_generation_locked=portable_config_generation_locked,.config_changed_locked=portable_config_changed_locked,
+        .pairing_requested=pairing_requested,.wifi_ready=init_wifi,.wifi_stop=portable_wifi_stop,
+        .notify=portable_notify,.wake=portable_wake,.display_current=display_generation_is_current,
+        .legacy_inventory=legacy_inventory,.legacy_snapshot=legacy_snapshot,
+        .legacy_config=legacy_config};
+    if(!quota_portable_service_init(s_has_config?&s_config:NULL,&hooks))return false;
 #endif
-    s_pairing_screen_open = false;
-    s_pairing_opened_at_ms = (int64_t)monotonic_ms();
-    return true;
+    s_pairing_screen_open=false;s_pairing_opened_at_ms=(int64_t)monotonic_ms();return true;
 }
 
 bool quota_service_start(void)
 {
     if (s_events == NULL || s_mutex == NULL) return false;
+    int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
+    if (flags < 0 || fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK) < 0) return false;
     if (s_network_task == NULL && xTaskCreate(network_task, "quota_network",
             NETWORK_TASK_STACK, NULL, NETWORK_TASK_PRIORITY, &s_network_task) != pdPASS) {
         s_network_task = NULL;
-        return false;
-    }
-    if (s_serial_task == NULL && xTaskCreate(serial_task, "quota_serial",
-            SERIAL_TASK_STACK, NULL, SERIAL_TASK_PRIORITY, &s_serial_task) != pdPASS) {
-        s_serial_task = NULL;
         return false;
     }
     return true;
@@ -1779,7 +987,6 @@ void quota_service_set_display_sleeping(bool sleeping)
         (void)xSemaphoreGive(s_mutex);
     }
     if (s_network_task != NULL) xTaskNotifyGive(s_network_task);
-    if (s_serial_task != NULL) xTaskNotifyGive(s_serial_task);
 }
 
 void quota_service_get_view(quota_service_view_t *view)
@@ -1788,8 +995,7 @@ void quota_service_get_view(quota_service_view_t *view)
     mutex_lock();
     *view = s_view;
     display_state_t display_state = display_state_snapshot();
-    if (display_state.sleeping ||
-        s_refreshing_display_generation != display_state.generation) {
+    if (display_state.sleeping) {
         view->refreshing = false;
     }
     view->now_epoch = current_epoch();
@@ -1800,96 +1006,50 @@ void quota_service_get_view(quota_service_view_t *view)
     } else {
         view->pairing_seconds_left = 0;
     }
-    mutex_unlock();
 #ifdef ESP_PLATFORM
-    quota_portable_service_overlay(view);
+    quota_portable_service_countdown_overlay_locked(view);
 #endif
-}
-
-void quota_service_get_selected_account_id(char account_id[QUOTA_ACCOUNT_ID_BYTES + 1])
-{
-    if (account_id == NULL) return;
-#ifdef ESP_PLATFORM
-    if (quota_portable_service_selected(account_id)) return;
-#endif
-    mutex_lock();
-    if (s_has_config) {
-        const char *selected = s_selection_pending ? s_pending_account_id
-                                                   : s_config.selected_account_id;
-        memcpy(account_id, selected, QUOTA_ACCOUNT_ID_BYTES + 1);
-    } else {
-        account_id[0] = '\0';
-    }
     mutex_unlock();
 }
 
-void quota_service_request_refresh(void)
+void quota_service_get_selected_account_id(char account_id[QUOTA_ACCOUNT_ID_BYTES+1])
 {
+    if(!account_id)return;account_id[0]=0;
 #ifdef ESP_PLATFORM
-    char selected[QUOTA_ACCOUNT_ID_BYTES + 1];
-    if (quota_portable_service_selected(selected)) { quota_portable_service_refresh(); return; }
+    (void)quota_portable_service_selected(account_id);
 #endif
-    mutex_lock();
-    s_refresh_requested = true;
-    mutex_unlock();
-    if (s_network_task != NULL) xTaskNotifyGive(s_network_task);
 }
 
-void quota_service_request_settings(uint16_t refresh_seconds, bool auto_refresh,
-                                    uint16_t screen_timeout_seconds)
+void quota_service_request_refresh(void) { quota_portable_service_refresh(); }
+
+void quota_service_request_settings(uint16_t refresh_seconds,bool auto_refresh,uint16_t screen_timeout_seconds)
 {
-    if (!quota_refresh_seconds_is_valid(refresh_seconds) ||
-        !quota_screen_timeout_is_valid(screen_timeout_seconds)) return;
-#ifdef ESP_PLATFORM
-    char selected[QUOTA_ACCOUNT_ID_BYTES + 1];
-    if (quota_portable_service_selected(selected)) {
-        quota_portable_service_settings(refresh_seconds, auto_refresh, screen_timeout_seconds); return;
-    }
-#endif
-    mutex_lock();
-    s_settings_pending = true;
-    s_pending_refresh_seconds = refresh_seconds;
-    s_pending_auto_refresh = auto_refresh;
-    s_pending_screen_timeout_seconds = screen_timeout_seconds;
-    mutex_unlock();
-    if (s_network_task != NULL) xTaskNotifyGive(s_network_task);
+    quota_portable_service_settings(refresh_seconds,auto_refresh,screen_timeout_seconds);
 }
 
-void quota_service_select_account(const char *account_id)
-{
-    if (account_id == NULL || !quota_id_is_valid(account_id)) return;
-#ifdef ESP_PLATFORM
-    char selected[QUOTA_ACCOUNT_ID_BYTES + 1];
-    if (quota_portable_service_selected(selected)) { quota_portable_service_select(account_id); return; }
-#endif
-    mutex_lock();
-    if (s_has_config) {
-        memcpy(s_pending_account_id, account_id, QUOTA_ACCOUNT_ID_BYTES + 1);
-        s_selection_pending = true;
-        s_selection_persist_retry_at_ms = 0;
-    }
-    mutex_unlock();
-    if (s_network_task != NULL) xTaskNotifyGive(s_network_task);
-}
+void quota_service_select_account(const char *account_id) { quota_portable_service_select(account_id); }
 
 void quota_service_open_pairing_window(void)
 {
+    atomic_store(&s_pairing_requested, true);
     mutex_lock();
-    s_pairing_screen_open = true;
-    s_pairing_opened_at_ms = (int64_t)monotonic_ms();
-    s_view.pairing_active = true;
-    s_view.pairing_seconds_left = QUOTA_PAIRING_WINDOW_MS / 1000;
+    s_pairing_screen_open = false;
+    s_view.pairing_preparing = true; s_view.pairing_active = false;
+    s_view.pairing_seconds_left = 0;
     mutex_unlock();
+    if (s_network_task) xTaskNotifyGive(s_network_task);
     post_simple_event(QUOTA_APP_EVENT_PAIRING_TICK);
 }
 
 void quota_service_close_pairing_window(void)
 {
+    atomic_store(&s_pairing_requested, false);
     mutex_lock();
     s_pairing_screen_open = false;
-    s_view.pairing_active = false;
+    s_view.pairing_preparing = s_view.pairing_active = false;
     s_view.pairing_seconds_left = 0;
     mutex_unlock();
+    if (s_network_task) xTaskNotifyGive(s_network_task);
 }
 
 void quota_service_open_phone(void) { quota_portable_service_open(); }

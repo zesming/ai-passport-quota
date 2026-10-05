@@ -13,6 +13,7 @@ run_static_checks() {
     local test_dir
 
     python3 tools/check_repo.py
+    node tests/test_portable_phone.mjs
 
     actionlint_bin="${ACTIONLINT_BIN:-}"
     if [[ -z "${actionlint_bin}" ]]; then
@@ -41,7 +42,7 @@ run_static_checks() {
         tests/test_bsp_lvgl_init.c components/bsp/src/bsp_display_rounding.c \
         -o "${test_dir}/test_bsp_lvgl_init"
     "${test_dir}/test_bsp_lvgl_init"
-    for suite in quota_fonts quota_http_runtime quota_refresh_runtime quota_power_runtime quota_storage_runtime quota_portable_runtime quota_direct_runtime quota_portable_service_runtime check_repo verify_firmware archive_firmware; do
+    for suite in quota_fonts quota_ui_runtime quota_http_runtime quota_refresh_runtime quota_power_runtime quota_storage_runtime quota_catalog_runtime quota_portable_runtime quota_direct_runtime quota_portable_service_runtime check_repo verify_firmware archive_firmware; do
         PYTHONDONTWRITEBYTECODE=1 python3 "tests/test_${suite}.py"
     done
     rm -rf "${test_dir}"
@@ -55,6 +56,8 @@ run_firmware_checks() (
         echo "ERROR: idf.py is not available; activate ESP-IDF 5.5.3 first." >&2
         return 1
     fi
+
+    PYTHONDONTWRITEBYTECODE=1 python3 tests/test_quota_direct_sdk_headers.py
 
     validation_build_dir="$(mktemp -d /tmp/ai-passport-firmware.XXXXXX)"
     trap 'case "${validation_build_dir}" in /tmp/ai-passport-firmware.*) rm -rf -- "${validation_build_dir}" ;; esac' EXIT

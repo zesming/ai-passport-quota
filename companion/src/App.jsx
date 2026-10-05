@@ -267,7 +267,7 @@ export function App() {
   const [apiState, setApiState] = useState(null);
   const [apiError, setApiError] = useState('');
   const [selectedId, setSelectedId] = useState(null);
-  const [panel, setPanel] = useState('accounts');
+  const [panel, setPanel] = useState('device');
   const [previewScreen, setPreviewScreen] = useState('home');
   const [settingFocus, setSettingFocus] = useState(0);
   const [toast, setToast] = useState('');
@@ -706,8 +706,8 @@ export function App() {
       if (encoded.byteLength > 4096) throw new Error('配置内容超过设备协议允许的大小。');
       const ack = await serial.send(encoded);
       if (!ack.ok) throw new DeviceSerialError(`device_${ack.error}`, {});
-      setSerialMessage('配置已发送。设备将连接本机安全同步服务。');
-      setToast('设备配置完成。');
+      setSerialMessage('采集器来源已保存。Wi‑Fi 配置仍需设备连接验证，请查看设备结果；再在设备设置页导入所需账户。');
+      setToast('电脑采集器来源已保存，网络待验证。');
     } catch (error) {
       if (error?.name === 'NotFoundError' || error?.name === 'AbortError') {
         setSerialError('未选择串口设备。');
@@ -743,7 +743,7 @@ export function App() {
   return (
     <main className="app-shell">
       <header className="page-header">
-        <div className="wordmark">AI Passport <span>本地额度看板</span></div>
+        <div className="wordmark">AI Passport <span>设备设置与电脑采集</span></div>
         <div className={`connection-label ${apiError ? 'warning' : apiState ? 'connected' : ''}`}>
           <span className="live-dot" />{connectedStatus}
         </div>
@@ -751,19 +751,19 @@ export function App() {
 
       <section className="intro">
         <div>
-          <span className="eyebrow">本机账户与设备管理</span>
+          <span className="eyebrow">设备设置与可选电脑采集</span>
           <h1>AI 使用额度，一眼看清</h1>
-          <p>连接官方账户，查看 AI Passport 小屏额度与本机同步状态。</p>
+          <p>Passport 保存账户并自行更新，手机和电脑共用设备设置页。需要 Claude 时，可手动运行电脑采集器。</p>
         </div>
-        <div className="local-badge"><span className="lock-mark">⌑</span><span>账户授权保存在此电脑</span><small>本地应用 · 仅本机连接</small></div>
+        <div className="local-badge"><span className="lock-mark">⌑</span><span>可选采集器 · 本机私有档案</span><small>电脑采集授权保存在此电脑</small></div>
       </section>
 
       {apiError && <div className="api-banner" role="status"><strong>本机应用暂时无法连接</strong><span>{apiError}</span><button className="secondary" onClick={pollState}>重试连接</button></div>}
 
       <div className="workspace">
         <section className="preview-panel" aria-labelledby="preview-title">
-          <div className="section-heading"><div><h2 id="preview-title">设备屏幕预览</h2><span>显示本机实际账户与额度</span></div><span className="screen-size">240 × 320</span></div>
-          <nav className="screen-tabs" aria-label="切换设备预览画面">
+          <div className="section-heading"><div><h2 id="preview-title">电脑采集小屏预览</h2><span>仅预览此电脑采集账户，未读取 Passport 的全部设备账户。</span></div><span className="screen-size">240 × 320</span></div>
+          <nav className="screen-tabs" aria-label="切换电脑采集预览画面">
             {PREVIEW_SCREENS.map(([value, label]) => (
               <button key={value} type="button" className={previewScreen === value ? 'active' : ''} aria-pressed={previewScreen === value} onClick={() => setPreviewScreen(value)}>{label}</button>
             ))}
@@ -771,7 +771,7 @@ export function App() {
 
           <div className="display-stage">
             <div className="screen-wrapper" style={{ width: 240 * scale, height: 320 * scale }}>
-              <div className="device-screen" style={{ transform: `scale(${scale})` }} aria-label="240 乘 320 的 AI Passport 设备屏幕预览">
+              <div className="device-screen" style={{ transform: `scale(${scale})` }} aria-label="240 乘 320 的电脑采集账户小屏预览">
                 {previewScreen === 'home' && <>
                   <DeviceHeader title="AI 额度" info={previewAccount ? `${previewAccountIndex + 1}/${authenticatedAccounts.length}` : '0/0'} nowSeconds={nowSeconds} previewStatus={previewStatus} />
                   {previewAccount ? <>
@@ -793,7 +793,7 @@ export function App() {
                       ['配对', '电脑端'],
                     ].map(([label, value], index) => <button key={label} type="button" className={settingFocus === index ? 'focused' : ''} onClick={() => { setSettingFocus(index); activateSetting(index); }}><span>{label}</span><span>{value}</span></button>)}
                   </div>
-                  <div className="device-explanation">电脑完成账户授权<br />额度来自最近一次采集</div>
+                  <div className="device-explanation">Passport 账户请用设备设置<br />此预览来自电脑采集器</div>
                   <div className="device-footer"><span>↑↓ 选择 · OK 确认</span><span>长按返回</span></div>
                 </>}
 
@@ -817,7 +817,7 @@ export function App() {
             </div>
           </div>
 
-          <div className="hardware-controls" aria-label="设备三键操作模拟">
+          <div className="hardware-controls" aria-label="小屏预览三键操作模拟">
             <button type="button" onClick={() => direction(-1)} aria-label="上键">↑</button>
             <button
               type="button"
@@ -836,15 +836,24 @@ export function App() {
         </section>
 
         <section className="companion-panel" aria-label="电脑端控制台">
-          <div className="console-heading"><div><span className="eyebrow">电脑端控制台</span><h2>账户与设备</h2></div><span className={`app-state-pill ${apiError ? 'warning' : apiState ? 'good' : ''}`}><i />{connectedStatus}</span></div>
+          <div className="console-heading"><div><span className="eyebrow">AI Passport</span><h2>设备设置与可选采集器</h2></div><span className={`app-state-pill ${apiError ? 'warning' : apiState ? 'good' : ''}`}><i />{connectedStatus}</span></div>
           <nav className="panel-tabs" aria-label="电脑端功能">
-            {[['accounts', '账户管理'], ['refresh', '刷新设置'], ['setup', '设备配置']].map(([value, label]) => <button type="button" key={value} className={panel === value ? 'active' : ''} aria-pressed={panel === value} onClick={() => setPanel(value)}>{label}</button>)}
+            {[['device', '设备设置'], ['accounts', '可选采集账户'], ['refresh', '采集器设置'], ['setup', '采集器配对']].map(([value, label]) => <button type="button" key={value} className={panel === value ? 'active' : ''} aria-pressed={panel === value} onClick={() => setPanel(value)}>{label}</button>)}
           </nav>
+
+          {panel === 'device' && <div className="setup-panel">
+            <div className="setup-title"><div><h3>打开同一个设备设置页</h3><p>手机和电脑都在 Passport 的本地页面管理账户、Wi‑Fi、刷新与显示。</p></div></div>
+            <div className="setup-gate"><strong>在设备上打开「设备设置」</strong><span>先连接屏幕第一步的设备热点，再打开第二步的二维码。电脑也可手动输入第三步的地址与完整设置密钥。</span></div>
+            <a className="primary login-link" href="http://192.168.4.1" target="_blank" rel="noreferrer">打开设备设置页 ↗</a>
+            <p className="source-note">打开前请先连接设备热点。此地址在手机和电脑上相同；设置密钥只在设备屏幕显示，并只在当前网页内存中使用。</p>
+            <div className="info-note"><strong>Passport 保存账户并自行更新</strong><p>Codex 与 DeepSeek 可在设备上独立更新。完成官方授权时，请让手机或电脑接入可用网络，并按设备屏幕继续。</p><p>Claude 需要手动运行可选电脑采集器。已保存在电脑中的账户凭证不会自动导入 Passport，也不会按邮箱合并账户。</p></div>
+            <button type="button" className="secondary wide" onClick={() => setPanel('accounts')}>管理可选电脑采集器</button>
+          </div>}
 
           {!apiState && !apiError && <div className="loading-state"><span className="spinner" />正在连接本机应用…</div>}
 
           {apiState && panel === 'accounts' && <>
-            <div className="accounts-heading"><div><h3>本机账户</h3><p>最多 {MAX_ACCOUNTS} 个 · 官方授权或 DeepSeek API 密钥</p></div><button type="button" className="primary" onClick={openProviderDialog} disabled={currentAccountList.length >= MAX_ACCOUNTS || Boolean(busyAction)}>＋ 添加账户</button></div>
+            <div className="accounts-heading"><div><h3>可选电脑采集账户</h3><p>手动运行 · 最多 {MAX_ACCOUNTS} 个 · 官方授权或 DeepSeek API 密钥</p></div><button type="button" className="primary" onClick={openProviderDialog} disabled={currentAccountList.length >= MAX_ACCOUNTS || Boolean(busyAction)}>＋ 添加账户</button></div>
             <div className="cli-availability"><span><i className={apiState.cli?.codex ? 'available' : ''} />Codex CLI <strong>{apiState.cli?.codex ? '可用' : '未发现'}</strong></span><span><i className={apiState.cli?.claude ? 'available' : ''} />Claude CLI <strong>{apiState.cli?.claude ? '可用' : '未发现'}</strong></span></div>
             {currentAccountList.length ? <div className="account-list">
               {currentAccountList.map(item => <div className={`account-row ${account?.id === item.id ? 'selected' : ''}`} key={item.id}>
@@ -884,17 +893,17 @@ export function App() {
           </>}
 
           {apiState && panel === 'refresh' && <div className="refresh-panel">
-            <div className="refresh-title"><div><h3>刷新与显示设置</h3><p>设置账户查询间隔和设备息屏时间</p></div><button type="button" className={`toggle ${autoRefresh ? 'on' : ''}`} role="switch" aria-checked={Boolean(autoRefresh)} aria-label="自动刷新" onClick={() => updateSettings({ refresh_seconds: refreshSeconds, auto_refresh: !autoRefresh }, autoRefresh ? '自动刷新已关闭。' : '自动刷新已开启。')} disabled={Boolean(busyAction)}><span /></button></div>
+            <div className="refresh-title"><div><h3>电脑采集器设置</h3><p>设置仅用于本机采集器；Passport 的设置在设备页面管理</p></div><button type="button" className={`toggle ${autoRefresh ? 'on' : ''}`} role="switch" aria-checked={Boolean(autoRefresh)} aria-label="自动刷新" onClick={() => updateSettings({ refresh_seconds: refreshSeconds, auto_refresh: !autoRefresh }, autoRefresh ? '自动刷新已关闭。' : '自动刷新已开启。')} disabled={Boolean(busyAction)}><span /></button></div>
             <label className="setting-row setting-select"><span><strong>自动刷新间隔</strong><small>仅当自动刷新开启时生效</small></span><select value={refreshSeconds ?? ''} onChange={event => updateSettings({ refresh_seconds: Number(event.target.value), auto_refresh: Boolean(autoRefresh) }, `刷新间隔已设为 ${Number(event.target.value) / 60} 分钟。`)} disabled={!autoRefresh || Boolean(busyAction)}><option value="" disabled>读取设置中</option>{REFRESH_OPTIONS.map(value => <option key={value} value={value}>{value / 60} 分钟</option>)}</select></label>
-            <label className="setting-row setting-select"><span><strong>设备息屏时间</strong><small>按键后等待多久关闭屏幕背光</small></span><select value={screenTimeoutSeconds} onChange={event => { const value = Number(event.target.value); updateSettings({ screen_timeout_seconds: value }, `设备息屏时间已设为${value === 0 ? '永不' : ` ${screenTimeoutLabel(value)}`}。`); }} disabled={Boolean(busyAction)}>{SCREEN_TIMEOUT_OPTIONS.map(value => <option key={value} value={value}>{screenTimeoutLabel(value)}</option>)}</select></label>
+            <label className="setting-row setting-select"><span><strong>采集器历史息屏设置</strong><small>保留旧采集器设置；Passport 以设备本地设置为准</small></span><select value={screenTimeoutSeconds} onChange={event => { const value = Number(event.target.value); updateSettings({ screen_timeout_seconds: value }, `设备息屏时间已设为${value === 0 ? '永不' : ` ${screenTimeoutLabel(value)}`}。`); }} disabled={Boolean(busyAction)}>{SCREEN_TIMEOUT_OPTIONS.map(value => <option key={value} value={value}>{screenTimeoutLabel(value)}</option>)}</select></label>
             <div className="refresh-detail"><div><strong>所选账户</strong><span>{account ? account.provider === 'deepseek' ? account.label || 'DeepSeek API' : account.email || providerName(account.provider) : '未选择账户'}</span></div><div><strong>上次采集</strong><span>{account?.observed_at ? `${formatAge(account.observed_at, nowSeconds)} · ${formatDate(account.observed_at)}` : '尚无采集记录'}</span></div><div><strong>当前状态</strong><span className={selectedCached || (account && account.status !== 'ok') ? 'warning-text' : ''}>{account ? `${accountStatus(account)}${apiError ? ' · 显示缓存' : stale ? ' · 数据较旧' : ''}` : '等待添加账户'}</span></div></div>
             <button type="button" className="primary wide" onClick={refreshAll} disabled={Boolean(busyAction) || !refreshableAccounts.length}>{busyAction.includes('/refresh') ? '正在提交…' : '立即刷新全部账户'}</button>
             <div className="info-note"><strong>额度数据的来源</strong><p>数据由本机程序从已授权的官方客户端、官方账户状态或 DeepSeek 余额接口中采集。DeepSeek 使用余额查询接口，不会发起模型请求，也不会向设备发送 API 密钥。</p><p>Claude 数据可能要等该档案首次正常使用后才会出现。重置时间已到时，页面会等待数据源提供新额度。</p></div>
           </div>}
 
           {apiState && panel === 'setup' && <div className="setup-panel">
-            <div className="setup-title"><div><h3>连接 AI Passport 设备</h3><p>通过 USB 串口把本机 Wi‑Fi 信息发送到设备。</p></div><span className={`device-state ${apiState.device?.enabled ? 'good' : ''}`}><i />{apiState.device?.enabled ? '局域网同步已启用' : '尚未连接设备'}</span></div>
-            <div className="setup-gate"><strong>先在设备屏幕上进入「设置 / 配对」</strong><span>设备会在该页面开放最多 120 秒的配置时间。准备好后，再点击连接按钮选择串口。</span></div>
+            <div className="setup-title"><div><h3>配对可选电脑采集器</h3><p>通过 USB 配对当前手动运行的采集器。</p></div><span className={`device-state ${apiState.device?.enabled ? 'good' : ''}`}><i />{apiState.device?.enabled ? '电脑采集服务已启用' : '尚未连接设备'}</span></div>
+            <div className="setup-gate"><strong>先在设备屏幕上进入「设置 / 电脑采集配对」</strong><span>设备会在该页面开放最多 120 秒的配置时间。准备好后，再点击连接按钮选择串口。</span></div>
             <div className="setup-current-device">
               <div><span>本机设备地址</span><strong>{apiState.device?.base_url || '未配置'}</strong></div>
               <div><span>设备最近连接</span><strong>{apiState.device?.last_seen ? formatDate(apiState.device.last_seen) : '尚无连接记录'}</strong></div>
@@ -908,15 +917,15 @@ export function App() {
               {serialError && <div className="serial-error" role="alert">{serialError}</div>}
               {serialMessage && <div className="serial-success" role="status">{serialMessage}</div>}
               {!navigator.serial?.requestPort && <div className="serial-hint">当前浏览器未提供 Web Serial。请在连接到本机应用的桌面版 Chrome 或 Edge 中操作。</div>}
-              <button type="submit" className="primary wide" disabled={serialBusy || Boolean(busyAction) || !addresses.length || !apiState.csrf_token}>{serialBusy ? <><span className="button-spinner" />正在连接设备并配置…</> : '连接设备并配置'}</button>
+              <button type="submit" className="primary wide" disabled={serialBusy || Boolean(busyAction) || !addresses.length || !apiState.csrf_token}>{serialBusy ? <><span className="button-spinner" />正在通过 USB 配对采集器…</> : '通过 USB 配对采集器'}</button>
             </form>
             <div className="setup-footnote"><strong>连接注意</strong><p>配置过程最多等待设备响应 15 秒。完成后串口会关闭，密码会清除。Wi‑Fi 或本机证书 / IP 变化时，请重新进入设备设置页并配对一次。</p></div>
-            <div className="lan-controls"><div><strong>局域网同步服务</strong><small>{apiState.device?.enabled ? `当前服务地址：${apiState.device.base_url || '本机'}` : '连接设备后，本机程序会启用安全同步服务。'}</small></div><button type="button" className="secondary" onClick={stopDeviceSync} disabled={!apiState.device?.enabled || Boolean(busyAction)}>停止同步</button></div>
+            <div className="lan-controls"><div><strong>可选电脑采集服务</strong><small>{apiState.device?.enabled ? `当前服务地址：${apiState.device.base_url || '本机'}` : '连接设备后，本机程序会启用安全同步服务。'}</small></div><button type="button" className="secondary" onClick={stopDeviceSync} disabled={!apiState.device?.enabled || Boolean(busyAction)}>停止同步</button></div>
           </div>}
         </section>
       </div>
 
-      <footer className="page-footer"><span>AI Passport 本地电脑伴侣</span><span>账户状态和额度取自本机服务 · 每 5 秒检查一次连接</span></footer>
+      <footer className="page-footer"><span>AI Passport · 可选电脑采集器</span><span>账户状态和额度取自本机服务 · 每 5 秒检查一次连接</span></footer>
 
       {providerDialog && <div className="dialog-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busyAction) setProviderDialog(false); }}>
         <section className="connect-dialog" role="dialog" aria-modal="true" aria-labelledby="connect-title">

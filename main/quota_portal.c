@@ -173,6 +173,7 @@ bool quota_portal_parse_command(const char *json, size_t length, quota_portable_
         !structure_bounded(json, length))
         return false;
     command->network_index = UINT8_MAX;
+    command->replace_index = UINT8_MAX;
     const char *end = NULL;
     cJSON *root = cJSON_ParseWithLengthOpts(json, length, &end, false);
     bool ok = root != NULL && end != NULL;
@@ -189,9 +190,13 @@ bool quota_portal_parse_command(const char *json, size_t length, quota_portable_
     static const char *const network_keys[] = {"ssid", "password", "phone_utc", "network_index", "open_network", NULL};
     static const char *const deepseek_keys[] = {"account_id", "api_key", "label", NULL};
     static const char *const account_keys[] = {"account_id", NULL};
+    static const char *const activate_keys[] = {"account_id", "replace_active_id", NULL};
+    static const char *const import_keys[] = {"remote_account_id", NULL};
+    static const char *const network_activate_keys[] = {"replace_index", NULL};
     static const char *const codex_keys[] = {"account_id", "label", NULL};
     static const char *const settings_keys[] = {"refresh_seconds", "auto_refresh", "screen_timeout_seconds", NULL};
     static const char *const mode_keys[] = {"mode", NULL};
+    static const char *const cancel_keys[] = {"target_request_id", NULL};
     static const char *const no_keys[] = {NULL};
     const char *const *allowed = no_keys;
     if (ok && strcmp(op, "network_save") == 0) {
@@ -207,6 +212,12 @@ bool quota_portal_parse_command(const char *json, size_t length, quota_portable_
             ok = index != UINT8_MAX && cJSON_GetObjectItemCaseSensitive(root, "password") == NULL &&
                  cJSON_GetObjectItemCaseSensitive(root, "open_network") == NULL;
         else if (ok) ok = network_password_valid(command);
+    } else if (ok && strcmp(op, "network_activate") == 0) {
+        command->op = QUOTA_PORTABLE_OP_NETWORK_ACTIVATE;
+        allowed = network_activate_keys;
+        uint64_t index = UINT8_MAX;
+        ok = unsigned_field(root, "replace_index", QUOTA_PORTABLE_NETWORKS - 1, &index, true);
+        command->replace_index = (uint8_t)index;
     } else if (ok && strcmp(op, "deepseek_save") == 0) {
         command->op = QUOTA_PORTABLE_OP_DEEPSEEK_SAVE;
         allowed = deepseek_keys;
@@ -221,8 +232,21 @@ bool quota_portal_parse_command(const char *json, size_t length, quota_portable_
         ok = copy_text(root, "account_id", command->account_id, sizeof(command->account_id), false, false) &&
              copy_text(root, "label", command->label, sizeof(command->label), false, true) &&
              (command->account_id[0] == 0 || quota_id_is_valid(command->account_id));
-    } else if (ok && strcmp(op, "account_remove") == 0) {
-        command->op = QUOTA_PORTABLE_OP_ACCOUNT_REMOVE;
+    } else if (ok && strcmp(op, "account_activate") == 0) {
+        command->op = QUOTA_PORTABLE_OP_ACCOUNT_ACTIVATE;
+        allowed = activate_keys;
+        ok = copy_text(root, "account_id", command->account_id, sizeof(command->account_id), true, false) &&
+             quota_id_is_valid(command->account_id) &&
+             copy_text(root, "replace_active_id", command->replace_active_id, sizeof(command->replace_active_id), false, false) &&
+             (command->replace_active_id[0] == 0 ||
+              (quota_id_is_valid(command->replace_active_id) && strcmp(command->account_id, command->replace_active_id) != 0));
+    } else if (ok && strcmp(op, "external_import") == 0) {
+        command->op = QUOTA_PORTABLE_OP_EXTERNAL_IMPORT;
+        allowed = import_keys;
+        ok = copy_text(root, "remote_account_id", command->remote_account_id, sizeof(command->remote_account_id), true, false) &&
+             quota_id_is_valid(command->remote_account_id);
+    } else if (ok && (strcmp(op, "account_remove") == 0 || strcmp(op, "account_deactivate") == 0)) {
+        command->op = strcmp(op, "account_remove") == 0 ? QUOTA_PORTABLE_OP_ACCOUNT_REMOVE : QUOTA_PORTABLE_OP_ACCOUNT_DEACTIVATE;
         allowed = account_keys;
         ok = copy_text(root, "account_id", command->account_id, sizeof(command->account_id), true, false) &&
              quota_id_is_valid(command->account_id);
@@ -244,6 +268,12 @@ bool quota_portal_parse_command(const char *json, size_t length, quota_portable_
         if (ok && strcmp(mode, "direct") == 0) command->mode = QUOTA_MODE_DIRECT;
         else if (ok && strcmp(mode, "companion") == 0) command->mode = QUOTA_MODE_COMPANION;
         else ok = false;
+    } else if (ok && strcmp(op, "operation_cancel") == 0) {
+        command->op = QUOTA_PORTABLE_OP_OPERATION_CANCEL;
+        allowed = cancel_keys;
+        ok = copy_text(root, "target_request_id", command->target_request_id,
+                       sizeof(command->target_request_id), true, false) &&
+             hex_request_id(command->target_request_id);
     } else if (ok && strcmp(op, "codex_launch") == 0) command->op = QUOTA_PORTABLE_OP_CODEX_LAUNCH;
     else if (ok && strcmp(op, "network_scan") == 0) command->op = QUOTA_PORTABLE_OP_NETWORK_SCAN;
     else if (ok && strcmp(op, "setup_close") == 0) command->op = QUOTA_PORTABLE_OP_SETUP_CLOSE;
@@ -392,6 +422,10 @@ static esp_err_t command_handler(httpd_req_t *request)
     bool ok = quota_portal_parse_command(body, received, &command);
     quota_portable_clear_secret(body, sizeof(body));
     if (!ok) return reply_error(request, "400 Bad Request", "{\"error\":\"invalid_command\"}");
+    if (command.op == QUOTA_PORTABLE_OP_MODE_SELECT) {
+        quota_portable_clear_secret(&command, sizeof(command));
+        return reply_error(request, "410 Gone", "{\"error_code\":\"unsupported\"}");
+    }
     quota_portable_submit_result_t submitted = QUOTA_PORTABLE_SUBMIT_CLOSED;
     bool authorized = authorize(request, true, true, &denial);
     if (authorized) submitted = s_callbacks.submit(&command, s_callbacks.context);

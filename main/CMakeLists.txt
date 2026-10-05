@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS "main.c"
          "quota_logic.c"
+         "quota_catalog.c"
          "quota_service.c"
          "quota_portable_service.c"
          "quota_direct.c"

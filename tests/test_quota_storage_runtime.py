@@ -1,97 +1,67 @@
-"""Run actual NVS loaders against fake public records and missing legacy keys."""
+"""Execute historical loaders: v1 records are migration input, never a second authority."""
 import re
 import unittest
 from runtime_helpers import ROOT, extract_function, compile_and_run
 
 
 class StorageRuntime(unittest.TestCase):
-    def test_optional_keys_and_balance_cache_binding(self):
+    def test_optional_sidecar_typed_config_and_aged_inventory(self):
         source = (ROOT / "main/quota_service.c").read_text()
-        declarations = re.search(r"typedef struct \{[^{}]*\} stored_balance_t;", source)[0]
-        functions = []
-        for kind, name in (("uint32_t", "crc32_update"), ("uint32_t", "crc32_bytes"),
-                           ("uint16_t", "nvs_load_screen_timeout"),
-                           ("void", "nvs_load_balance_snapshot")):
-            functions.append(extract_function(source, name, "static " + kind))
-        definitions = "\n".join(re.findall(r"^#define (?:NVS_NAMESPACE|NVS_SCREEN_TIMEOUT_KEY|NVS_BALANCE_KEY|STORED_BALANCE_MAGIC) .*", source, re.M))
+        definitions = "\n".join(re.findall(
+            r"^#define (?:NVS_NAMESPACE|NVS_CONFIG_KEY|NVS_SNAPSHOT_KEY|NVS_SCREEN_TIMEOUT_KEY|NVS_BALANCE_KEY|"
+            r"STORED_CONFIG_MAGIC|STORED_CONFIG_VERSION|STORED_SNAPSHOT_MAGIC|STORED_SNAPSHOT_VERSION|STORED_BALANCE_MAGIC) .*", source, re.M))
+        declarations = "\n".join(re.search(r"typedef struct \{[^{}]*\} " + name + ";", source)[0]
+                                  for name in ("stored_config_t", "cached_snapshot_t", "stored_snapshot_t", "stored_balance_t"))
+        functions = "\n".join(extract_function(source, name, declaration) for name, declaration in (
+            ("crc32_update", "static uint32_t"), ("crc32_bytes", "static uint32_t"),
+            ("nvs_read_config_result", "static quota_store_read_result_t"),
+            ("nvs_load_screen_timeout", "static uint16_t"),
+            ("nvs_load_snapshot_inventory_result", "static quota_store_read_result_t"),
+            ("nvs_load_balance_snapshot", "static void")))
         harness = r'''
-#include "quota_logic.h"
+#include "quota_store.h"
 #include <assert.h>
+#include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 typedef int nvs_handle_t;
 typedef int esp_err_t;
-enum { ESP_OK = 0, NVS_READONLY = 1, ESP_ERR_NVS_NOT_FOUND = 2 };
-'''
-        harness += definitions + "\n" + declarations
-        harness += r'''
-static bool s_nvs_ready = true, s_balance_cache_present, blob_present, timeout_present;
-static uint16_t s_saved_screen_timeout_seconds, fake_timeout;
-static stored_balance_t s_stored_balances, fake_blob;
-static size_t fake_length;
-static struct { uint64_t stored_at; struct { uint64_t revision; } snapshot; } s_stored_snapshot;
-static struct { quota_snapshot_t snapshot; } s_view;
-static uint32_t config_cache_identity(const quota_device_config_t *config) {
-    (void)config; return 123;
-}
-static esp_err_t nvs_open(const char *space, int mode, nvs_handle_t *handle) {
-    assert(strcmp(space, NVS_NAMESPACE) == 0); assert(mode == NVS_READONLY);
-    *handle = 1; return ESP_OK;
-}
-static void nvs_close(nvs_handle_t handle) { assert(handle == 1); }
-static esp_err_t nvs_get_u16(nvs_handle_t handle, const char *key, uint16_t *value) {
-    assert(handle == 1 && strcmp(key, NVS_SCREEN_TIMEOUT_KEY) == 0);
-    if (!timeout_present) return ESP_ERR_NVS_NOT_FOUND;
-    *value = fake_timeout; return ESP_OK;
-}
-static esp_err_t nvs_get_blob(nvs_handle_t handle, const char *key, void *value, size_t *length) {
-    assert(handle == 1 && strcmp(key, NVS_BALANCE_KEY) == 0);
-    if (!blob_present) return ESP_ERR_NVS_NOT_FOUND;
-    assert(*length >= fake_length); memcpy(value, &fake_blob, fake_length);
-    *length = fake_length; return ESP_OK;
-}
-'''
-        harness += "\n".join(functions)
-        harness += r'''
-static void checksum(void) {
-    fake_blob.crc32 = crc32_bytes(&fake_blob, offsetof(stored_balance_t, crc32));
-}
-static void assert_rejected(const quota_device_config_t *config) {
-    memset(&s_view, 0, sizeof(s_view)); nvs_load_balance_snapshot(config);
-    assert(!s_balance_cache_present && !s_view.snapshot.balances[0].present);
-}
-int main(void) {
-    quota_device_config_t config = {0};
-    assert(nvs_load_screen_timeout() == 120);  /* Legacy pairing has no new key. */
-    timeout_present = true; fake_timeout = 0; assert(nvs_load_screen_timeout() == 0);
-    fake_timeout = 600; assert(nvs_load_screen_timeout() == 600);
-    fake_timeout = 31; assert(nvs_load_screen_timeout() == 120);
-    assert_rejected(&config); /* Legacy quota cache has no balance sidecar. */
-    s_stored_snapshot.stored_at = 1700000000; s_stored_snapshot.snapshot.revision = 7;
-    fake_blob.magic = STORED_BALANCE_MAGIC; fake_blob.config_identity = 123;
-    fake_blob.stored_at = 1700000000; fake_blob.revision = 7;
-    quota_balance_t *balance = &fake_blob.balances[0];
-    balance->present = true; balance->is_available = true; balance->currency_count = 1;
-    strcpy(balance->label, "Local API");
-    strcpy(balance->balance_infos[0].currency, "CNY");
-    strcpy(balance->balance_infos[0].total_balance, "12.3456789");
-    strcpy(balance->balance_infos[0].granted_balance, "2.3456789");
-    strcpy(balance->balance_infos[0].topped_up_balance, "10.00");
-    checksum(); blob_present = true; fake_length = sizeof(fake_blob);
-    nvs_load_balance_snapshot(&config);
-    assert(s_balance_cache_present && s_view.snapshot.balances[0].present);
-    assert(strcmp(s_view.snapshot.balances[0].balance_infos[0].total_balance, "12.3456789") == 0);
-    fake_blob.revision++; checksum(); assert_rejected(&config); fake_blob.revision--;
-    fake_blob.config_identity++; checksum(); assert_rejected(&config); fake_blob.config_identity--;
-    fake_blob.stored_at++; checksum(); assert_rejected(&config); fake_blob.stored_at--;
-    checksum(); fake_blob.crc32 ^= 1; assert_rejected(&config);
-    checksum(); fake_length--; assert_rejected(&config); fake_length++;
-    strcpy(balance->balance_infos[0].total_balance, "NaN"); checksum(); assert_rejected(&config);
-    puts("quota storage runtime tests passed");
+enum {ESP_OK,ESP_FAIL,ESP_ERR_NVS_NOT_FOUND,ESP_ERR_NVS_INVALID_LENGTH,NVS_READONLY};
+''' + definitions + "\n" + declarations + r'''
+static bool s_nvs_ready=true,s_balance_cache_present,timeout_present;
+static uint16_t s_saved_screen_timeout_seconds,fake_timeout;
+static uint64_t s_snapshot_cache_saved_at;
+static stored_snapshot_t s_stored_snapshot,fake_snapshot;
+static stored_balance_t s_stored_balances,fake_balance;
+static stored_config_t fake_config;
+static esp_err_t open_error=ESP_OK,config_error=ESP_ERR_NVS_NOT_FOUND,snapshot_error=ESP_ERR_NVS_NOT_FOUND,balance_error=ESP_ERR_NVS_NOT_FOUND;
+static bool config_valid=true,snapshot_valid=true,config_oversized,snapshot_oversized;
+static uint32_t config_cache_identity(const quota_device_config_t *config){(void)config;return 123;}
+static bool config_is_well_formed(const quota_device_config_t *config){return config&&config_valid;}
+static bool cached_snapshot_is_well_formed(const cached_snapshot_t *snapshot){return snapshot&&snapshot_valid;}
+static esp_err_t nvs_open(const char *space,int mode,nvs_handle_t *handle){assert(!strcmp(space,NVS_NAMESPACE)&&mode==NVS_READONLY);*handle=1;return open_error;}
+static void nvs_close(nvs_handle_t handle){assert(handle==1);}
+static esp_err_t nvs_get_u16(nvs_handle_t handle,const char *key,uint16_t *value){assert(handle==1&&!strcmp(key,NVS_SCREEN_TIMEOUT_KEY));if(!timeout_present)return ESP_ERR_NVS_NOT_FOUND;*value=fake_timeout;return ESP_OK;}
+static esp_err_t nvs_get_blob(nvs_handle_t handle,const char *key,void *value,size_t *length){assert(handle==1);const void *record;size_t bytes;esp_err_t result;if(!strcmp(key,NVS_CONFIG_KEY)){record=&fake_config;bytes=sizeof(fake_config);result=config_error;if(config_oversized){*length=bytes+1;return ESP_ERR_NVS_INVALID_LENGTH;}}else if(!strcmp(key,NVS_SNAPSHOT_KEY)){record=&fake_snapshot;bytes=sizeof(fake_snapshot);result=snapshot_error;if(snapshot_oversized){*length=bytes+1;return ESP_ERR_NVS_INVALID_LENGTH;}}else{assert(!strcmp(key,NVS_BALANCE_KEY));record=&fake_balance;bytes=sizeof(fake_balance);result=balance_error;}if(result!=ESP_OK)return result;assert(*length>=bytes);memcpy(value,record,bytes);*length=bytes;return ESP_OK;}
+''' + functions + r'''
+int main(void){
+    quota_device_config_t config={0};
+    assert(nvs_load_screen_timeout()==120);timeout_present=true;fake_timeout=0;assert(nvs_load_screen_timeout()==0);fake_timeout=31;assert(nvs_load_screen_timeout()==120);
+    assert(nvs_read_config_result(&config)==QUOTA_STORE_READ_MISSING);open_error=ESP_FAIL;assert(nvs_read_config_result(&config)==QUOTA_STORE_READ_IO_ERROR);open_error=ESP_OK;config_error=ESP_OK;assert(nvs_read_config_result(&config)==QUOTA_STORE_READ_INVALID);
+    fake_config.magic=STORED_CONFIG_MAGIC;fake_config.version=STORED_CONFIG_VERSION;fake_config.config_size=sizeof(config);fake_config.config.refresh_seconds=300;fake_config.crc32=crc32_bytes(&fake_config.config,sizeof(config));assert(nvs_read_config_result(&config)==QUOTA_STORE_READ_OK&&config.refresh_seconds==300);
+    config_oversized=true;assert(nvs_read_config_result(&config)==QUOTA_STORE_READ_INVALID);config_oversized=false;fake_config.crc32^=1;assert(nvs_read_config_result(&config)==QUOTA_STORE_READ_INVALID);
+    assert(nvs_load_snapshot_inventory_result(&config)==QUOTA_STORE_READ_MISSING);snapshot_error=ESP_OK;fake_snapshot.magic=STORED_SNAPSHOT_MAGIC;fake_snapshot.version=STORED_SNAPSHOT_VERSION;fake_snapshot.snapshot_size=sizeof(fake_snapshot.snapshot);fake_snapshot.config_identity=123;fake_snapshot.stored_at=1600000000;fake_snapshot.snapshot.account_count=1;fake_snapshot.snapshot.revision=7;fake_snapshot.crc32=crc32_bytes(&fake_snapshot,offsetof(stored_snapshot_t,crc32));
+    snapshot_oversized=true;assert(nvs_load_snapshot_inventory_result(&config)==QUOTA_STORE_READ_INVALID);snapshot_oversized=false;assert(nvs_load_snapshot_inventory_result(&config)==QUOTA_STORE_READ_OK);assert(s_stored_snapshot.snapshot.account_count==1&&s_snapshot_cache_saved_at==1600000000); /* No age limit erases identity inventory. */
+    nvs_load_balance_snapshot(&config);assert(!s_balance_cache_present);
+    balance_error=ESP_OK;fake_balance.magic=STORED_BALANCE_MAGIC;fake_balance.config_identity=123;fake_balance.stored_at=1600000000;fake_balance.revision=7;
+    quota_balance_t *balance=&fake_balance.balances[0];balance->present=true;balance->is_available=true;balance->currency_count=1;strcpy(balance->balance_infos[0].currency,"CNY");strcpy(balance->balance_infos[0].total_balance,"12.3456789");strcpy(balance->balance_infos[0].granted_balance,"2.3456789");strcpy(balance->balance_infos[0].topped_up_balance,"10.00");fake_balance.crc32=crc32_bytes(&fake_balance,offsetof(stored_balance_t,crc32));
+    nvs_load_balance_snapshot(&config);assert(s_balance_cache_present&&!strcmp(s_stored_balances.balances[0].balance_infos[0].total_balance,"12.3456789"));
+    fake_balance.revision++;fake_balance.crc32=crc32_bytes(&fake_balance,offsetof(stored_balance_t,crc32));nvs_load_balance_snapshot(&config);assert(!s_balance_cache_present);
+    fake_snapshot.crc32^=1;assert(nvs_load_snapshot_inventory_result(&config)==QUOTA_STORE_READ_INVALID);puts("historical typed storage and inventory passed");
 }
 '''
-        compile_and_run(harness, "ai-quota-storage-test-",
-                        ("main/quota_logic.c", "tests/cjson/cJSON.c"))
+        compile_and_run(harness, "ai-quota-legacy-storage-", ("main/quota_logic.c", "tests/cjson/cJSON.c"))
 
 
 if __name__ == "__main__":

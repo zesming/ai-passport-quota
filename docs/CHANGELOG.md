@@ -8,11 +8,21 @@
 
 ## Unreleased
 
+### 2026-10-05 — Unified device-owned accounts and setup
+
+Replaced the global device/computer mode switch with one device-owned catalog and setup page shared by phones and computers. Each account independently uses a device credential or the optional computer collector. Migration retains existing credentials, selected accounts, historical rows and networks; activating a full catalog swaps a named account without deletion. Collector changes require explicit verified rebind, and unknown remote accounts require import.
+
+Added a verified single-record model and source-bound observation cache. Authorization intents precede grant admission; uncertain saves block further requests and preserve the exact candidate. Received credentials finish storage-only recovery before another operation. Removed duplicated collector workspaces and the permanent USB task, reduced the display buffer, and reserved bounded POST responses before sending grants. Terminal authorization results no longer redirect every subsequent setup visit.
+
+Host tests: **PASS**, complete static gate, including 43 controller ASan/UBSan scenarios, provider/storage boundaries, source-bound cache, physical rendering and navigation checks. Companion: **53 tests and production build PASS**. Browser: **synthetic fixtures PASS** for manual connection without persisted secrets, lossless 8+8 activation swap, confirmed collector rebind, common settings, and narrow/desktop layouts. The settings screenshot was replaced with the shared production page.
+
+Build and Device tests: **NOT RUN for the new candidate**. No USB device is currently connected. Device authorization, real TLS heap/DMA/stack margins and preserved-data migration still require the matching firmware and physical device; host/browser evidence alone does not establish those results.
+
 ### 2026-10-05 — One owner-held credential record
 
 The next real authorization ended with `NO_MEMORY`; the largest observed free block during polling was 10 KiB, while token acceptance and storage requested separate 13 KiB copies. Credential processing now uses one static record-backed buffer across the controller, provider and NVS. Validated tokens replace it in place, persistence borrows it until commit, and the owner then wipes it. Other credential operations wait while the buffer is borrowed. The NVS version-1 layout, identity checks and one-time exchange rules are unchanged. Rare response-allocation diagnostics record only sizes; phase changes are logged immediately, with fifteen-second repetition limits.
 
-Host tests: **PASS**, targeted provider/storage ASan/UBSan and four controller checks, including borrowed lifetime, malformed-response preservation, storage-only retries, caller-owned destruction, tail wiping and allocation-free version-1 storage. Cross-review found no ownership blocker. Build and Device tests: **NOT RUN yet**; the installed image remains `303de36a…`. The measured 8 KiB network stack had 652 bytes left during polling; success-path headroom remains a physical check.
+Build and Host tests: **PASS**, the complete ESP-IDF 5.5.3 gate and cross-review, including provider/storage ASan/UBSan and four controller checks for borrowed lifetime, malformed-response preservation, storage-only retries, caller-owned destruction, tail wiping and allocation-free version-1 storage. Installed bundle `e8072cc49d41aa2019fa2f46fd3c0163210ecdcd36ef5987ec47643cd7912a97`, app 1,716,576 bytes, version `a34222e`, matching ELF SHA-256 `e6c603b5724f4027b419cb34c213484c3565df3560e4318d56a910d1598a7435`. Device tests: **PASS for three hash-verified component writes, startup and code acquisition**, with saved data retained. Polling stabilized at 37,284 free bytes and a 15,872-byte largest block, with 668 bytes of network stack remaining. The subsequent exchange failed: `esp-aes` reported allocation failure and TLS read returned `-1`; minimum free heap was 656 bytes and network stack headroom was 576 bytes. This is a resource failure, not evidence of disconnected Wi-Fi. Authorization and quota reads did not pass. Both GitHub checks passed, exposing a gap between host coverage and real TLS resource usage.
 
 ### 2026-10-05 — Bounded allocation for code exchange
 

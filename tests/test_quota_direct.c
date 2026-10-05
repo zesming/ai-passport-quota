@@ -8,6 +8,18 @@
 #define LOCAL_ID "0123456789abcdef0123456789abcdef"
 #define NOW 1700000000ULL
 
+/* Host convenience composes the actual staged APIs. Production frees the HTTP
+ * response between these stages; no legacy combined parser is linked. */
+static bool quota_direct_parse_tokens(const char *body, size_t length,
+    const quota_direct_identity_t *expected, char *access, size_t access_capacity,
+    char *refresh, size_t refresh_capacity, quota_direct_identity_t *identity)
+{
+    quota_direct_tokens_t *tokens = NULL;
+    bool valid = quota_direct_tokens_prepare(body, length, &tokens);
+    if (valid) valid = quota_direct_tokens_finish(tokens, expected, access, access_capacity, refresh, refresh_capacity, identity);
+    quota_direct_tokens_destroy(tokens); return valid;
+}
+
 static char access_token[2048], id_token[2048], token_response[5000];
 static void jwt(const char *claims, char *output, size_t capacity)
 {
@@ -147,9 +159,16 @@ static void test_bounded_json_and_tokens(void)
         "{\"access_token\":\"%s\",\"refresh_token\":\"%s\",\"id_token\":\"%s\"}", a, r, id);
     assert(size > 0 && size < QUOTA_DIRECT_BODY_BYTES);
     memset(bounded + size, ' ', QUOTA_DIRECT_BODY_BYTES - (size_t)size);
-    assert(quota_direct_parse_tokens(bounded, QUOTA_DIRECT_BODY_BYTES, NULL,
+    quota_direct_tokens_t *tokens = NULL;
+    assert(quota_direct_tokens_prepare(bounded, QUOTA_DIRECT_BODY_BYTES, &tokens));
+    /* The detached envelope must not borrow the response. ASan catches any
+     * JWT stage access after this actual release of the maximum-sized body. */
+    memset(bounded, 0, QUOTA_DIRECT_BODY_BYTES); free(bounded); bounded = NULL;
+    assert(quota_direct_tokens_finish(tokens, NULL,
         value->access_token, sizeof(value->access_token), value->refresh_token, sizeof(value->refresh_token), &identity));
+    quota_direct_tokens_destroy(tokens);
     assert(strlen(value->access_token) == QUOTA_DIRECT_ACCESS_BYTES && strlen(value->refresh_token) == QUOTA_DIRECT_REFRESH_BYTES);
+    bounded = malloc(QUOTA_DIRECT_BODY_BYTES); assert(bounded);
     /* One byte above each token's bound is rejected without losing output. */
     for (unsigned field = 0; field < 3; field++) {
         char *too_big = extended_token(field == 0 ? a : field == 1 ? r : id,
@@ -164,6 +183,45 @@ static void test_bounded_json_and_tokens(void)
         free(too_big);
     }
     free(a); free(r); free(id); free(bounded); free(value);
+
+    char complex[2048]; size_t used = (size_t)snprintf(complex, sizeof(complex),
+        "{\"device_auth_id\":\"id\",\"user_code\":\"ABCD\",\"interval\":5,\"extra\":[");
+    for (unsigned i = 0; i < 129; i++) used += (size_t)snprintf(complex + used, sizeof(complex) - used, "%s0", i ? "," : "");
+    strcpy(complex + used, "]}");
+    assert(!quota_direct_parse_device_code(complex, strlen(complex), &code));
+    tokens = (quota_direct_tokens_t *)1;
+    assert(!quota_direct_tokens_prepare(complex, strlen(complex), &tokens) && !tokens);
+}
+
+static unsigned json_allocations, fail_json_allocation;
+static void *json_allocate(size_t bytes)
+{
+    return ++json_allocations == fail_json_allocation ? NULL : malloc(bytes);
+}
+
+static void test_staged_parser_allocation_failure(void)
+{
+    cJSON_Hooks hooks = {.malloc_fn = json_allocate, .free_fn = free};
+    cJSON_InitHooks(&hooks);
+    quota_direct_credential_t value = credential(), original = value;
+    quota_direct_identity_t identity = {0}, before = identity;
+    quota_direct_tokens_t *tokens = NULL;
+    json_allocations = fail_json_allocation = 0;
+    assert(quota_direct_tokens_prepare(token_response, strlen(token_response), &tokens));
+    assert(quota_direct_tokens_finish(tokens, NULL, value.access_token, sizeof(value.access_token),
+        value.refresh_token, sizeof(value.refresh_token), &identity));
+    unsigned total = json_allocations; quota_direct_tokens_destroy(tokens);
+    assert(total > 10); /* Includes envelope and both sequential JWT trees. */
+    for (unsigned failure = 1; failure <= total; failure++) {
+        json_allocations = 0; fail_json_allocation = failure;
+        value = original; identity = before; tokens = NULL;
+        bool valid = quota_direct_tokens_prepare(token_response, strlen(token_response), &tokens);
+        if (valid) valid = quota_direct_tokens_finish(tokens, NULL, value.access_token, sizeof(value.access_token),
+            value.refresh_token, sizeof(value.refresh_token), &identity);
+        assert(!valid && !memcmp(&value, &original, sizeof(value)) && !memcmp(&identity, &before, sizeof(identity)));
+        quota_direct_tokens_destroy(tokens);
+    }
+    cJSON_InitHooks(NULL);
 }
 
 static const char usage[] = "{\"account_id\":\"account-1\",\"plan_type\":\"plus\","
@@ -258,7 +316,7 @@ static bool persist(void *context, const quota_direct_credential_t *value)
     return true;
 }
 
-static bool transport(void *context, const quota_direct_http_request_t *request,
+static bool transport(void *context, quota_direct_http_request_t *request,
                        quota_direct_http_response_t *response)
 {
     fake_t *fake = context; ++fake->requests; response->admitted = true;
@@ -473,7 +531,7 @@ static void test_login_and_reads(void)
 
 int main(void)
 {
-    fixtures(); test_auth_parsers(); test_bounded_json_and_tokens(); test_quota_parsers(); test_rotation(); test_login_and_reads(); test_borrowed_pending();
+    fixtures(); test_auth_parsers(); test_bounded_json_and_tokens(); test_staged_parser_allocation_failure(); test_quota_parsers(); test_rotation(); test_login_and_reads(); test_borrowed_pending();
     puts("quota direct parsers, login phases and rotation runtime: PASS");
     return 0;
 }

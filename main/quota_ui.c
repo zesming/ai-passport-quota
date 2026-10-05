@@ -71,6 +71,9 @@ typedef struct {
     lv_obj_t *qr_title;
     lv_obj_t *qr_hint;
     lv_obj_t *qr_countdown;
+    lv_obj_t *manual_address;
+    lv_obj_t *manual_caption;
+    lv_obj_t *manual_secret;
     char qr_data[256];
     lv_obj_t *setup_countdown;
     lv_obj_t *setup_hint;
@@ -80,6 +83,9 @@ static lv_obj_t *s_root;
 static lv_obj_t *s_page;
 static quota_screen_t s_screen = (quota_screen_t)-1;
 static quota_ui_objects_t s_ui;
+
+static const char *portable_error_text(const char *code);
+static const char *portable_storage_title(const char *code);
 
 static lv_color_t color(uint32_t hex)
 {
@@ -247,7 +253,7 @@ static void create_focus_row(lv_obj_t **background, lv_obj_t **marker,
 static void create_settings_page(void)
 {
     create_header("设置", "");
-    static const char *const labels[] = {"账户管理", "刷新间隔", "立即刷新", "自动息屏", "网络与配网", "电脑配对"};
+    static const char *const labels[] = {"账户管理", "刷新间隔", "立即刷新", "自动息屏", "网络与配网", "电脑采集配对"};
     for (size_t i = 0; i < 6; i++) {
         int y = 43 + (int)i * 35;
         create_focus_row(&s_ui.setting_rows[i], &s_ui.setting_markers[i], y, 34);
@@ -312,7 +318,7 @@ static void create_interval_page(void)
                                                LV_TEXT_ALIGN_RIGHT, "");
     }
     create_label(s_page, 16, 267, 212, 14, &quota_font_12, UI_MUTED,
-                 LV_TEXT_ALIGN_LEFT, "设备直连按此间隔查询");
+                 LV_TEXT_ALIGN_LEFT, "全部账户使用此刷新间隔");
     create_footer("UP/DOWN 选择  OK 保存  长按返回");
 }
 
@@ -320,9 +326,9 @@ static void create_setup_page(void)
 {
     create_header("电脑配对", "USB");
     create_label(s_page, 20, 51, 200, 22, &quota_font_16, UI_INK,
-                 LV_TEXT_ALIGN_CENTER, "请在电脑设置页");
+                 LV_TEXT_ALIGN_CENTER, "可选电脑采集器");
     create_label(s_page, 20, 74, 200, 22, &quota_font_16, UI_INK,
-                 LV_TEXT_ALIGN_CENTER, "添加账户并完成连接");
+                 LV_TEXT_ALIGN_CENTER, "仅用于电脑账户更新");
     create_logo(s_page, &quota_openai_logo, 30, 109, 36, 36);
     create_logo(s_page, &quota_claude_logo, 102, 109, 36, 36);
     create_logo(s_page, &quota_deepseek_logo, 174, 109, 36, 36);
@@ -336,7 +342,7 @@ static void create_setup_page(void)
                                         UI_MINT, LV_TEXT_ALIGN_CENTER, "配对窗口 02:00");
     s_ui.setup_hint = create_label(s_page, 16, 220, 208, 44, &quota_font_12,
                                    UI_MUTED, LV_TEXT_ALIGN_CENTER,
-                                   "请通过 USB 提交配置\n设备只接收额度快照");
+                                   "请通过 USB 配对采集器\n账户凭证保留在电脑中");
     create_footer("长按 OK 返回");
 }
 
@@ -347,7 +353,7 @@ static void create_network_page(void)
                                       UI_INK, LV_TEXT_ALIGN_LEFT, "尚未配置网络");
     s_ui.network_info = create_label(s_page, 12, 80, 216, 44, &quota_font_12,
                                      UI_MUTED, LV_TEXT_ALIGN_LEFT, "");
-    static const char *const labels[] = {"手机配网", "重新连接"};
+    static const char *const labels[] = {"设备设置", "重新连接"};
     for (size_t i = 0; i < 2; i++) {
         int y = 145 + (int)i * 40;
         create_focus_row(&s_ui.network_rows[i], &s_ui.network_markers[i], y, 35);
@@ -362,7 +368,7 @@ static void create_network_page(void)
 
 static void create_qr_page(bool auth)
 {
-    create_header(auth ? "账户授权" : "手机设置", auth ? "" : "1/2");
+    create_header(auth ? "账户授权" : "设备设置", auth ? "" : "1/3");
     s_ui.qr_title = create_label(s_page, 12, 44, 216, 22, &quota_font_16,
                                  UI_INK, LV_TEXT_ALIGN_CENTER, "");
     s_ui.qr = lv_qrcode_create(s_page);
@@ -377,6 +383,19 @@ static void create_qr_page(bool auth)
                                 UI_INK, LV_TEXT_ALIGN_CENTER, "");
     s_ui.qr_countdown = create_label(s_page, 12, 265, 216, 14, &quota_font_12,
                                      UI_MUTED, LV_TEXT_ALIGN_CENTER, "");
+    if (!auth) {
+        s_ui.manual_address = create_label(s_page, 12, 78, 216, 22,
+            &lv_font_montserrat_12, UI_INK, LV_TEXT_ALIGN_CENTER, "http://192.168.4.1");
+        s_ui.manual_caption = create_label(s_page, 12, 108, 216, 22,
+            &quota_font_12, UI_MUTED, LV_TEXT_ALIGN_CENTER, "设置密钥 · 输入全部四行");
+        s_ui.manual_secret = create_label(s_page, 12, 136, 216, 88,
+            &lv_font_montserrat_14, UI_INK, LV_TEXT_ALIGN_CENTER, "");
+        lv_obj_set_style_text_line_space(s_ui.manual_secret, 5, 0);
+        lv_label_set_long_mode(s_ui.manual_secret, LV_LABEL_LONG_MODE_WRAP);
+        lv_obj_add_flag(s_ui.manual_address, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_ui.manual_caption, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_ui.manual_secret, LV_OBJ_FLAG_HIDDEN);
+    }
     create_footer(auth ? "长按OK取消 · 长按DOWN暂停" : "UP/DOWN 切换  长按 OK 返回");
 }
 
@@ -511,10 +530,17 @@ static void render_home(const quota_navigation_t *navigation,
     if (service->snapshot.account_count == 0) {
         lv_obj_add_flag(s_ui.home_logo, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_style_text_font(s_ui.home_provider, &quota_font_16, 0);
-        set_label_text(s_ui.home_provider, "暂无账户");
-        set_label_text(s_ui.home_plan, service->portable.mode == QUOTA_MODE_DIRECT ? "请用手机添加账户" : "请在电脑端添加账户");
+        bool storage_error = service->portable.storage_error[0] != '\0';
+        set_label_text(s_ui.home_provider, storage_error
+            ? portable_storage_title(service->portable.storage_error) : "暂无账户");
+        set_label_text(s_ui.home_plan, storage_error
+            ? (strcmp(service->portable.storage_error, "storage_write_unknown") == 0
+                ? "设备正在确认保存" : "请保留数据并检查设备")
+            : "请打开设备设置添加账户");
         set_label_text(s_ui.home_email, "");
-        set_label_text(s_ui.home_status, service->portable.mode == QUOTA_MODE_DIRECT ? "长按 OK 打开设置" : "等待额度快照");
+        set_label_text(s_ui.home_status, storage_error
+            ? portable_error_text(service->portable.storage_error) : "长按 OK 打开设置");
+        lv_obj_set_style_text_color(s_ui.home_status, color(storage_error ? UI_AMBER : UI_MUTED), 0);
         return;
     }
 
@@ -611,29 +637,38 @@ static void render_home(const quota_navigation_t *navigation,
         }
     }
 
-    char status[48];
-    if (!service->connected) {
+    char status[96];
+    const char *account_error = service->portable.account_errors[selected];
+    bool legacy = service->portable.account_sources[selected] == QUOTA_ACCOUNT_LEGACY;
+    bool connected = service->portable.network_state == QUOTA_PORTABLE_NETWORK_READY ||
+                     service->portable.network_state == QUOTA_PORTABLE_NETWORK_CONNECTED;
+    if (service->portable.storage_error[0]) {
+        snprintf(status, sizeof(status), "%s", portable_error_text(service->portable.storage_error));
+    } else if (!connected) {
         snprintf(status, sizeof(status), "离线 · 最近数据");
+    } else if (account_error[0]) {
+        uint64_t retry = service->portable.account_retry_at[selected];
+        if (strcmp(account_error, "rate_limited") == 0 && service->clock_synchronized && retry > service->now_epoch) {
+            snprintf(status, sizeof(status), "请求过多 · %llu 秒后重试",
+                     (unsigned long long)(retry - service->now_epoch));
+        } else snprintf(status, sizeof(status), "%s", portable_error_text(account_error));
     } else if (service->refreshing) {
         snprintf(status, sizeof(status), "正在刷新");
-    } else if (service->portable.mode == QUOTA_MODE_DIRECT &&
-               strcmp(service->portable.network_error, "rate_limited") == 0) {
-        snprintf(status, sizeof(status), "请求过多 · 稍后重试");
-    } else if (!service->clock_synchronized && service->portable.mode == QUOTA_MODE_DIRECT) {
+    } else if (!service->clock_synchronized) {
         snprintf(status, sizeof(status), "时间待同步 · 最近数据");
-    } else if (service->request_failed) {
+    } else if (legacy && service->request_failed) {
         snprintf(status, sizeof(status), "更新失败 · 保留缓存");
     } else if (account->status == QUOTA_STATUS_EXPIRED) {
         snprintf(status, sizeof(status), "登录过期 · 最近数据");
     } else if (account->status == QUOTA_STATUS_WAITING) {
-        snprintf(status, sizeof(status), service->portable.mode == QUOTA_MODE_DIRECT ? "待验证 · 结束手机设置" : "等待电脑采集");
+        snprintf(status, sizeof(status), legacy ? "等待电脑采集" : "待验证 · 结束设备设置");
     } else if (account->status == QUOTA_STATUS_ERROR) {
         snprintf(status, sizeof(status), "数据源错误 · 保留缓存");
     } else if (account->status == QUOTA_STATUS_UNSUPPORTED) {
         snprintf(status, sizeof(status), "数据源暂不支持");
     } else if (deepseek && balance->present && !balance->is_available) {
         snprintf(status, sizeof(status), "余额不可用");
-    } else if (is_claude && service->portable.mode == QUOTA_MODE_DIRECT) {
+    } else if (legacy) {
         snprintf(status, sizeof(status), "需电脑更新 · 最近数据");
     } else if (account->has_observed_at) {
         char clock_text[16];
@@ -644,13 +679,13 @@ static void render_home(const quota_navigation_t *navigation,
     }
     set_label_text(s_ui.home_status, status);
     lv_obj_set_style_text_color(s_ui.home_status,
-        color((!service->connected || stale || service->request_failed) ? UI_AMBER : UI_MUTED), 0);
+        color((service->portable.storage_error[0] || !connected || stale || (legacy && service->request_failed)) ? UI_AMBER : UI_MUTED), 0);
 }
 
 static void render_settings(const quota_navigation_t *navigation,
                            const quota_service_view_t *service)
 {
-    static const char *const labels[] = {"账户管理", "刷新间隔", "立即刷新", "自动息屏", "网络与配网", "电脑配对"};
+    static const char *const labels[] = {"账户管理", "刷新间隔", "立即刷新", "自动息屏", "网络与配网", "电脑采集配对"};
     char values[6][24];
     snprintf(values[0], sizeof(values[0]), "%u 个", (unsigned)service->snapshot.account_count);
     if (!service->auto_refresh) snprintf(values[1], sizeof(values[1]), "手动");
@@ -663,7 +698,7 @@ static void render_settings(const quota_navigation_t *navigation,
         snprintf(values[3], sizeof(values[3]), "%u 分钟", (unsigned)(service->screen_timeout_seconds / 60));
     }
     snprintf(values[4], sizeof(values[4]), "%s", service->portable.setup_active ? "已打开" : "");
-    snprintf(values[5], sizeof(values[5]), "%s", service->pairing_active ? "已打开" : "");
+    snprintf(values[5], sizeof(values[5]), "%s", service->pairing_preparing ? "准备中" : service->pairing_active ? "已打开" : "");
     for (size_t i = 0; i < 6; i++) {
         set_row_focus(s_ui.setting_rows[i], s_ui.setting_markers[i],
                       i == navigation->settings_focus);
@@ -690,7 +725,7 @@ static void render_accounts(const quota_navigation_t *navigation,
         set_row_focus(s_ui.account_rows[i], s_ui.account_markers[i], selected);
         if (i == service->snapshot.account_count) {
             set_label_text(s_ui.account_primary[i], "添加账户");
-            set_label_text(s_ui.account_secondary[i], "用手机打开设备设置");
+            set_label_text(s_ui.account_secondary[i], "手机或电脑打开设备设置");
         } else {
             const quota_account_t *account = &service->snapshot.accounts[i];
             bool claude = account->provider == QUOTA_PROVIDER_CLAUDE;
@@ -732,13 +767,26 @@ static void render_interval(const quota_navigation_t *navigation,
 
 static void render_setup(const quota_service_view_t *service)
 {
+    if (service->portable.storage_error[0]) {
+        set_label_text(s_ui.setup_countdown, portable_storage_title(service->portable.storage_error));
+        lv_obj_set_style_text_color(s_ui.setup_countdown, color(UI_AMBER), 0);
+        set_label_text(s_ui.setup_hint, portable_error_text(service->portable.storage_error));
+        return;
+    }
     char countdown[32];
-    if (service->pairing_active) {
+    if (service->pairing_preparing) {
+        snprintf(countdown, sizeof(countdown), "正在准备电脑配对");
+        lv_obj_set_style_text_color(s_ui.setup_countdown, color(UI_AMBER), 0);
+        set_label_text(s_ui.setup_hint,
+            strcmp(service->portable.login_error, "storage_failed") == 0
+                ? "等待保存账户\n准备完成后开始 2 分钟配对"
+                : "请稍候\n准备完成后开始 2 分钟配对");
+    } else if (service->pairing_active) {
         uint32_t seconds = service->pairing_seconds_left;
         snprintf(countdown, sizeof(countdown), "配对窗口 %02u:%02u",
                  (unsigned)(seconds / 60), (unsigned)(seconds % 60));
         lv_obj_set_style_text_color(s_ui.setup_countdown, color(UI_MINT), 0);
-        set_label_text(s_ui.setup_hint, "请通过 USB 提交配置\n设备只接收额度快照");
+        set_label_text(s_ui.setup_hint, "请通过 USB 配对采集器\n账户凭证保留在电脑中");
     } else {
         snprintf(countdown, sizeof(countdown), "配对窗口已关闭");
         lv_obj_set_style_text_color(s_ui.setup_countdown, color(UI_AMBER), 0);
@@ -757,11 +805,24 @@ static void render_sleep(const quota_navigation_t *navigation,
     }
 }
 
+static const char *portable_storage_title(const char *code)
+{
+    if (strcmp(code, "storage_invalid") == 0) return "存储记录损坏";
+    if (strcmp(code, "recovery_conflict") == 0) return "存储冲突";
+    if (strcmp(code, "storage_write_unknown") == 0) return "保存待确认";
+    if (strcmp(code, "storage_io_error") == 0) return "存储暂不可读";
+    if (strcmp(code, "storage_missing") == 0) return "存储记录不存在";
+    if (strcmp(code, "storage_busy") == 0) return "存储处理中";
+    if (strcmp(code, "no_memory") == 0) return "设备资源不足";
+    if (strcmp(code, "storage_failed") == 0) return "保存失败";
+    return "存储暂不可用";
+}
+
 static const char *portable_error_text(const char *code)
 {
     if (strcmp(code, "wifi_auth_failed") == 0) return "密码错误 · 请重新配网";
     if (strcmp(code, "wifi_not_found") == 0) return "找不到网络 · 请检查热点";
-    if (strcmp(code, "network_unavailable") == 0) return "网络未连接 · 请检查热点";
+    if (strcmp(code, "network_unavailable") == 0) return "服务连接失败或超时";
     if (strcmp(code, "rate_limited") == 0) return "请求过多 · 稍后重试";
     if (strcmp(code, "login_disabled") == 0) return "请开启设备码授权";
     if (strcmp(code, "auth_expired") == 0 || strcmp(code, "auth_required") == 0)
@@ -769,10 +830,23 @@ static const char *portable_error_text(const char *code)
     if (strcmp(code, "invalid_key") == 0) return "密钥无效 · 请更换密钥";
     if (strcmp(code, "time_required") == 0) return "时间待同步";
     if (strcmp(code, "provider_response_invalid") == 0) return "服务暂不兼容 · 稍后重试";
-    if (strcmp(code, "no_memory") == 0) return "内存不足 · 请稍后重试";
-    if (strcmp(code, "unsupported") == 0) return "此服务需电脑同步";
+    if (strcmp(code, "no_memory") == 0 || strcmp(code, "resource_error") == 0)
+        return "设备资源不足 · 稍后重试";
+    if (strcmp(code, "tls_error") == 0) return "服务安全连接失败";
+    if (strcmp(code, "response_too_large") == 0) return "服务响应过大 · 请稍后重试";
+    if (strcmp(code, "configuration_changed") == 0) return "配置已变化 · 请重新设置";
+    if (strcmp(code, "source_changed") == 0) return "电脑来源已改变 · 请确认";
+    if (strcmp(code, "recovery_conflict") == 0) return "存储冲突 · 请检查设备";
+    if (strcmp(code, "storage_invalid") == 0) return "存储记录损坏 · 请检查";
+    if (strcmp(code, "storage_io_error") == 0) return "存储暂不可读 · 请重试";
+    if (strcmp(code, "storage_missing") == 0) return "存储记录不存在 · 请检查";
+    if (strcmp(code, "canceled") == 0) return "操作已取消";
+    if (strcmp(code, "unsupported") == 0) return "此操作暂不支持";
     if (strcmp(code, "busy") == 0) return "正在处理 · 请稍候";
     if (strcmp(code, "storage_failed") == 0) return "保存失败 · 请重试";
+    if (strcmp(code, "storage_write_unknown") == 0) return "保存待确认 · 请稍候";
+    if (strcmp(code, "storage_busy") == 0) return "存储处理中 · 请稍候";
+    if (strcmp(code, "source_unavailable") == 0) return "电脑账户暂不可用";
     return "操作未完成 · 请重试";
 }
 
@@ -781,11 +855,21 @@ static void render_network(const quota_navigation_t *navigation,
 {
     char ssid[QUOTA_SSID_MAX_BYTES + 1];
     quota_copy_display_ascii(portable->network_ssid, ssid, sizeof(ssid));
+    if (portable->storage_error[0]) {
+        set_label_text(s_ui.network_title, portable_storage_title(portable->storage_error));
+        set_label_text(s_ui.network_info, portable_error_text(portable->storage_error));
+        set_label_text(s_ui.network_hint, strcmp(portable->storage_error, "storage_write_unknown") == 0
+            ? "设备正在确认保存" : "请保留数据并检查设备");
+        for (size_t i = 0; i < 2; i++)
+            set_row_focus(s_ui.network_rows[i], s_ui.network_markers[i], navigation->network_focus == i);
+        return;
+    }
+    set_label_text(s_ui.network_hint, "2.4 GHz 个人网络\n企业网络请用手机热点");
     set_label_text(s_ui.network_title, ssid[0] ? ssid : "尚未配置网络");
     char info[80];
     const char *status = portable->network_state == QUOTA_PORTABLE_NETWORK_READY ? "网络已连接" :
         portable->network_state == QUOTA_PORTABLE_NETWORK_CONNECTING ? "正在连接网络" :
-        portable->network_state == QUOTA_PORTABLE_NETWORK_AP ? "手机设置已打开" :
+        portable->network_state == QUOTA_PORTABLE_NETWORK_AP ? "设备设置已打开" :
         portable->network_state == QUOTA_PORTABLE_NETWORK_TIME_REQUIRED ? "时间待同步" :
         portable->network_state == QUOTA_PORTABLE_NETWORK_CONNECTED ? "网络已连接 · 时间待同步" :
         portable->network_state == QUOTA_PORTABLE_NETWORK_ERROR ? portable_error_text(portable->network_error) : "网络未连接";
@@ -817,27 +901,56 @@ static void render_qr_data(const char *data)
 static void render_phone(const quota_navigation_t *navigation,
                          const quota_portable_view_t *portable)
 {
-    bool second = navigation->phone_step != 0;
-    set_label_text(s_ui.header_info, second ? "2/2" : "1/2");
+    bool second = navigation->phone_step == 1;
+    bool manual = navigation->phone_step == 2;
+    bool ready = portable->setup_active && portable->setup_ready && !portable->storage_error[0];
+    set_label_text(s_ui.header_info, manual ? "3/3" : second ? "2/3" : "1/3");
     lv_obj_set_y(s_ui.qr, second ? 70 : 66);
-    lv_obj_set_y(s_ui.qr_hint, second ? 242 : 235);
-    lv_obj_set_height(s_ui.qr_hint, second ? 22 : 28);
+    lv_obj_set_y(s_ui.qr_hint, manual ? 229 : second ? 242 : 235);
+    lv_obj_set_height(s_ui.qr_hint, manual ? 34 : second ? 22 : 28);
+    lv_obj_t *manual_labels[] = {s_ui.manual_address, s_ui.manual_caption, s_ui.manual_secret};
+    for (size_t i = 0; i < 3; i++) {
+        if (manual && ready) lv_obj_clear_flag(manual_labels[i], LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(manual_labels[i], LV_OBJ_FLAG_HIDDEN);
+    }
     char countdown[40];
     snprintf(countdown, sizeof(countdown), "OK 下一步 · 窗口 %02u:%02u",
              (unsigned)(portable->setup_seconds_left / 60),
              (unsigned)(portable->setup_seconds_left % 60));
     set_label_text(s_ui.qr_countdown, countdown);
-    if (!portable->setup_active || !portable->setup_ready) {
+    if (portable->storage_error[0]) {
         render_qr_data(NULL);
+        set_label_text(s_ui.manual_secret, "");
+        set_label_text(s_ui.qr_title, portable_storage_title(portable->storage_error));
+        set_label_text(s_ui.qr_hint, portable_error_text(portable->storage_error));
+        set_label_text(s_ui.qr_countdown, strcmp(portable->storage_error, "storage_write_unknown") == 0
+            ? "等待保存确认" : "请保留数据并检查设备");
+        return;
+    }
+    if (!ready) {
+        render_qr_data(NULL);
+        set_label_text(s_ui.manual_secret, "");
         set_label_text(s_ui.qr_title, portable->setup_active ? "正在打开热点" : "设置窗口已关闭");
         set_label_text(s_ui.qr_hint, portable->setup_active ? "请稍候" : "按 OK 重新打开");
         return;
     }
+    if (manual) {
+        char grouped[48];
+        snprintf(grouped, sizeof(grouped), "%.11s\n%.11s\n%.11s\n%.10s",
+            portable->setup_secret, portable->setup_secret + 11,
+            portable->setup_secret + 22, portable->setup_secret + 33);
+        set_label_text(s_ui.manual_secret, grouped);
+        set_label_text(s_ui.qr_title, "手动打开设置");
+        set_label_text(s_ui.qr_hint, "手机或电脑连接设备热点\n在网页输入完整密钥");
+        render_qr_data(NULL);
+        return;
+    }
+    set_label_text(s_ui.manual_secret, "");
     set_label_text(s_ui.qr_title, second ? "打开设置网页" : "连接设备热点");
     char data[256];
     if (second) {
         snprintf(data, sizeof(data), "%s", portable->setup_page_url);
-        set_label_text(s_ui.qr_hint, "http://192.168.4.1");
+        set_label_text(s_ui.qr_hint, "手机或电脑 · 扫码打开");
     } else {
         /* Firmware-generated AP name/password use QR-safe ASCII only. */
         snprintf(data, sizeof(data), "WIFI:T:WPA;S:%s;P:%s;;",
@@ -859,18 +972,32 @@ static void render_auth(const quota_portable_view_t *portable)
         portable->login_state == QUOTA_PORTABLE_LOGIN_EXPIRED ||
         portable->login_state == QUOTA_PORTABLE_LOGIN_CANCELED ||
         portable->login_state == QUOTA_PORTABLE_LOGIN_ERROR;
-    set_label_text(s_ui.footer, terminal ? "长按 OK 返回" : "长按OK取消 · 长按DOWN暂停");
+    bool saving = portable->login_state == QUOTA_PORTABLE_LOGIN_EXCHANGING &&
+                  strcmp(portable->login_error, "storage_failed") == 0;
+    set_label_text(s_ui.footer, saving ? "正在保存 · 请稍候" : terminal ? "长按 OK 返回" : "长按OK取消 · 长按DOWN暂停");
     switch (portable->login_state) {
         case QUOTA_PORTABLE_LOGIN_CONNECTING: title = "正在连接网络"; break;
         case QUOTA_PORTABLE_LOGIN_REQUESTING_CODE: title = "正在获取验证码"; break;
         case QUOTA_PORTABLE_LOGIN_WAITING:
             title = "扫码打开官方验证页"; hint = portable->login_user_code; break;
-        case QUOTA_PORTABLE_LOGIN_EXCHANGING: title = "正在完成授权"; hint = "请稍候"; break;
+        case QUOTA_PORTABLE_LOGIN_EXCHANGING:
+            title = portable->login_error[0] && strcmp(portable->login_error, "storage_failed") == 0
+                ? "正在保存账户" : "正在完成授权";
+            hint = portable->login_error[0] && strcmp(portable->login_error, "storage_failed") == 0
+                ? "请稍候 · 保存后再退出" : "请稍候";
+            break;
         case QUOTA_PORTABLE_LOGIN_SUCCESS: title = "账户已连接"; hint = "正在查询额度"; break;
-        case QUOTA_PORTABLE_LOGIN_EXPIRED: title = "授权已过期"; hint = "返回并重新打开手机设置"; break;
+        case QUOTA_PORTABLE_LOGIN_EXPIRED: title = "授权已过期"; hint = "返回并重新打开设备设置"; break;
         case QUOTA_PORTABLE_LOGIN_CANCELED: title = "授权已取消"; hint = "长按 OK 返回"; break;
         case QUOTA_PORTABLE_LOGIN_ERROR: title = "授权未完成"; hint = portable_error_text(portable->login_error); break;
         default: break;
+    }
+    if (portable->storage_error[0]) {
+        title = portable_storage_title(portable->storage_error);
+        hint = portable_error_text(portable->storage_error);
+        show_qr = false;
+        set_label_text(s_ui.footer, strcmp(portable->storage_error, "storage_write_unknown") == 0
+            ? "保存待确认 · 请稍候" : "请保留数据 · 检查设备");
     }
     set_label_text(s_ui.qr_title, title);
     lv_obj_set_style_text_font(s_ui.qr_hint, show_qr ? &quota_font_16 : &quota_font_12, 0);
@@ -913,7 +1040,9 @@ static void render_auth(const quota_portable_view_t *portable)
     snprintf(countdown, sizeof(countdown), "有效时间 %02u:%02u",
              (unsigned)(portable->login_seconds_left / 60),
              (unsigned)(portable->login_seconds_left % 60));
-    set_label_text(s_ui.qr_countdown, countdown);
+    set_label_text(s_ui.qr_countdown, portable->storage_error[0]
+        ? (strcmp(portable->storage_error, "storage_write_unknown") == 0
+            ? "等待保存确认" : "请检查设备存储") : countdown);
 }
 
 void quota_ui_init(void)

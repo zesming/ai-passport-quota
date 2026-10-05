@@ -117,6 +117,7 @@ export function serialErrorMessage(error) {
     pairing_closed: '小屏配对窗口已关闭。请在小屏重新打开配对窗口后重试。',
     invalid_config: '设备收到配置，但信息无效。请检查 Wi‑Fi 名称和本机地址后重试。',
     storage_error: '设备收到配置，但保存失败。请重启小屏后重试。',
+    mode_switch_failed: '电脑连接配置已保存，但切换到电脑同步模式失败。请重试配对或在小屏设置中切换模式。',
     frame_too_long: '配置内容超过设备协议允许的大小。',
     unsupported_version: '网页与设备固件版本不匹配。请更新到配套版本。',
   };

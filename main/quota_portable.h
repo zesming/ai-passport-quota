@@ -16,6 +16,9 @@
 #define QUOTA_PORTABLE_COMMAND_BYTES 2048
 #define QUOTA_PORTABLE_STATE_BYTES 16384
 
+typedef enum { QUOTA_ACCOUNT_DEVICE, QUOTA_ACCOUNT_LEGACY } quota_account_source_t;
+
+/* v1 storage compatibility only; no product-wide mode switching. */
 typedef enum {
     QUOTA_MODE_COMPANION = 0,
     QUOTA_MODE_DIRECT = 1,
@@ -65,6 +68,7 @@ typedef struct {
     char network_ssid[QUOTA_SSID_MAX_BYTES + 1];
     char network_ip[16];
     char network_error[QUOTA_PORTABLE_ERROR_BYTES + 1];
+    char storage_error[32]; /* Sanitized owner error; never a credential or storage record. */
     quota_portable_login_state_t login_state;
     char login_account_id[QUOTA_ACCOUNT_ID_BYTES + 1];
     char login_url[QUOTA_PORTABLE_URL_BYTES + 1];
@@ -72,6 +76,10 @@ typedef struct {
     uint32_t login_seconds_left;
     char login_error[QUOTA_PORTABLE_ERROR_BYTES + 1];
     bool auth_hold_awake;
+    /* Indexed like the active snapshot; transport errors are not Wi-Fi state. */
+    char account_errors[QUOTA_MAX_ACCOUNTS][QUOTA_PORTABLE_ERROR_BYTES + 1];
+    uint64_t account_retry_at[QUOTA_MAX_ACCOUNTS];
+    quota_account_source_t account_sources[QUOTA_MAX_ACCOUNTS];
 } quota_portable_view_t;
 
 typedef struct {
@@ -132,6 +140,11 @@ typedef enum {
     QUOTA_PORTABLE_OP_SETUP_CLOSE,
     QUOTA_PORTABLE_OP_REFRESH,
     QUOTA_PORTABLE_OP_RECONNECT,
+    QUOTA_PORTABLE_OP_OPERATION_CANCEL,
+    QUOTA_PORTABLE_OP_ACCOUNT_ACTIVATE,
+    QUOTA_PORTABLE_OP_ACCOUNT_DEACTIVATE,
+    QUOTA_PORTABLE_OP_EXTERNAL_IMPORT,
+    QUOTA_PORTABLE_OP_NETWORK_ACTIVATE,
 } quota_portable_op_t;
 
 /* This private queue payload may hold secrets; wipe after consumption. */
@@ -150,6 +163,13 @@ typedef struct {
     bool auto_refresh;
     uint16_t screen_timeout_seconds;
     quota_mode_t mode;
+    char target_request_id[9];
+    char replace_active_id[QUOTA_ACCOUNT_ID_BYTES + 1];
+    char remote_account_id[QUOTA_ACCOUNT_ID_BYTES + 1];
+    uint8_t replace_index;
+    /* Captured by the service, never accepted from a phone request. */
+    quota_mode_t accepted_mode;
+    uint32_t accepted_config_generation;
 } quota_portable_command_t;
 
 typedef enum {

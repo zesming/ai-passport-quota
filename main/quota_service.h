@@ -35,6 +35,7 @@ typedef struct {
     bool refreshing;
     bool request_failed;
     bool pairing_active;
+    bool pairing_preparing;
     uint32_t pairing_seconds_left;
     uint64_t now_epoch;
     bool clock_synchronized;

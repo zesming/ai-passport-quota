@@ -26,11 +26,16 @@ typedef enum {
     QUOTA_DIRECT_PERSIST_PENDING,
     QUOTA_DIRECT_NO_MEMORY,
     QUOTA_DIRECT_UNSUPPORTED,
+    QUOTA_DIRECT_TLS_ERROR,
+    QUOTA_DIRECT_RESOURCE_ERROR,
+    QUOTA_DIRECT_RESPONSE_TOO_LARGE,
 } quota_direct_result_code_t;
 
 typedef struct {
     quota_direct_result_code_t code;
     int http_status;
+    int esp_error;
+    int tls_error;
     uint32_t retry_after_seconds;
     uint64_t source_epoch;
     bool source_valid;
@@ -54,7 +59,9 @@ typedef struct {
     const char *url;
     bool post;
     const char *content_type;
-    const char *body;
+    /* Sole-owned heap POST body, transferred into perform; transport may clear
+     * it after response starts. Borrowed/injected string literals are invalid. */
+    char *body;
     const char *bearer;
     const char *account_id;
     const char *logical_id;
@@ -70,6 +77,9 @@ typedef struct {
     bool overflow;
     bool allocation_failed;
     bool redirected;
+    bool resource_limited;
+    int esp_error;
+    int tls_error;
     char date[65];
     char retry_after[65];
 } quota_direct_http_response_t;
@@ -77,7 +87,7 @@ typedef struct {
 /* Injection for deterministic host tests. Production passes NULL and uses the
  * fixed-origin ESP HTTPS transport with certificate bundle verification. */
 typedef bool (*quota_direct_transport_t)(void *context,
-    const quota_direct_http_request_t *request, quota_direct_http_response_t *response);
+    quota_direct_http_request_t *request, quota_direct_http_response_t *response);
 
 typedef struct quota_direct quota_direct_t;
 typedef struct {

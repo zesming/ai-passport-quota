@@ -379,7 +379,13 @@ static void test_portable_navigation(void)
     assert(navigation.screen == QUOTA_SCREEN_PHONE && navigation.phone_step == 0);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_RENEW_PHONE);
     assert(navigation.phone_step == 1);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_RENEW_PHONE);
+    assert(navigation.phone_step == 2); /* Manual address and full session secret. */
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_RENEW_PHONE);
+    assert(navigation.phone_step == 0);
     quota_navigation_handle(&navigation, QUOTA_INPUT_UP, 2);
+    assert(navigation.phone_step == 2);
+    quota_navigation_handle(&navigation, QUOTA_INPUT_DOWN, 2);
     assert(navigation.phone_step == 0);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 2) == QUOTA_ACTION_CLOSE_PHONE);
     assert(navigation.screen == QUOTA_SCREEN_NETWORK);

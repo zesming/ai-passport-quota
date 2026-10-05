@@ -9,7 +9,7 @@
 | 固件输入与显示生命周期 | `main/main.c` |
 | 纯状态、解析与时序 | `main/quota_logic.c`、`main/quota_logic.h` |
 | 网络任务与旧 USB/电脑同步 | `main/quota_service.c` |
-| 便携控制器、授权/查询、存储与手机页面 | `main/quota_portable_service.c`、`main/quota_direct*.c`、`main/quota_store.c`、`main/quota_portal.c`、`main/portable_setup.html` |
+| 账户目录、控制器、授权/查询、存储与设置页 | `main/quota_catalog.c`、`main/quota_portable_service.c`、`main/quota_direct*.c`、`main/quota_store.c`、`main/quota_portal.c`、`main/portable_setup.html` |
 | 看板与显示资源 | `main/quota_ui.c`、`main/quota_brand_assets.c`、`assets/` |
 | 板卡驱动 | `components/bsp/include/`、`components/bsp/src/` |
 | 电脑 UI 与 USB | `companion/src/` |
@@ -47,7 +47,7 @@ python3 tools/archive_firmware.py verify <bundle-directory>
 
 分析崩溃时使用匹配 ELF，后续重构建可能具有不同身份。失败运行可能保留旧输出，必须报告确切成功归档路径和镜像哈希。生成固件和调试归档不提交，也不自动上传。额外自定义分区载荷不会单独保存于此归档。
 
-设备内嵌手机页面可用 `node tools/preview_portable.mjs` 在 `http://127.0.0.1:4328/#s=synthetic-preview-only` 预览同一生产 HTML 和示例数据。这是手动开发预览，不是采集服务。修改设备授权前阅读[便携设计](portable-connectivity.zh_CN.md)。
+设备内嵌设置页可用 `node tools/preview_portable.mjs` 预览同一生产 HTML 和示例数据，打开启动输出的地址。`http://127.0.0.1:4328/__preview/manual` 可验证手动连接，示例密钥为连续 43 个 `s`。这是手动开发预览，不是采集服务。修改设备授权前阅读[便携设计](portable-connectivity.zh_CN.md)。
 
 前端迭代时在 `companion/` 运行 `AIQ_DEV_ORIGIN=http://127.0.0.1:5173 npm start`，另开终端执行 `npm run dev`，打开这个确切 origin。文档截图使用 `npm run preview:readme`，在 `http://127.0.0.1:4327/` 提供隔离合成账号。
 
@@ -63,4 +63,4 @@ python3 tools/archive_firmware.py verify <bundle-directory>
 
 授权全程保持原生 USB 串口连接，避免改变调制解调器控制线。重新连接日志工具可能复位 C3，使该轮验收失效。
 
-分开报告 `Build`、`Host tests`、`Device tests` 和 `Unverified`，列出实际完成的检查。浏览器截图和主机模拟不能证明板卡显示、物理 USB 配对或服务授权。相关检查包括独立/缺失窗口、真实 0%、过期等待、按条件显示 Codex 扩展项及冷启动同步前不显示扩展。真机验收还包括字体/按键、配对、证书拒绝、Wi-Fi 停止/重连、LCD Sleep In/out、缓存静默唤醒、保留刷新截止时间及重启持久化。注明 USB/电池条件并比较亮屏/息屏实测电流，配置和主机测试不能证明电流降低。真实 DeepSeek 凭证与扩展/离线时序仍需要各自验收证据；已发生结果见[变更日志](../CHANGELOG.zh_CN.md)，不能把旧验收自动移用于新构建。
+分开报告 `Build`、`Host tests`、`Device tests` 和 `Unverified`，列出实际完成的检查。浏览器截图和主机模拟不能证明板卡显示、物理 USB 配对或服务授权。相关检查包括独立/缺失窗口、真实 0%、过期等待、按条件显示 Codex 扩展项，以及重启后恢复来源绑定匹配的扩展缓存；未观测到的扩展在同步前保持隐藏。真机验收还包括字体/按键、配对、证书拒绝、Wi-Fi 停止/重连、LCD Sleep In/out、缓存静默唤醒、保留刷新截止时间及重启持久化。注明 USB/电池条件并比较亮屏/息屏实测电流，配置和主机测试不能证明电流降低。真实 DeepSeek 凭证与扩展/离线时序仍需要各自验收证据；已发生结果见[变更日志](../CHANGELOG.zh_CN.md)，不能把旧验收自动移用于新构建。
