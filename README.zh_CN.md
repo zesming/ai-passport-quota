@@ -18,6 +18,8 @@ npm start
 
 打开 **http://127.0.0.1:4317/**。macOS 可用 `start-dashboard.command` 启动已构建的应用，请保留终端窗口。可选覆盖项：`AIQ_CODEX_BIN`、`AIQ_CLAUDE_BIN`、`AIQ_STATE_DIR`。
 
+macOS 后台运行：先停止手动启动的管理应用，在 `companion/` 执行 `npm run service:install`。服务在登录后启动，退出后自动恢复，可关闭浏览器。`npm run service:remove` 停止并移除后台服务，保留账号和配对；移动项目目录后需重新安装。保存的网络地址暂不可用时，每 15 秒重试恢复监听；IP 变化仍须重新配对。
+
 1. 在账号管理中添加 Codex 或 Claude，并完成官方授权。每个账号使用独立 profile，不导入已有 CLI 凭证。
 2. Codex 显示 **Codex 用量**，不代表全部 ChatGPT 消息限制。五小时与周窗口独立显示，重置时间显示为剩余倒计时；缺失窗口隐藏，真实 0% 仍显示。来源提供可用 Credits（显示为「剩余额度」）或正数的可用重置次数时才展示；重置明细完整时标注最近到期时间，不推断剩余额度的货币单位。
 3. Claude 需复制页面的会话启动命令，正常使用该 profile。正常响应后的 statusline 回调提供额度；刷新不发送付费模型提示。

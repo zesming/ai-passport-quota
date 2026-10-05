@@ -18,6 +18,8 @@ npm start
 
 Open **http://127.0.0.1:4317/**. On macOS, `start-dashboard.command` starts an already built installation; keep its terminal open. Optional overrides: `AIQ_CODEX_BIN`, `AIQ_CLAUDE_BIN`, `AIQ_STATE_DIR`.
 
+For macOS background operation, stop any manually started companion and run `npm run service:install` in `companion/`. It starts at login and restarts after exit; the browser can be closed. `npm run service:remove` stops and removes it, retaining accounts and pairing. Reinstall after moving the checkout. If the saved network address is temporarily unavailable, the service retries restoration every 15 seconds; an IP change still requires re-pairing.
+
 1. Add Codex or Claude in Account management and complete official authorization. Each account gets an independent profile; existing CLI credentials are not imported.
 2. Codex reports **Codex usage**, not all ChatGPT message limits. The five-hour and weekly windows display independently with reset countdowns; missing windows are hidden, while a real 0% stays visible. Available Credits and banked-reset counts appear when supplied, with the earliest expiry when complete reset details are known. Credits have no inferred currency.
 3. For Claude, copy the page's session launch command and use that profile normally. A statusline callback after a normal response supplies quota; refresh never sends a paid model prompt.

@@ -8,6 +8,14 @@
 
 ## Unreleased
 
+### 2026-10-05 — Companion startup and network restoration
+
+The reported wake/manual-refresh failures were traced to the desktop companion not running after a computer restart. Restarting it restored the paired endpoint and provider collection; the owner confirmed device refresh recovered. Added a user-level macOS login service with restart supervision, install/remove commands, preserved configuration on reinstall and bounded startup checks. A loaded-job replacement retries transient launchd unregister errors. No credentials are stored in its plist; logs remain private.
+
+The companion retries restoration of the saved paired endpoint every 15 seconds when unavailable. It retains the saved address, token and certificate, respects explicit stop, and waits for re-pairing if the address changes or certificate is unusable. A guard inside the serialized restore operation prevents an overlapping retry from disabling authentication on an active listener.
+
+Build: **PASS for the companion**, Vite production build. Host tests: **PASS**, 54 companion tests, repository checks and script syntax; restoration tests cover late network availability, queued overlap, temporary bind failure, unusable certificate, stop and shutdown. Independent review found no remaining material issue. The installed login service passed reinstall and SIGTERM recovery checks, retaining accounts, settings, CLI availability and pairing. Device tests: **PASS for owner-observed refresh recovery before service installation**. Unverified: an actual logout/login or reboot with the new service, and physical wake after the final supervised restart. Firmware is unchanged; no flash or rebuild was performed.
+
 ### 2026-10-04 — Compact countdown firmware installed
 
 Installed the verified `80ce1005…` bundle after the owner's request. The device partition table matched the archive; writes at `0x0` / `0x8000` / `0x10000` passed all three component hash checks. NVS and PHY regions were untouched.

@@ -35,6 +35,7 @@ export class PairingService {
     this.lifecycle = result; return result;
   }
   restore() { return this.serial(async () => {
+    if (this.server?.listening) return;
     await privateDirectory(this.directory);
     const saved = await readJSON(path.join(this.directory, 'pairing.json'));
     if (!saved || saved.v !== 1 || !privateIPv4(saved.address) || !/^[A-Za-z0-9_-]{43}$/.test(saved.token ?? '') || saved.key !== path.join(this.directory, 'server-key.pem') || saved.cert !== path.join(this.directory, 'server-cert.pem')) return;
