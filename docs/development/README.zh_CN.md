@@ -8,7 +8,8 @@
 | --- | --- |
 | 固件输入与显示生命周期 | `main/main.c` |
 | 纯状态、解析与时序 | `main/quota_logic.c`、`main/quota_logic.h` |
-| Wi-Fi、HTTPS、USB 与 NVS | `main/quota_service.c` |
+| 网络任务与旧 USB/电脑同步 | `main/quota_service.c` |
+| 便携控制器、授权/查询、存储与手机页面 | `main/quota_portable_service.c`、`main/quota_direct*.c`、`main/quota_store.c`、`main/quota_portal.c`、`main/portable_setup.html` |
 | 看板与显示资源 | `main/quota_ui.c`、`main/quota_brand_assets.c`、`assets/` |
 | 板卡驱动 | `components/bsp/include/`、`components/bsp/src/` |
 | 电脑 UI 与 USB | `companion/src/` |
@@ -46,11 +47,13 @@ python3 tools/archive_firmware.py verify <bundle-directory>
 
 分析崩溃时使用匹配 ELF，后续重构建可能具有不同身份。失败运行可能保留旧输出，必须报告确切成功归档路径和镜像哈希。生成固件和调试归档不提交，也不自动上传。额外自定义分区载荷不会单独保存于此归档。
 
+设备内嵌手机页面可用 `node tools/preview_portable.mjs` 在 `http://127.0.0.1:4328/#s=synthetic-preview-only` 预览同一生产 HTML 和示例数据。这是手动开发预览，不是采集服务。修改设备授权前阅读[便携设计](portable-connectivity.zh_CN.md)。
+
 前端迭代时在 `companion/` 运行 `AIQ_DEV_ORIGIN=http://127.0.0.1:5173 npm start`，另开终端执行 `npm run dev`，打开这个确切 origin。文档截图使用 `npm run preview:readme`，在 `http://127.0.0.1:4327/` 提供隔离合成账号。
 
 ## 刷写与 NVS
 
-默认 8 MB 布局：NVS 为 `0x9000`/`0x6000`，PHY data 为 `0xF000`/`0x1000`，factory app 为 `0x10000`/`0x7F0000`；分区表通常位于 `0x8000`。校验器检查配置偏移、边界、不重叠、分区 MD5 和镜像一致性。允许合法自定义布局，以实际产物记录的偏移为准。
+默认 8 MB 布局：NVS 为 `0x9000`/`0x6000`，PHY data 为 `0xF000`/`0x1000`，factory app 为 `0x10000`/`0x7B0000`，独立 portable NVS 为 `0x7C0000`/`0x40000`；分区表通常位于 `0x8000`。校验器检查配置偏移、边界、不重叠、分区 MD5 和镜像一致性。允许合法自定义布局，以实际产物记录的偏移为准。
 
 写入前识别目标设备和确切已验证产物，确认分区兼容性并说明数据影响。获得适用于该设备、产物和写入范围的授权。其他构建的旧授权不适用于新产物；重构建会改变待交付文件。不要求先读回原固件。
 

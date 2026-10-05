@@ -2,11 +2,46 @@
 
 # AI Passport Quota
 
-A quota dashboard for the FoloToy AI Passport (ESP32-C3, 240 × 320 display), with a local desktop companion. Manage up to eight isolated Codex, Claude and DeepSeek accounts, view remaining subscription quota or RMB API balance, set refresh timing and screen timeout, and retain an offline device cache.
+A quota dashboard for the FoloToy AI Passport: ESP32-C3, 240 × 320 display, 8 MB Flash, no PSRAM. View Codex/Claude subscription quota and DeepSeek RMB balance, with reset countdowns, optional available resets and remaining Credits. Missing quota windows stay hidden; a real 0% remains visible.
 
-## Run the companion
+## Choose a connection mode
 
-Requirements: Node.js 22+, npm, OpenSSL, and the official Codex/Claude CLI for those providers. Device setup needs desktop Chrome or Edge with Web Serial, a data-capable USB cable and 2.4 GHz Wi-Fi. The computer and companion must stay running during synchronization.
+| Mode | Providers | What must stay running |
+| --- | --- | --- |
+| Device direct | Experimental Codex login and DeepSeek API balance | Ordinary 2.4 GHz Wi-Fi or a phone hotspot |
+| Computer sync | Codex, Claude and DeepSeek via the local companion | The manually started computer companion on the same network |
+
+Direct mode stores its own accounts and settings on the device. It supports eight accounts and three saved networks. Computer accounts and direct accounts are separate; switching modes preserves both. An existing paired device initially keeps computer sync. Change to **Device direct** in phone settings and authorize fresh accounts there. Existing desktop credentials are not imported.
+
+Codex direct login follows the official client's device-code implementation and uses its current public client ID. This is experimental compatibility, not a registered OAuth integration or stable public quota API. Account/workspace restrictions and provider changes may prevent authorization or queries. It reports **Codex usage**, not all ChatGPT message limits. Claude subscription login remains available through computer sync; direct Claude login is unavailable.
+
+## Set up with a phone
+
+First install firmware using the [build and flash guide](docs/development/README.md).
+
+1. On the device, long-press OK, open **Network → Phone settings**. A temporary, password-protected hotspot opens for ten minutes.
+2. Scan the first QR to join the device hotspot. Alternatively enter the displayed network name and password. Stay connected despite the phone's “no Internet” notice.
+3. Short-press OK for the second QR and open its local settings page. That QR contains a temporary setup authorization; manually typing the bare address alone does not authorize changes.
+4. Choose **Device direct**, enter your Wi-Fi or 2.4 GHz phone-hotspot details, then add Codex or a DeepSeek API key. Network/key submissions are pending until verified. End settings to let the device connect.
+5. For Codex, starting authorization closes the device hotspot. Restore the phone's Internet connection or enable its configured hotspot, then scan the official authorization QR shown on the **device** and enter its code. The device completes authorization and saves its own tokens. Authorization lasts up to fifteen minutes.
+
+The browser page is local to the device and needs no hosted account service. Its baseline works without Web Bluetooth; real phone scanning and network-switch behavior still depend on the phone. Enterprise certificate networks and Bluetooth network relay are not implemented. Use a compatible phone hotspot when ordinary Wi-Fi is unavailable. See the [portable design](docs/development/portable-connectivity.md) for UI, authorization and future network options.
+
+DeepSeek displays only CNY total available balance, including grants and top-ups. A label is not an authenticated email. Spending history, request counts and cumulative token totals are unavailable from the documented balance API. A replacement key is checked before replacing the working key and balance.
+
+Device credentials are outside Git, in a dedicated NVS partition. This engineering firmware does **not** encrypt them against physical Flash access. API keys, tokens and account passwords are never displayed by the settings API; provider passwords stay on official login pages.
+
+## Use the device
+
+Up/down selects an account. Short OK refreshes or confirms; long OK opens settings or returns. Long DOWN turns the screen off. The first function-key gesture wakes only. The independent power key retains hardware long-press shutdown.
+
+Automatic refresh accepts 1/5/15/30 minutes. Screen timeout accepts Never, 30 seconds, or 1/2/5/10 minutes. Screen off stops Wi-Fi, phone setup and outbound requests. An already admitted request may finish; received replacement tokens are saved even after screen off. Authorization pauses while asleep and its expiry continues. Wake shows cache first and reconnects. Direct mode queries providers only when a manual request or enabled timer is due; computer sync also reads its companion cache silently. Wake does not postpone source refresh.
+
+The status bar shows Wi-Fi, UTC+8 time after synchronization and proportional green battery fill. Green is styling, not a verified charging indication. Battery life and sleep current have not been measured.
+
+## Optional computer companion
+
+Requires Node.js 22+, npm, OpenSSL and the official Codex/Claude CLI for those providers. USB pairing uses desktop Chrome/Edge with Web Serial.
 
 ```bash
 git clone https://github.com/zesming/ai-passport-quota.git
@@ -16,44 +51,19 @@ npm run build
 npm start
 ```
 
-Open **http://127.0.0.1:4317/**. On macOS, `start-dashboard.command` starts an already built installation; keep its terminal open. Optional overrides: `AIQ_CODEX_BIN`, `AIQ_CLAUDE_BIN`, `AIQ_STATE_DIR`.
+Open **http://127.0.0.1:4317/** and add isolated accounts. For Claude, use the page's session command; official statusline observations supply quota after normal use. No refresh sends a paid model prompt.
 
-1. Add Codex or Claude in Account management and complete official authorization. Each account gets an independent profile; existing CLI credentials are not imported.
-2. Codex reports **Codex usage**, not all ChatGPT message limits. The five-hour and weekly windows display independently with reset countdowns; missing windows are hidden, while a real 0% stays visible. Available Credits and banked-reset counts appear when supplied, with the earliest expiry when complete reset details are known. Credits have no inferred currency.
-3. For Claude, copy the page's session launch command and use that profile normally. A statusline callback after a normal response supplies quota; refresh never sends a paid model prompt.
-4. For DeepSeek, add an API key from the [official portal](https://platform.deepseek.com/api_keys). The page shows RMB available balance, including grants and top-ups, from the [balance API](https://api-docs.deepseek.com/api/get-user-balance/). The name is a local label. Keys stay on the computer. Spending history, request counts and cumulative token totals are not supported.
-5. Set automatic refresh to 1, 5, 15 or 30 minutes. Screen timeout accepts Never, 30 seconds, or 1/2/5/10 minutes; the default is 2 minutes.
+Choose **Computer pairing** on the device; its USB window lasts 120 seconds. Enter the computer's private IPv4 address and Wi-Fi details in Device configuration, connect USB, and wait for acknowledgment. Device synchronization uses pinned HTTPS on port **4318**. Re-pair when the computer address changes. Keep the companion terminal open; no autostart service is installed. Profiles stay under `~/.local/share/ai-passport-quota/` or `AIQ_STATE_DIR`.
 
-Credentials live under `~/.local/share/ai-passport-quota/` or `AIQ_STATE_DIR`, in private account profiles outside the repository. Removing an account detaches it; Codex/Claude profile files are retained. Stop syncing revokes the device token.
+## Screenshots and development
 
-## Connect and use the device
+Screenshots use isolated synthetic accounts; web previews do not establish hardware telemetry.
 
-Install a verified firmware build using the [build and flash guide](docs/development/README.md). On an already configured device, long-press OK, select pairing with up/down and confirm with OK. The physical pairing window lasts 120 seconds.
-
-In Device configuration, choose the computer's private IPv4 address, enter Wi-Fi details, and click Connect and configure. Select the ESP32-C3 USB Serial/JTAG device and wait for confirmation. Wi-Fi details travel directly from browser memory to USB. Device synchronization uses pinned HTTPS on the selected address, port **4318**; the settings page remains local-only on **4317**. Re-pair if the computer's IP changes. Close other serial tools and pairing tabs before connecting. If setup fails, refresh the page, reopen the physical window and re-enter Wi-Fi details; the page distinguishes no input, interrupted communication, unmatched acknowledgment and device rejection.
-
-Up/down selects an account; short OK refreshes or confirms; long OK opens settings or returns. Long DOWN while awake turns the screen off. The first function-key gesture wakes only. The independent power key retains hardware long-press shutdown. Pairing suppresses automatic screen off.
-
-Screen off stops device Wi-Fi, puts the LCD into Sleep In, pauses display refresh and worker polling, and permits CPU frequency scaling down to 40 MHz. Function-key sensing remains active. Wake first shows cached data, then reconnects and silently reads the companion cache without resetting the account-refresh deadline or showing source-refresh progress. An enabled overdue refresh runs afterward. The desktop keeps its own schedule. Expired windows wait for new source data. Actual current reduction and battery life have not been measured.
-
-The status bar shows Wi-Fi connection, time after synchronization and proportional green battery fill. A diagonal mark means no battery reading. Green is styling, not a charging indication; no verified software charging-state source is available. The clock shows `--:--` until synchronized.
-
-## Screenshots
-
-These captures use isolated synthetic example accounts. The device preview is a web rendering, not a photograph; its clock uses computer time and its indicators do not establish live board telemetry.
-
-![ChatGPT Pro with weekly quota, available resets and Credits](docs/screenshots/quota-pro.jpg)
-![Claude quota and device preview](docs/screenshots/claude.jpg)
+![Phone setup page](docs/screenshots/phone-setup.png)
+![ChatGPT Pro quota](docs/screenshots/quota-pro.jpg)
+![Claude quota](docs/screenshots/claude.jpg)
 ![DeepSeek balance](docs/screenshots/deepseek.jpg)
 
-[Full account dashboard](docs/screenshots/dashboard.jpg) · [Refresh settings](docs/screenshots/settings.jpg) · [USB device configuration](docs/screenshots/device-setup.jpg)
+Start with [AGENTS.md](AGENTS.md), the [developer guide](docs/development/README.md) and [application contracts](docs/applications/ai-quota-monitor.md). Validation and device acceptance are recorded in the [changelog](docs/CHANGELOG.md).
 
-## Development
-
-Start with [AGENTS.md](AGENTS.md). See the [developer guide](docs/development/README.md) for structure, checks and flashing, [application contracts](docs/applications/ai-quota-monitor.md) for provider/protocol/cache behavior, and [hardware reference](docs/hardware-design/AI_HARDWARE_DEVELOPMENT_GUIDE.md) for pins and BSP constraints. Dated changes and acceptance evidence belong in the [changelog](docs/CHANGELOG.md).
-
-Firmware requires ESP-IDF **5.5.3**, ESP32-C3, 8 MB Flash and no PSRAM. Builds and simulations do not establish hardware acceptance. Real browser USB pairing, provider access and the remaining board checks require separate verification.
-
-## Origin and license
-
-Based on the MIT-licensed [FoloToy AI Passport](https://gitee.com/FoloToy/ai-passport), commit `0b9e4c81ee4421c0bac39ca3561d65a8285acd4a`. See [LICENSE](LICENSE) and [asset sources and licenses](assets/README.md).
+Based on the MIT-licensed [FoloToy AI Passport](https://gitee.com/FoloToy/ai-passport), commit `0b9e4c81ee4421c0bac39ca3561d65a8285acd4a`. See [LICENSE](LICENSE) and [asset licenses](assets/README.md).

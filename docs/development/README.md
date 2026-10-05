@@ -8,7 +8,8 @@
 | --- | --- |
 | Firmware input and display lifecycle | `main/main.c` |
 | Pure state, parsing and timing | `main/quota_logic.c`, `main/quota_logic.h` |
-| Wi-Fi, HTTPS, USB and NVS | `main/quota_service.c` |
+| Network worker and legacy USB/companion | `main/quota_service.c` |
+| Portable controller, auth/query, storage and phone page | `main/quota_portable_service.c`, `main/quota_direct*.c`, `main/quota_store.c`, `main/quota_portal.c`, `main/portable_setup.html` |
 | Dashboard and display assets | `main/quota_ui.c`, `main/quota_brand_assets.c`, `assets/` |
 | Board drivers | `components/bsp/include/`, `components/bsp/src/` |
 | Desktop UI and USB | `companion/src/` |
@@ -46,11 +47,13 @@ python3 tools/archive_firmware.py verify <bundle-directory>
 
 Use the matching ELF when decoding a crash. A later rebuild may have a different identity. Failed runs can leave previous outputs intact; report the exact successful bundle path and image hash. Generated firmware/debug bundles stay outside commits and are not uploaded automatically. Additional custom partition payloads are not retained separately in this bundle.
 
+For the embedded phone page, `node tools/preview_portable.mjs` serves the exact production HTML with synthetic fixtures at `http://127.0.0.1:4328/#s=synthetic-preview-only`. This is a manual development preview, not a data collector. See [portable design](portable-connectivity.md) before changing device-owned authorization.
+
 For frontend iteration, run `AIQ_DEV_ORIGIN=http://127.0.0.1:5173 npm start` in `companion/`, then `npm run dev` in another terminal and open that exact origin. For documentation screenshots, `npm run preview:readme` serves isolated synthetic accounts at `http://127.0.0.1:4327/`.
 
 ## Flashing and NVS
 
-The default 8 MB layout is NVS at `0x9000`/`0x6000`, PHY data at `0xF000`/`0x1000`, and factory app at `0x10000`/`0x7F0000`; the partition table is normally at `0x8000`. The verifier checks configured offsets, bounds, non-overlap, partition MD5 and image correspondence. A valid custom layout is allowed; use the actual artifact's recorded offsets.
+The default 8 MB layout is NVS at `0x9000`/`0x6000`, PHY data at `0xF000`/`0x1000`, factory app at `0x10000`/`0x7B0000`, and portable NVS at `0x7C0000`/`0x40000`; the partition table is normally at `0x8000`. The verifier checks configured offsets, bounds, non-overlap, partition MD5 and image correspondence. A valid custom layout is allowed; use the actual artifact's recorded offsets.
 
 Before writing, identify the intended device and exact verified artifact, confirm partition compatibility and state the data impact. Obtain applicable authorization for that device/artifact/write scope. Prior approval for another build does not authorize a new artifact; rebuilding changes the proposed deliverable. Reading back the original firmware is not required.
 

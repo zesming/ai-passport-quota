@@ -318,7 +318,7 @@ static void test_navigation(void)
            QUOTA_ACTION_NONE);
     assert(navigation.screen == QUOTA_SCREEN_SETTINGS);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_UP, 3) == QUOTA_ACTION_NONE);
-    assert(navigation.settings_focus == 4);
+    assert(navigation.settings_focus == 5);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 3) == QUOTA_ACTION_NONE);
     assert(navigation.screen == QUOTA_SCREEN_SETUP);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 3) == QUOTA_ACTION_NONE);
@@ -329,10 +329,12 @@ static void test_navigation(void)
     assert(navigation.screen == QUOTA_SCREEN_ACCOUNTS);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_UP, 3) == QUOTA_ACTION_NONE);
     assert(navigation.account_focus == 3);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 3) == QUOTA_ACTION_NONE);
-    assert(navigation.screen == QUOTA_SCREEN_SETUP);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 3) == QUOTA_ACTION_NONE);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 3) == QUOTA_ACTION_OPEN_PHONE);
+    assert(navigation.screen == QUOTA_SCREEN_PHONE);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 3) == QUOTA_ACTION_CLOSE_PHONE);
     assert(navigation.screen == QUOTA_SCREEN_ACCOUNTS);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 3) == QUOTA_ACTION_NONE);
+    assert(navigation.screen == QUOTA_SCREEN_SETTINGS);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 3) == QUOTA_ACTION_NONE);
     assert(navigation.screen == QUOTA_SCREEN_HOME);
 
@@ -356,9 +358,37 @@ static void test_navigation(void)
     assert(navigation.screen == QUOTA_SCREEN_HOME);
 
     quota_navigation_init(&navigation, false, 300, true, 120, 0);
-    assert(navigation.screen == QUOTA_SCREEN_SETUP);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 0) == QUOTA_ACTION_NONE);
+    assert(navigation.screen == QUOTA_SCREEN_PHONE);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 0) == QUOTA_ACTION_CLOSE_PHONE);
     assert(navigation.screen == QUOTA_SCREEN_HOME);
+}
+
+static void test_portable_navigation(void)
+{
+    quota_navigation_t navigation;
+    quota_navigation_init(&navigation, true, 300, true, 120, 2);
+    navigation.screen = QUOTA_SCREEN_SETTINGS;
+    navigation.settings_focus = 4;
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_NONE);
+    assert(navigation.screen == QUOTA_SCREEN_NETWORK && navigation.network_focus == 0);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_DOWN, 2) == QUOTA_ACTION_NONE);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_RECONNECT);
+    assert(navigation.screen == QUOTA_SCREEN_NETWORK);
+    quota_navigation_handle(&navigation, QUOTA_INPUT_UP, 2);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_OPEN_PHONE);
+    assert(navigation.screen == QUOTA_SCREEN_PHONE && navigation.phone_step == 0);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_RENEW_PHONE);
+    assert(navigation.phone_step == 1);
+    quota_navigation_handle(&navigation, QUOTA_INPUT_UP, 2);
+    assert(navigation.phone_step == 0);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 2) == QUOTA_ACTION_CLOSE_PHONE);
+    assert(navigation.screen == QUOTA_SCREEN_NETWORK);
+    navigation.screen = QUOTA_SCREEN_AUTH;
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_NONE);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 2) == QUOTA_ACTION_CANCEL_AUTH);
+    assert(navigation.screen == QUOTA_SCREEN_ACCOUNTS);
+    /* Appended screens/actions must not renumber the legacy USB state contract. */
+    assert(QUOTA_SCREEN_SETUP == 5 && QUOTA_ACTION_PERSIST_SELECTION == 3);
 }
 
 static void test_navigation_after_external_settings_change(void)
@@ -639,6 +669,7 @@ int main(void)
     test_serial_framing_recovers_after_overlong_line();
     test_freshness_and_reset_states();
     test_navigation();
+    test_portable_navigation();
     test_navigation_after_external_settings_change();
     test_display_sleep_and_wake_gestures();
     test_screen_timeout_settings_compatibility();

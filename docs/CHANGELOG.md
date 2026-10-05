@@ -8,6 +8,20 @@
 
 ## Unreleased
 
+### 2026-10-05 — Experimental device-owned accounts and phone setup
+
+Added DIRECT mode for independently issued Codex device-code credentials and DeepSeek CNY balance; existing paired devices keep COMPANION mode. A temporary WPA2 hotspot and two physical QR steps open the embedded phone page for networks, accounts and settings. Closing setup hands networking back to the device. Claude remains computer-synchronized; enterprise EAP and native BLE relay are researched follow-on routes, not implemented features.
+
+Internal design and implementation review resolved AP handoff, candidate-network/key rollback, request deduplication, silent wake cadence, cache identity and one-time token handling. One existing network worker owns both modes. Received token rotations commit atomically; uncertain refreshes are not replayed. The new portable NVS partition at `0x7c0000` leaves legacy NVS/PHY intact.
+
+The first `aa723541…` image booted successfully. Its observed startup free heap was 126,536 bytes before the application/network/serial tasks and Wi-Fi startup. Follow-up review removed a full JSON copy, released request/response bodies before token persistence, and changed ESP response allocation from a fixed 32 KiB to 4 KiB with bounded growth. This reduces avoidable allocation peaks; it does not establish real TLS headroom.
+
+Build: **PASS**, final complete ESP-IDF 5.5.3 gate and archive verification; app 1,710,896 bytes. Host tests: **PASS**, including actual-C storage, portal, controller and ESP-transport harnesses, ASan/UBSan parser/provider checks, non-NUL/max-size/token-boundary inputs, allocation failure, token rotation/persistence, network rollback and sleep gates. Browser checks: **PASS with synthetic data**, narrow layouts, network/key pending states, Codex handoff, expiry and mode switching. The optional companion is unchanged; its 52 tests/build passed at `ad2dab9` and were not rerun locally for this firmware-only change.
+
+Installed bundle: `build/firmware/8efa9b06f73fb16ed75f7f09d3a1351fe05f74ff487da84724a0f03e0a9052a1/`; matching ELF SHA-256 `71ddcc75179377d5f369100ee6ceee686c8e307aef779cc12709cd99eb05f099`, version `ad2dab9-dirty`. Device tests: **PASS for all three component writes, startup and legacy cache restoration**. Writes at `0x0` / `0x8000` / `0x10000` were hash-verified; no NVS/PHY write or chip erase. Before the first partition update, the new 256 KiB region was verified erased. The final 25-second capture matched the ELF prefix, initialized portable storage and reached application readiness without observed crash markers. Raw logs remain private and the serial port is released.
+
+Unverified: real iPhone/Android/HarmonyOS provisioning, independent provider authorization/renewal and computer-off quota reads, real TLS/max-token heap margins, physical new QR/font/button regression, extended offline recovery and measured current. Host/browser evidence does not replace these checks.
+
 ### 2026-10-05 — Remove desktop autostart; portable connectivity research
 
 Removed the installed macOS LaunchAgent, installer commands, supervision and paired-endpoint retry timer at the owner's request. Restored manual companion startup and removed the feature's tests and README instructions. Account profiles, settings and pairing remain in place; no service is listening on 4317/4318.

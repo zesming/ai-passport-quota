@@ -118,8 +118,19 @@ static void render_application(void)
 {
     quota_service_get_view(&s_view_work);
     uint64_t now_ms = (uint64_t)(esp_timer_get_time() / 1000);
+    quota_portable_login_state_t login = s_view_work.portable.login_state;
+    if ((login >= QUOTA_PORTABLE_LOGIN_CONNECTING && login <= QUOTA_PORTABLE_LOGIN_EXCHANGING) ||
+        (s_navigation.screen == QUOTA_SCREEN_PHONE &&
+         (login == QUOTA_PORTABLE_LOGIN_ERROR || login == QUOTA_PORTABLE_LOGIN_EXPIRED))) {
+        s_navigation.screen = QUOTA_SCREEN_AUTH;
+    } else if ((s_navigation.screen == QUOTA_SCREEN_AUTH || s_navigation.screen == QUOTA_SCREEN_PHONE) && login == QUOTA_PORTABLE_LOGIN_SUCCESS) {
+        s_navigation.screen = QUOTA_SCREEN_HOME;
+    }
+    quota_navigation_sync_settings(&s_navigation, s_view_work.refresh_seconds,
+                                   s_view_work.auto_refresh, s_view_work.screen_timeout_seconds);
     quota_display_tick(&s_display, now_ms, s_view_work.screen_timeout_seconds,
-                        s_view_work.pairing_active);
+                        s_view_work.pairing_active || s_view_work.portable.setup_active ||
+                        s_view_work.portable.auth_hold_awake);
     quota_service_set_display_sleeping(s_display.sleeping);
     bool display_ready = set_display_power(s_display.sleeping);
     if (s_display.sleeping || !display_ready) return;
@@ -155,6 +166,8 @@ static void process_button(const quota_app_event_t *event, quota_service_view_t 
     quota_action_t action = quota_navigation_handle(&s_navigation,
         map_input(event->button, event->button_event), view->snapshot.account_count);
 
+    if (previous_screen != QUOTA_SCREEN_PHONE && s_navigation.screen == QUOTA_SCREEN_PHONE &&
+        action != QUOTA_ACTION_OPEN_PHONE) { s_navigation.phone_step = 0; quota_service_open_phone(); }
     if (previous_screen != QUOTA_SCREEN_SETUP &&
         s_navigation.screen == QUOTA_SCREEN_SETUP) {
         quota_service_open_pairing_window();
@@ -163,7 +176,18 @@ static void process_button(const quota_app_event_t *event, quota_service_view_t 
         quota_service_close_pairing_window();
     }
 
-    if (action == QUOTA_ACTION_REFRESH) {
+    if (action == QUOTA_ACTION_OPEN_PHONE) {
+        s_navigation.phone_step = 0;
+        quota_service_open_phone();
+    } else if (action == QUOTA_ACTION_RENEW_PHONE) {
+        if (!view->portable.setup_active) { s_navigation.phone_step = 0; quota_service_renew_phone(); }
+    } else if (action == QUOTA_ACTION_CLOSE_PHONE) {
+        quota_service_close_phone();
+    } else if (action == QUOTA_ACTION_CANCEL_AUTH) {
+        quota_service_cancel_auth();
+    } else if (action == QUOTA_ACTION_RECONNECT) {
+        quota_service_reconnect();
+    } else if (action == QUOTA_ACTION_REFRESH) {
         quota_service_request_refresh();
     } else if (action == QUOTA_ACTION_APPLY_SETTINGS) {
         if (view->configured) {
@@ -278,6 +302,11 @@ void app_main(void)
                     &s_application_task) != pdPASS) {
         ESP_LOGE(TAG, "application event task creation failed");
         return;
+    }
+    if (s_view_work.portable.mode == QUOTA_MODE_DIRECT &&
+        !s_view_work.portable.network_ssid[0] && s_view_work.snapshot.account_count == 0) {
+        s_navigation.screen = QUOTA_SCREEN_PHONE;
+        s_navigation.setup_return_screen = QUOTA_SCREEN_HOME;
     }
     if (!quota_service_start()) {
         ESP_LOGE(TAG, "quota service task creation failed");

@@ -16,7 +16,7 @@ class HttpRuntime(unittest.TestCase):
         functions = "\n".join(extract_function(source, name) for name in (
             "display_generation_is_current", "network_operation_is_current", "http_request"))
         harness = r'''
-#include "quota_logic.h"
+#include "quota_portable.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -214,7 +214,7 @@ class PublicationRuntime(unittest.TestCase):
         functions = "\n".join(extract_function(source, name) for name in (
             "display_generation_is_current", "publish_snapshot"))
         harness = r'''
-#include "quota_logic.h"
+#include "quota_portable.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>

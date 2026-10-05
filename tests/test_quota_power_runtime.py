@@ -15,6 +15,7 @@ class PowerRuntime(unittest.TestCase):
 #include <stdint.h>
 #include <stdio.h>
 #include <setjmp.h>
+#include "quota_portable.h"
 typedef int esp_err_t;
 typedef void *esp_pm_lock_handle_t;
 typedef struct { int max_freq_mhz, min_freq_mhz; bool light_sleep_enable; } esp_pm_config_t;
@@ -31,9 +32,10 @@ typedef struct { int unused; } quota_app_event_t;
 static esp_pm_lock_handle_t s_cpu_lock;
 static bool s_cpu_lock_held, s_display_power_sleeping, s_display_power_pending;
 static uint8_t s_backlight_percent = 100;
-static struct { bool sleeping; } s_display;
-static struct { unsigned screen_timeout_seconds; bool pairing_active; } s_view_work;
-static int s_navigation, s_battery_percent;
+static quota_display_state_t s_display;
+static struct { uint16_t screen_timeout_seconds, refresh_seconds; bool pairing_active, auto_refresh; quota_portable_view_t portable; } s_view_work;
+static quota_navigation_t s_navigation;
+static int s_battery_percent;
 static uint64_t s_battery_read_ms;
 static int cpu_depth, acquires, releases, power_calls, renders, brightness = 100;
 static bool fail_power, fail_refresh, fail_release, sleep_gate;
@@ -60,9 +62,10 @@ bool bsp_lvgl_set_sleeping(bool sleeping) {
 bool bsp_lvgl_refresh(void) { assert(renders && brightness == 0); return !fail_refresh; }
 void quota_service_get_view(void *view) { (void)view; }
 int64_t esp_timer_get_time(void) { return 1000000; }
-void quota_display_tick(void *display, uint64_t now, unsigned timeout, bool pairing) {
+void quota_display_tick(quota_display_state_t *display, uint64_t now, uint16_t timeout, bool pairing) {
     (void)display; (void)now; (void)timeout; (void)pairing;
 }
+void quota_navigation_sync_settings(quota_navigation_t *nav, uint16_t refresh, bool automatic, uint16_t timeout) { nav->refresh_seconds=refresh; nav->auto_refresh=automatic; nav->screen_timeout_seconds=timeout; }
 void quota_service_set_display_sleeping(bool sleeping) { sleep_gate = sleeping; }
 int bsp_battery_soc(void) { return 50; }
 bool bsp_lvgl_lock(int timeout) { (void)timeout; return true; }

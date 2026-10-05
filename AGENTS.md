@@ -5,8 +5,9 @@
 This repository contains the Quota firmware in `main/`, board support in `components/bsp/`, and the production local companion in `companion/`.
 
 - Preserve existing changes. Read relevant headers and nearby code before editing; make the smallest complete change.
-- Keep reusable board drivers in the BSP, product state/UI/network work in `main`, and account credentials in isolated private profiles outside the repository. Never commit credentials, device identifiers or unsanitized logs.
+- Keep reusable board drivers in the BSP, product state/UI/network work in `main`, and credentials outside the repository: direct credentials in the dedicated portable NVS partition, companion credentials in isolated private profiles. Never commit credentials, device identifiers or unsanitized logs.
 - Preserve authoritative provider timestamps, missing/expired-window semantics and decimal currency strings. Quota polling must not send paid model prompts or invent observations.
+- Direct mode uses the existing single network owner; HTTP setup handlers enqueue bounded commands only. Preserve atomic token-bundle commits and the persisted refresh-inflight marker. A received rotation must survive screen/mode changes; never replay an ambiguous refresh or one-time exchange. Keep legacy and portable cache identities separate.
 - Preserve USB request-ID matching, the physical pairing window, pinned TLS and the separation between loopback settings and authenticated device endpoints. Wi-Fi input goes directly from browser memory to USB.
 - Preserve silent wake-cache reads, source-refresh deadlines and screen-off network gates. Preserve existing NVS layouts and compatibility defaults.
 - LVGL access outside its task requires a successful BSP lock. Button callbacks only enqueue bounded work; networking/storage must not block them. Stop producers before deleting UI objects.

@@ -1,4 +1,5 @@
 #include "quota_service.h"
+#include "quota_portable_service.h"
 
 #include "cJSON.h"
 #include "esp_event.h"
@@ -629,6 +630,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
     (void)arg;
     (void)base;
     (void)data;
+#ifdef ESP_PLATFORM
+    if (data) quota_portable_service_disconnected(((wifi_event_sta_disconnected_t *)data)->reason);
+#endif
     if (id != WIFI_EVENT_STA_DISCONNECTED) return;
     bool sleeping = display_state_snapshot().sleeping;
     mutex_lock();
@@ -732,6 +736,12 @@ static void stop_wifi_for_sleep(void)
     mutex_unlock();
     if (was_connected) post_simple_event(QUOTA_APP_EVENT_CONNECTION);
 }
+
+#ifdef ESP_PLATFORM
+static bool portable_wifi_stop(void) { stop_wifi_for_sleep(); return !s_wifi_started; }
+static void portable_notify(void) { post_simple_event(QUOTA_APP_EVENT_SNAPSHOT); }
+static void portable_wake(void) { if (s_network_task) xTaskNotifyGive(s_network_task); }
+#endif
 
 static bool apply_wifi_config(const quota_device_config_t *config,
                               uint32_t display_generation)
@@ -1298,6 +1308,9 @@ static void network_task(void *arg)
     uint64_t last_pairing_tick_ms = 0;
     uint16_t last_refresh_seconds = 0;
     bool last_auto_refresh = false;
+#ifdef ESP_PLATFORM
+    bool portable_was_owner = false;
+#endif
 
     for (;;) {
         display_state_t waiting_display = display_state_snapshot();
@@ -1305,6 +1318,19 @@ static void network_task(void *arg)
                         ? portMAX_DELAY : pdMS_TO_TICKS(500);
         (void)ulTaskNotifyTake(pdTRUE, wait);
         display_state_t display_state = display_state_snapshot();
+#ifdef ESP_PLATFORM
+        if (quota_portable_service_owns_network()) {
+            quota_portable_service_tick(display_state.sleeping, display_state.generation);
+            portable_was_owner = true;
+            continue;
+        }
+        if (portable_was_owner) {
+            stop_wifi_for_sleep();
+            applied_config_generation = 0;
+            next_config_apply_ms = 0;
+            portable_was_owner = false;
+        }
+#endif
         if (display_state.sleeping) {
             stop_wifi_for_sleep();
             continue;
@@ -1689,7 +1715,15 @@ bool quota_service_init(void)
         s_view.auto_refresh = true;
         if (s_nvs_ready) (void)nvs_erase_snapshot();
     }
-    s_pairing_screen_open = !s_has_config;
+#ifdef ESP_PLATFORM
+    quota_portable_service_hooks_t portable_hooks = {
+        .wifi_ready = init_wifi, .wifi_stop = portable_wifi_stop,
+        .notify = portable_notify, .wake = portable_wake,
+        .display_current = display_generation_is_current,
+    };
+    if (!quota_portable_service_init(s_has_config ? &s_config : NULL, &portable_hooks)) return false;
+#endif
+    s_pairing_screen_open = false;
     s_pairing_opened_at_ms = (int64_t)monotonic_ms();
     return true;
 }
@@ -1767,11 +1801,17 @@ void quota_service_get_view(quota_service_view_t *view)
         view->pairing_seconds_left = 0;
     }
     mutex_unlock();
+#ifdef ESP_PLATFORM
+    quota_portable_service_overlay(view);
+#endif
 }
 
 void quota_service_get_selected_account_id(char account_id[QUOTA_ACCOUNT_ID_BYTES + 1])
 {
     if (account_id == NULL) return;
+#ifdef ESP_PLATFORM
+    if (quota_portable_service_selected(account_id)) return;
+#endif
     mutex_lock();
     if (s_has_config) {
         const char *selected = s_selection_pending ? s_pending_account_id
@@ -1785,6 +1825,10 @@ void quota_service_get_selected_account_id(char account_id[QUOTA_ACCOUNT_ID_BYTE
 
 void quota_service_request_refresh(void)
 {
+#ifdef ESP_PLATFORM
+    char selected[QUOTA_ACCOUNT_ID_BYTES + 1];
+    if (quota_portable_service_selected(selected)) { quota_portable_service_refresh(); return; }
+#endif
     mutex_lock();
     s_refresh_requested = true;
     mutex_unlock();
@@ -1796,6 +1840,12 @@ void quota_service_request_settings(uint16_t refresh_seconds, bool auto_refresh,
 {
     if (!quota_refresh_seconds_is_valid(refresh_seconds) ||
         !quota_screen_timeout_is_valid(screen_timeout_seconds)) return;
+#ifdef ESP_PLATFORM
+    char selected[QUOTA_ACCOUNT_ID_BYTES + 1];
+    if (quota_portable_service_selected(selected)) {
+        quota_portable_service_settings(refresh_seconds, auto_refresh, screen_timeout_seconds); return;
+    }
+#endif
     mutex_lock();
     s_settings_pending = true;
     s_pending_refresh_seconds = refresh_seconds;
@@ -1808,6 +1858,10 @@ void quota_service_request_settings(uint16_t refresh_seconds, bool auto_refresh,
 void quota_service_select_account(const char *account_id)
 {
     if (account_id == NULL || !quota_id_is_valid(account_id)) return;
+#ifdef ESP_PLATFORM
+    char selected[QUOTA_ACCOUNT_ID_BYTES + 1];
+    if (quota_portable_service_selected(selected)) { quota_portable_service_select(account_id); return; }
+#endif
     mutex_lock();
     if (s_has_config) {
         memcpy(s_pending_account_id, account_id, QUOTA_ACCOUNT_ID_BYTES + 1);
@@ -1837,3 +1891,9 @@ void quota_service_close_pairing_window(void)
     s_view.pairing_seconds_left = 0;
     mutex_unlock();
 }
+
+void quota_service_open_phone(void) { quota_portable_service_open(); }
+void quota_service_close_phone(void) { quota_portable_service_close(); }
+void quota_service_renew_phone(void) { quota_portable_service_renew(); }
+void quota_service_cancel_auth(void) { quota_portable_service_cancel_auth(); }
+void quota_service_reconnect(void) { quota_portable_service_reconnect(); }

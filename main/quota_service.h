@@ -2,6 +2,7 @@
 
 #include "bsp_button.h"
 #include "quota_logic.h"
+#include "quota_portable.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -27,6 +28,7 @@ typedef struct {
 
 typedef struct {
     quota_snapshot_t snapshot;
+    quota_portable_view_t portable;
     bool snapshot_valid;
     bool configured;
     bool connected;
@@ -55,3 +57,9 @@ void quota_service_request_settings(uint16_t refresh_seconds, bool auto_refresh,
 void quota_service_select_account(const char *account_id);
 void quota_service_open_pairing_window(void);
 void quota_service_close_pairing_window(void);
+
+void quota_service_open_phone(void);
+void quota_service_close_phone(void);
+void quota_service_renew_phone(void);
+void quota_service_cancel_auth(void);
+void quota_service_reconnect(void);
