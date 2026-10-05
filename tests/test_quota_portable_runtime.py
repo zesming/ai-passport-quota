@@ -83,7 +83,7 @@ int main(void) {
         public = source[source.index("bool quota_portal_host_is_valid"):
                         source.index("static bool unique_keys")]
         functions = "\n".join(extract_function(source, name, "static bool")
-                              for name in ("header", "peer_is_ap", "authorize"))
+                              for name in ("header", "socket_ipv4_address", "peer_is_ap", "authorize"))
         harness = r'''
 #include "quota_portal.h"
 #include <assert.h>
@@ -96,6 +96,8 @@ static quota_portal_callbacks_t s_callbacks;
 static char s_secret[44];
 static bool active;
 static uint32_t peer_ip, local_ip;
+static unsigned peer_form, local_form;
+static bool peer_failure, local_failure;
 static const char *get(httpd_req_t *r, const char *name) {
     if (!strcmp(name,"Host")) return r->host;
     if (!strcmp(name,"Origin")) return r->origin;
@@ -110,35 +112,81 @@ static int httpd_req_get_hdr_value_str(httpd_req_t *r, const char *name, char *o
     strcpy(out,value); return ESP_OK;
 }
 static int httpd_req_to_sockfd(httpd_req_t *r) {(void)r;return 1;}
+static int fake_address(struct sockaddr *addr, socklen_t *len, uint32_t ip, unsigned form, bool failure) {
+    if (failure) return -1;
+    struct sockaddr_storage storage={0}; socklen_t size;
+    if (form==0 || form==6) {
+        struct sockaddr_in *p=(void *)&storage;
+        p->sin_family=AF_INET;p->sin_addr.s_addr=htonl(ip);
+        size=sizeof(*p)-(form==6?1:0);
+    } else if (form==5) {
+        storage.ss_family=AF_UNSPEC;size=sizeof(struct sockaddr);
+    } else {
+        struct sockaddr_in6 *p=(void *)&storage;p->sin6_family=AF_INET6;
+        p->sin6_addr.s6_addr[10]=p->sin6_addr.s6_addr[11]=0xff;
+        uint32_t network_ip=htonl(ip);memcpy(p->sin6_addr.s6_addr+12,&network_ip,4);
+        if(form==2){p->sin6_addr.s6_addr[0]=0xfe;p->sin6_addr.s6_addr[1]=0x80;}
+        if(form==3)p->sin6_addr.s6_addr[10]=p->sin6_addr.s6_addr[11]=0;
+        size=sizeof(*p)-(form==4?1:0);
+    }
+    assert(*len>=size);memcpy(addr,&storage,size);*len=size;return 0;
+}
 static int fake_peer(int fd, struct sockaddr *addr, socklen_t *len) {
-    (void)fd; assert(*len>=sizeof(struct sockaddr_in)); struct sockaddr_in *p=(void*)addr;
-    p->sin_family=AF_INET;p->sin_addr.s_addr=htonl(peer_ip);return 0;
+    (void)fd;return fake_address(addr,len,peer_ip,peer_form,peer_failure);
 }
 static int fake_local(int fd, struct sockaddr *addr, socklen_t *len) {
-    (void)fd; assert(*len>=sizeof(struct sockaddr_in)); struct sockaddr_in *p=(void*)addr;
-    p->sin_family=AF_INET;p->sin_addr.s_addr=htonl(local_ip);return 0;
+    (void)fd;return fake_address(addr,len,local_ip,local_form,local_failure);
 }
 #define getpeername fake_peer
 #define getsockname fake_local
 '''+public+functions+r'''
 static bool session(void *ctx) {(void)ctx;return active;}
+static bool allowed(httpd_req_t *r,bool secret,bool mutation) {
+    const char *denial=NULL;bool ok=authorize(r,secret,mutation,&denial);
+    if(!ok)assert(denial&&strstr(denial,active?"unauthorized":"session_expired"));
+    return ok;
+}
 int main(void) {
     memset(s_secret,'a',43);s_secret[43]=0;s_callbacks.session_active=session;
     active=true;peer_ip=0xc0a80402;local_ip=0xc0a80401;
     httpd_req_t r={"192.168.4.1","http://192.168.4.1",s_secret};
-    assert(authorize(&r,true,true));
-    r.origin="http://evil.test";assert(!authorize(&r,true,true));
-    assert(!authorize(&r,true,false)); /* Reject a supplied foreign GET Origin. */
-    r.origin=NULL;assert(authorize(&r,true,false)); /* GET may omit Origin. */
-    r.origin="http://192.168.4.1";r.secret="wrong";assert(!authorize(&r,true,false));
-    assert(authorize(&r,false,false)); /* Static page contains no secret. */
-    r.secret=s_secret;local_ip=0xc0a80464;assert(!authorize(&r,true,false)); /* STA socket. */
-    local_ip=0xc0a80401;peer_ip=0x0a000001;assert(!authorize(&r,true,false));
-    peer_ip=0xc0a80402;active=false;assert(!authorize(&r,true,false));
+    assert(allowed(&r,true,true));
+    r.origin="http://evil.test";assert(!allowed(&r,true,true));
+    assert(!allowed(&r,true,false)); /* Reject a supplied foreign GET Origin. */
+    r.origin=NULL;assert(allowed(&r,true,false)); /* GET may omit Origin. */
+    r.origin="http://192.168.4.1";r.secret="wrong";assert(!allowed(&r,true,false));
+    assert(allowed(&r,false,false)); /* Static page contains no secret. */
+    r.secret=s_secret;r.host="evil.test";assert(!allowed(&r,false,false));
+    r.host="192.168.4.1";local_ip=0xc0a80464;assert(!allowed(&r,true,false)); /* STA socket. */
+    local_ip=0xc0a80401;peer_ip=0x0a000001;assert(!allowed(&r,true,false));
+    peer_ip=0xc0a80402;
+    for(unsigned form=2;form<=6;form++) {
+        peer_form=form;assert(!allowed(&r,true,false));
+        peer_form=0;local_form=form;assert(!allowed(&r,true,false));local_form=0;
+    }
+    peer_failure=true;assert(!allowed(&r,true,false));peer_failure=false;
+    local_failure=true;assert(!allowed(&r,true,false));local_failure=false;
+    peer_form=local_form=1;
+#if LWIP_IPV6
+    assert(allowed(&r,false,false)); /* Actual IDF dual-stack IPv4 navigation. */
+    assert(allowed(&r,true,true)); /* Mapped endpoints preserve secret/Origin gates. */
+    local_ip=0xc0a80464;assert(!allowed(&r,true,false));local_ip=0xc0a80401;
+    peer_ip=0x0a000001;assert(!allowed(&r,true,false));peer_ip=0xc0a80402;
+    peer_ip=0xc0a80401;assert(!allowed(&r,true,false));
+    peer_ip=0xc0a804ff;assert(!allowed(&r,true,false));peer_ip=0xc0a80402;
+    peer_form=0;assert(allowed(&r,true,false)); /* Mixed IPv4/mapped forms normalize equally. */
+    peer_form=1;local_form=0;assert(allowed(&r,true,false));
+#else
+    assert(!allowed(&r,true,false)); /* IPv6-disabled build keeps IPv4 only. */
+#endif
+    peer_form=local_form=0;active=false;assert(!allowed(&r,true,false));
     puts("portable AP authorization runtime checks passed");
 }
 '''
-        compile_and_run(harness, "quota-portable-session-")
+        for ipv6 in (1, 0):
+            with self.subTest(ipv6=ipv6):
+                compile_and_run(f"#define LWIP_IPV6 {ipv6}\n" + harness,
+                                "quota-portable-session-")
 
     def test_atomic_credential_record_and_cache_identity(self):
         harness = r'''

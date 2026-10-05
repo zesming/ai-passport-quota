@@ -272,25 +272,51 @@ static bool header(httpd_req_t *request, const char *name, char *value, size_t c
     return bytes != 0 && bytes < capacity && httpd_req_get_hdr_value_str(request, name, value, capacity) == ESP_OK;
 }
 
-static bool peer_is_ap(httpd_req_t *request)
+static bool socket_ipv4_address(int socket, bool peer, uint32_t *ip)
 {
-    struct sockaddr_in peer = {0};
-    struct sockaddr_in local = {0};
-    socklen_t length = sizeof(peer);
-    if (getpeername(httpd_req_to_sockfd(request), (struct sockaddr *)&peer, &length) != 0 ||
-        peer.sin_family != AF_INET) return false;
-    length = sizeof(local);
-    if (getsockname(httpd_req_to_sockfd(request), (struct sockaddr *)&local, &length) != 0 ||
-        local.sin_family != AF_INET || ntohl(local.sin_addr.s_addr) != 0xc0a80401U) return false;
-    uint32_t ip = ntohl(peer.sin_addr.s_addr);
-    return (ip & 0xffffff00U) == 0xc0a80400U && (ip & 0xffU) > 1 && (ip & 0xffU) < 255;
+    struct sockaddr_storage address = {0};
+    socklen_t length = sizeof(address);
+    int result = peer ? getpeername(socket, (struct sockaddr *)&address, &length) :
+                        getsockname(socket, (struct sockaddr *)&address, &length);
+    if (result != 0) return false;
+    if (address.ss_family == AF_INET) {
+        if (length < sizeof(struct sockaddr_in)) return false;
+        *ip = ntohl(((const struct sockaddr_in *)&address)->sin_addr.s_addr);
+        return true;
+    }
+#if defined(AF_INET6) && (!defined(LWIP_IPV6) || LWIP_IPV6)
+    if (address.ss_family == AF_INET6) {
+        if (length < sizeof(struct sockaddr_in6)) return false;
+        const struct sockaddr_in6 *ipv6 = (const struct sockaddr_in6 *)&address;
+        static const unsigned char mapped_prefix[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
+        /* IDF's dual-stack HTTP socket returns IPv4 clients as ::ffff:a.b.c.d.
+         * Native IPv6 and the deprecated IPv4-compatible form stay denied. */
+        if (memcmp(ipv6->sin6_addr.s6_addr, mapped_prefix, sizeof(mapped_prefix)) != 0) return false;
+        uint32_t ipv4;
+        memcpy(&ipv4, ipv6->sin6_addr.s6_addr + sizeof(mapped_prefix), sizeof(ipv4));
+        *ip = ntohl(ipv4);
+        return true;
+    }
+#endif
+    return false;
 }
 
-static bool authorize(httpd_req_t *request, bool secret, bool mutation)
+static bool peer_is_ap(httpd_req_t *request)
+{
+    uint32_t peer, local;
+    int socket = httpd_req_to_sockfd(request);
+    return socket_ipv4_address(socket, true, &peer) && socket_ipv4_address(socket, false, &local) &&
+           local == 0xc0a80401U && (peer & 0xffffff00U) == 0xc0a80400U &&
+           (peer & 0xffU) > 1 && (peer & 0xffU) < 255;
+}
+
+static bool authorize(httpd_req_t *request, bool secret, bool mutation, const char **denial)
 {
     char host[32] = {0}, supplied[QUOTA_PORTABLE_SESSION_BYTES + 1] = {0}, origin[40] = {0};
-    bool ok = s_callbacks.session_active != NULL && s_callbacks.session_active(s_callbacks.context) &&
-              peer_is_ap(request) && header(request, "Host", host, sizeof(host)) && quota_portal_host_is_valid(host);
+    if (denial != NULL) *denial = "{\"error_code\":\"session_expired\"}";
+    if (s_callbacks.session_active == NULL || !s_callbacks.session_active(s_callbacks.context)) return false;
+    if (denial != NULL) *denial = "{\"error_code\":\"unauthorized\"}";
+    bool ok = peer_is_ap(request) && header(request, "Host", host, sizeof(host)) && quota_portal_host_is_valid(host);
     if (ok && secret) ok = header(request, "X-AIQ-Setup", supplied, sizeof(supplied)) &&
                            quota_portal_secret_matches(s_secret, supplied);
     if (ok && mutation) ok = header(request, "Origin", origin, sizeof(origin)) && quota_portal_origin_is_valid(origin);
@@ -302,7 +328,8 @@ static bool authorize(httpd_req_t *request, bool secret, bool mutation)
 
 static esp_err_t page_handler(httpd_req_t *request)
 {
-    if (!authorize(request, false, false)) return reply_error(request, "403 Forbidden", "{\"error\":\"setup_closed\"}");
+    const char *denial;
+    if (!authorize(request, false, false, &denial)) return reply_error(request, "403 Forbidden", denial);
     httpd_resp_set_type(request, "text/html; charset=utf-8");
     httpd_resp_set_hdr(request, "Cache-Control", "no-store");
     httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff");
@@ -316,25 +343,29 @@ static esp_err_t page_handler(httpd_req_t *request)
 
 static esp_err_t state_handler(httpd_req_t *request)
 {
-    if (!authorize(request, true, false)) return reply_error(request, "403 Forbidden", "{\"error\":\"setup_closed\"}");
+    const char *denial;
+    if (!authorize(request, true, false, &denial)) return reply_error(request, "403 Forbidden", denial);
     char *body = malloc(QUOTA_PORTABLE_STATE_BYTES + 1);
     if (body == NULL) return reply_error(request, "503 Service Unavailable", "{\"error\":\"busy\"}");
     size_t length = 0;
     bool ok = s_callbacks.state_json(body, QUOTA_PORTABLE_STATE_BYTES + 1, &length, s_callbacks.context) &&
               length != 0 && length <= QUOTA_PORTABLE_STATE_BYTES;
     esp_err_t result;
-    if (ok && authorize(request, true, false)) {
+    if (!ok) result = reply_error(request, "503 Service Unavailable", "{\"error\":\"state_unavailable\"}");
+    else if (!authorize(request, true, false, &denial)) result = reply_error(request, "403 Forbidden", denial);
+    else {
         httpd_resp_set_type(request, "application/json");
         httpd_resp_set_hdr(request, "Cache-Control", "no-store");
         result = httpd_resp_send(request, body, length);
-    } else result = reply_error(request, "503 Service Unavailable", "{\"error\":\"state_unavailable\"}");
+    }
     free(body);
     return result;
 }
 
 static esp_err_t command_handler(httpd_req_t *request)
 {
-    if (!authorize(request, true, true)) return reply_error(request, "403 Forbidden", "{\"error\":\"setup_closed\"}");
+    const char *denial;
+    if (!authorize(request, true, true, &denial)) return reply_error(request, "403 Forbidden", denial);
     char content_type[64] = {0};
     if (!header(request, "Content-Type", content_type, sizeof(content_type)) ||
         (strcmp(content_type, "application/json") != 0 && strcmp(content_type, "application/json; charset=utf-8") != 0))
@@ -362,10 +393,12 @@ static esp_err_t command_handler(httpd_req_t *request)
     quota_portable_clear_secret(body, sizeof(body));
     if (!ok) return reply_error(request, "400 Bad Request", "{\"error\":\"invalid_command\"}");
     quota_portable_submit_result_t submitted = QUOTA_PORTABLE_SUBMIT_CLOSED;
-    if (authorize(request, true, true)) submitted = s_callbacks.submit(&command, s_callbacks.context);
+    bool authorized = authorize(request, true, true, &denial);
+    if (authorized) submitted = s_callbacks.submit(&command, s_callbacks.context);
     char ack[80];
     int length = snprintf(ack, sizeof(ack), "{\"request_id\":\"%.8s\",\"accepted\":true}", command.request_id);
     quota_portable_clear_secret(&command, sizeof(command));
+    if (!authorized) return reply_error(request, "403 Forbidden", denial);
     if (submitted != QUOTA_PORTABLE_SUBMIT_ACCEPTED) {
         if (submitted == QUOTA_PORTABLE_SUBMIT_BUSY)
             return reply_error(request, "503 Service Unavailable", "{\"error\":\"busy\"}");
@@ -373,7 +406,7 @@ static esp_err_t command_handler(httpd_req_t *request)
             return reply_error(request, "409 Conflict", "{\"error\":\"request_conflict\"}");
         if (submitted == QUOTA_PORTABLE_SUBMIT_INVALID)
             return reply_error(request, "400 Bad Request", "{\"error\":\"invalid_command\"}");
-        return reply_error(request, "403 Forbidden", "{\"error\":\"setup_closed\"}");
+        return reply_error(request, "403 Forbidden", "{\"error_code\":\"session_expired\"}");
     }
     httpd_resp_set_status(request, "202 Accepted");
     httpd_resp_set_type(request, "application/json");

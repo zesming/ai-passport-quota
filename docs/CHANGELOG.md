@@ -8,6 +8,14 @@
 
 ## Unreleased
 
+### 2026-10-05 — Phone setup on the dual-stack HTTP socket
+
+The owner joined the device hotspot and scanned the second QR while its countdown remained active, but the static page returned `setup_closed`. The installed ELF and IDF/lwIP source confirmed that the HTTP server uses an IPv6 dual-stack socket, which reports IPv4 clients as IPv4-mapped IPv6 addresses. The AP gate accepted only `AF_INET`.
+
+The gate now receives a full socket address and normalizes IPv4 or strict `::ffff:IPv4` mappings before applying the same AP-local/subnet restriction. Native IPv6, IPv4-compatible, wrong-interface and truncated addresses remain denied. Responses distinguish `session_expired` from `unauthorized` using the page's existing error codes.
+
+Host tests: **PASS**, three portable suites, including mapped/mixed address families, socket errors, rejected boundaries and both IPv6-enabled/disabled compilation. The previous commit's GitHub static/companion and firmware checks passed. Build and Device tests for this repair: **NOT RUN yet**; the installed image remains `8efa9b06…`. Physical webpage access remains an acceptance check.
+
 ### 2026-10-05 — Experimental device-owned accounts and phone setup
 
 Added DIRECT mode for independently issued Codex device-code credentials and DeepSeek CNY balance; existing paired devices keep COMPANION mode. A temporary WPA2 hotspot and two physical QR steps open the embedded phone page for networks, accounts and settings. Closing setup hands networking back to the device. Claude remains computer-synchronized; enterprise EAP and native BLE relay are researched follow-on routes, not implemented features.
