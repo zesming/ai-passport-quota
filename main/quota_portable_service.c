@@ -173,7 +173,8 @@ static bool publish_model(const quota_model_t *previous)
                 if(result!=QUOTA_STORE_READ_OK || !quota_catalog_native_matches(entry,scratch)) {
                     quota_store_credential_release(scratch); free(next);
                     if(result==QUOTA_STORE_READ_OK) { copy(s_storage_error,sizeof(s_storage_error),"recovery_conflict"); s_recovery_blocked=true; }
-                    else storage_failed(result); return false;
+                    else storage_failed(result);
+                    return false;
                 }
                 credential=scratch;
             }
@@ -196,7 +197,8 @@ static void apply_model(quota_model_t *candidate,bool effective,quota_model_t *p
 {
     bool cadence_changed=s_model.refresh_seconds!=candidate->refresh_seconds||s_model.auto_refresh!=candidate->auto_refresh;
     lock(); s_model=*candidate; s_sequence++; s_model_ready=true;
-    if(effective) s_hooks.config_changed_locked(); unlock();
+    if(effective) s_hooks.config_changed_locked();
+    unlock();
     if(!publish_model(previous)) s_model_ready=false;
     else { s_storage_error[0]=0; s_authority_retry=false; }
     if(cadence_changed)s_next_refresh=millis()+(uint64_t)s_model.refresh_seconds*1000;
@@ -286,7 +288,8 @@ static void finish_job(const char *id,const char *error)
 static uint32_t command_hash(const quota_portable_command_t *command)
 {
     const unsigned char *bytes=(const unsigned char *)command; uint32_t hash=2166136261U;
-    for(size_t i=0;i<offsetof(quota_portable_command_t,accepted_mode);i++) hash=(hash^bytes[i])*16777619U; return hash;
+    for(size_t i=0;i<offsetof(quota_portable_command_t,accepted_mode);i++) hash=(hash^bytes[i])*16777619U;
+    return hash;
 }
 static bool session_active(void *context)
 {
@@ -467,7 +470,8 @@ static void recover_intent(void)
     quota_store_credential_release(credential);
     quota_model_t *candidate=malloc(sizeof(*candidate)); if(!candidate) { storage_failed(QUOTA_STORE_READ_NO_MEMORY); return; }
     *candidate=s_model; memset(&candidate->intent,0,sizeof(candidate->intent));
-    if(!submit_model(candidate,false,NULL)&&!s_dirty_model)s_storage_retry_at=millis()+5000; dispose_candidate(candidate);
+    if(!submit_model(candidate,false,NULL)&&!s_dirty_model)s_storage_retry_at=millis()+5000;
+    dispose_candidate(candidate);
 }
 static const char *provider_name(quota_provider_t provider) { return provider==QUOTA_PROVIDER_CODEX?"codex":provider==QUOTA_PROVIDER_DEEPSEEK?"deepseek":"claude"; }
 static const char *op_name(quota_portable_op_t op)
@@ -897,7 +901,8 @@ static void process_command(quota_portable_command_t *command)
     case QUOTA_PORTABLE_OP_OPERATION_CANCEL:cancel_operation(command->target_request_id);break;
     default:error="unsupported";break;
     }
-    if(!pending)finish_job(command->request_id,error);changed();
+    if(!pending)finish_job(command->request_id,error);
+    changed();
 }
 static void apply_result(int row,const quota_direct_result_t *result)
 {
@@ -1034,7 +1039,9 @@ bool quota_portable_service_owns_network(void){return s_initialized;}
 bool quota_portable_service_prepare_pairing(void)
 {
     if(storage_barrier()||quota_direct_has_pending_persist(s_direct))return false;
-    if(s_view.setup_active)close_setup();cancel_candidate("canceled");if(s_operation.kind!=OP_NONE)finish_operation("canceled");
+    if(s_view.setup_active)close_setup();
+    cancel_candidate("canceled");
+    if(s_operation.kind!=OP_NONE)finish_operation("canceled");
     if(s_operation.kind!=OP_NONE||s_dirty_model)return false;
     for(;;){char id[9];lock();if(!s_queue||!s_count){unlock();break;}copy(id,sizeof(id),s_queue[s_head].request_id);quota_portable_clear_secret(&s_queue[s_head],sizeof(s_queue[s_head]));s_head=(s_head+1)%QUEUE_DEPTH;s_count--;unlock();finish_job(id,"canceled");}
     lock();quota_portable_command_t *queue=s_queue;s_queue=NULL;s_head=0;unlock();free(queue);return true;
@@ -1093,22 +1100,30 @@ void quota_portable_service_tick(bool sleeping,uint32_t generation)
 }
 void quota_portable_service_countdown_overlay_locked(quota_service_view_t *view)
 {
-    if(!s_initialized||!view)return;uint64_t now=millis();view->portable.setup_seconds_left=now<s_setup_deadline?(uint32_t)((s_setup_deadline-now+999)/1000):0;
+    if(!s_initialized||!view)return;
+    uint64_t now=millis();
+    view->portable.setup_seconds_left=now<s_setup_deadline?(uint32_t)((s_setup_deadline-now+999)/1000):0;
     view->portable.login_seconds_left=view->portable.auth_hold_awake&&now<s_login_deadline?(uint32_t)((s_login_deadline-now+999)/1000):0;view->portable.auth_hold_awake=view->portable.auth_hold_awake&&now<s_login_deadline;
 }
 void quota_portable_service_overlay(quota_service_view_t *view){quota_portable_service_countdown_overlay_locked(view);}
 static void sooner(uint64_t *deadline,uint64_t candidate){if(candidate&&candidate<*deadline)*deadline=candidate;}
 uint64_t quota_portable_service_next_deadline_ms(bool sleeping)
 {
-    if(!s_initialized)return UINT64_MAX;lock();uint64_t deadline=UINT64_MAX;bool pairing=s_hooks.pairing_requested();
+    if(!s_initialized)return UINT64_MAX;
+    lock();
+    uint64_t deadline=UINT64_MAX;
+    bool pairing=s_hooks.pairing_requested();
     if(s_close||s_cancel||(!pairing&&!storage_barrier()&&((!sleeping&&(s_open||s_reconnect))||s_local_settings_pending||s_count)))deadline=0;
-    if(s_view.setup_active)sooner(&deadline,s_setup_deadline);sooner(&deadline,s_close_at);
-    if(s_dirty_model&&!s_recovery_blocked)sooner(&deadline,s_storage_retry_at);if((!s_model_ready||s_authority_retry)&&!s_recovery_blocked)sooner(&deadline,s_init_retry_at);
+    if(s_view.setup_active)sooner(&deadline,s_setup_deadline);
+    sooner(&deadline,s_close_at);
+    if(s_dirty_model&&!s_recovery_blocked)sooner(&deadline,s_storage_retry_at);
+    if((!s_model_ready||s_authority_retry)&&!s_recovery_blocked)sooner(&deadline,s_init_retry_at);
     if(s_model.intent.kind!=QUOTA_INTENT_NONE&&s_operation.kind==OP_NONE&&!s_recovery_blocked)sooner(&deadline,s_storage_retry_at?s_storage_retry_at:millis()+1000);
     if(!s_recovery_blocked&&!s_dirty_model){if(s_operation.kind==OP_SAVE)sooner(&deadline,s_operation.retry_at);else if(s_operation.kind!=OP_NONE)sooner(&deadline,s_operation.deadline);}
     if(s_candidate_pending&&!s_dirty_model&&!s_recovery_blocked)sooner(&deadline,s_candidate_deadline);
     if(!sleeping&&!pairing&&!s_view.setup_active&&!storage_barrier()){
-        if(!s_direct)sooner(&deadline,s_init_retry_at);if(s_model.auto_refresh&&s_operation.kind==OP_NONE)sooner(&deadline,s_next_refresh>millis()?s_next_refresh:millis()+500);
+        if(!s_direct)sooner(&deadline,s_init_retry_at);
+        if(s_model.auto_refresh&&s_operation.kind==OP_NONE)sooner(&deadline,s_next_refresh>millis()?s_next_refresh:millis()+500);
         if(s_refresh||s_cycle||s_operation.kind==OP_LOGIN||s_operation.kind==OP_KEY)sooner(&deadline,millis()+500);
         bool http_ready=s_view.network_state==QUOTA_PORTABLE_NETWORK_READY&&!s_open;
         if(s_model.legacy.enabled&&http_ready)sooner(&deadline,s_wake_read_pending||s_next_legacy_read<=millis()?millis()+500:s_next_legacy_read);

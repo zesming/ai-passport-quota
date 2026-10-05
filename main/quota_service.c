@@ -803,7 +803,8 @@ static TickType_t network_wait(bool sleeping)
     uint64_t portable=quota_portable_service_next_deadline_ms(sleeping);if(portable<deadline)deadline=portable;
 #endif
     if(pairing_requested())deadline=now+20;
-    if(deadline==UINT64_MAX)return portMAX_DELAY;if(deadline<=now)return 0;
+    if(deadline==UINT64_MAX)return portMAX_DELAY;
+    if(deadline<=now)return 0;
     TickType_t ticks=pdMS_TO_TICKS(deadline-now);return ticks?ticks:1;
 }
 static void network_task(void *arg)
@@ -1014,7 +1015,8 @@ void quota_service_get_view(quota_service_view_t *view)
 
 void quota_service_get_selected_account_id(char account_id[QUOTA_ACCOUNT_ID_BYTES+1])
 {
-    if(!account_id)return;account_id[0]=0;
+    if(!account_id)return;
+    account_id[0]=0;
 #ifdef ESP_PLATFORM
     (void)quota_portable_service_selected(account_id);
 #endif
