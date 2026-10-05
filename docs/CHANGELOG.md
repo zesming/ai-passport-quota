@@ -16,7 +16,11 @@ Added a verified single-record model and source-bound observation cache. Authori
 
 Host tests: **PASS**, complete static gate, including 43 controller ASan/UBSan scenarios, provider/storage boundaries, source-bound cache, physical rendering and navigation checks. Companion: **53 tests and production build PASS**. Browser: **synthetic fixtures PASS** for manual connection without persisted secrets, lossless 8+8 activation swap, confirmed collector rebind, common settings, and narrow/desktop layouts. The settings screenshot was replaced with the shared production page.
 
-Build and Device tests: **NOT RUN for the new candidate**. No USB device is currently connected. Device authorization, real TLS heap/DMA/stack margins and preserved-data migration still require the matching firmware and physical device; host/browser evidence alone does not establish those results.
+Independent design and implementation reviews closed the actionable findings. This includes typed migration retries, selected-ID collisions, uncertain prepare/cancel acknowledgements, authoritative reauthorization over cached status, and expired offline/sleep deadlines. Removed obsolete startup USB pairing that could keep storage-fault devices awake. The first SDK build rejected ambiguous statement layout; whitespace-only fixes passed independent review and the complete static gate.
+
+Build: **PASS**, ESP-IDF 5.5.3 complete firmware gate and matching archive verification. Bundle `31c0f267df5ed0cdc655a48263f110ce3a04f54362ddf8528765401b7e4e9a32`, app 1,758,240 bytes, version `c7a0544`, ELF SHA-256 `869e9ac8e4fa262c08ca4d0ef7b90695011bde9d4a11536e77de9e92b34968c3`. The partition table is byte-identical to the previously installed bundle. ELF static DRAM data+BSS falls from 125,084 to 78,708 bytes; this does not measure runtime TLS margins.
+
+Device tests: **NOT RUN**; no Passport USB device was found. No flash or erase was performed. Pending acceptance: preserved-data migration/startup, real Codex authorization and computer-independent quota reads, TLS heap/DMA/stack low watermarks, physical setup-key readability and sleep/wake/reboot recovery. Flash only the verified three components, preserving NVS/PHY; a successful host/browser/build gate does not establish these device results.
 
 ### 2026-10-05 — One owner-held credential record
 
