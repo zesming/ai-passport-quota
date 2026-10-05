@@ -8,6 +8,7 @@
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "esp_timer.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #endif
@@ -128,6 +129,8 @@ static esp_err_t http_event(esp_http_client_event_t *event)
                 capacity = capacity > QUOTA_DIRECT_BODY_BYTES / 2 ? QUOTA_DIRECT_BODY_BYTES : capacity * 2;
             char *grown = QUOTA_DIRECT_RESPONSE_REALLOC(response->body, capacity + 1);
             if (!grown) {
+                ESP_LOGW("quota_direct", "response grow failed capacity=%u length=%u",
+                         (unsigned)capacity, (unsigned)response->length);
                 response->allocation_failed = true; abort_request(event, context); return ESP_FAIL;
             }
             response->body = grown; response->capacity = capacity;
@@ -251,7 +254,7 @@ void quota_direct_login_cancel(quota_direct_t *direct)
 void quota_direct_destroy(quota_direct_t *direct)
 {
     if (!direct) return;
-    if (direct->pending) { quota_direct_secure_clear(direct->pending, sizeof(*direct->pending)); free(direct->pending); }
+    /* Pending credentials belong to the network owner, including on destroy. */
     quota_direct_secure_clear(direct, sizeof(*direct)); free(direct);
 }
 
@@ -276,7 +279,13 @@ static quota_direct_result_t perform(quota_direct_t *direct,
     if (direct->transport == esp_transport) response->capacity = DIRECT_INITIAL_BODY_BYTES;
 #endif
     response->body = calloc(1, response->capacity + 1);
-    if (!response->body) return result(QUOTA_DIRECT_NO_MEMORY);
+    if (!response->body) {
+#ifdef ESP_PLATFORM
+        ESP_LOGW("quota_direct", "response allocation failed capacity=%u length=%u",
+                 (unsigned)response->capacity, (unsigned)response->length);
+#endif
+        return result(QUOTA_DIRECT_NO_MEMORY);
+    }
     /* Check again after allocations/headers preparation; the ESP transport is
      * serialized and marks whether the actual HTTP operation was admitted. */
     if (!admitted(direct, credential)) return result(QUOTA_DIRECT_DEFERRED);
@@ -335,20 +344,15 @@ static void free_body(char *body)
 }
 
 static quota_direct_result_t commit_received(quota_direct_t *direct,
-    quota_direct_credential_t *credential, quota_direct_credential_t *replacement)
+    quota_direct_credential_t *credential)
 {
-    if (!current(direct, replacement)) {
-        quota_direct_secure_clear(replacement, sizeof(*replacement)); free(replacement);
-        return result(QUOTA_DIRECT_CANCELED);
-    }
-    replacement->refresh_inflight = false;
-    replacement->auth_state = QUOTA_PORTABLE_AUTH_READY;
-    if (!direct->hooks.persist(direct->hooks.context, replacement)) {
-        direct->pending = replacement;
+    if (!current(direct, credential)) return result(QUOTA_DIRECT_CANCELED);
+    credential->refresh_inflight = false;
+    credential->auth_state = QUOTA_PORTABLE_AUTH_READY;
+    if (!direct->hooks.persist(direct->hooks.context, credential)) {
+        direct->pending = credential;
         return result(QUOTA_DIRECT_PERSIST_PENDING);
     }
-    *credential = *replacement;
-    quota_direct_secure_clear(replacement, sizeof(*replacement)); free(replacement);
     return result(QUOTA_DIRECT_OK);
 }
 
@@ -362,12 +366,12 @@ quota_direct_result_t quota_direct_retry_persist(quota_direct_t *direct)
     if (!direct || !direct->pending) return result(QUOTA_DIRECT_OK);
     quota_direct_credential_t *pending = direct->pending;
     if (!current(direct, pending)) {
-        quota_direct_secure_clear(pending, sizeof(*pending)); free(pending);
+        if (direct->login_persist_pending) quota_direct_login_cancel(direct);
         direct->pending = NULL; direct->login_persist_pending = false;
         return result(QUOTA_DIRECT_CANCELED);
     }
     if (!direct->hooks.persist(direct->hooks.context, pending)) return result(QUOTA_DIRECT_PERSIST_PENDING);
-    quota_direct_secure_clear(pending, sizeof(*pending)); free(pending); direct->pending = NULL;
+    direct->pending = NULL;
     if (direct->login_persist_pending) { quota_direct_login_cancel(direct); direct->login_persist_pending = false; }
     return result(QUOTA_DIRECT_OK);
 }
@@ -441,28 +445,29 @@ static quota_direct_result_t accept_tokens(quota_direct_t *direct,
     quota_direct_credential_t *credential, quota_direct_http_response_t *response,
     bool require_existing_identity)
 {
-    quota_direct_credential_t *replacement = malloc(sizeof(*replacement));
-    if (!replacement) return result(QUOTA_DIRECT_NO_MEMORY);
-    *replacement = *credential;
+    if (!current(direct, credential)) { free_response(response); return result(QUOTA_DIRECT_CANCELED); }
     quota_direct_identity_t expected, parsed;
     identity_from_credential(credential, &expected);
     bool expected_set = require_existing_identity || credential->server_account_id[0];
     bool valid = quota_direct_parse_tokens(response->body, response->length,
-        expected_set ? &expected : NULL, replacement->access_token, sizeof(replacement->access_token),
-        replacement->refresh_token, sizeof(replacement->refresh_token), &parsed);
-    /* Parsed tokens now belong to the replacement. Release the HTTP body
-     * before NVS allocates its own complete credential-record copy. */
+        expected_set ? &expected : NULL, credential->access_token, sizeof(credential->access_token),
+        credential->refresh_token, sizeof(credential->refresh_token), &parsed);
+    /* The parser validates the complete response before writing any outputs.
+     * Keep received tokens in the owner's stable buffer, and release the HTTP
+     * body before persistence; no second full credential allocation is needed. */
     free_response(response);
     if (!valid) {
-        quota_direct_secure_clear(replacement, sizeof(*replacement)); free(replacement);
+#ifdef ESP_PLATFORM
+        ESP_LOGW("quota_direct", "token response invalid bytes=%u", (unsigned)response->length);
+#endif
         return result(QUOTA_DIRECT_AUTH_REQUIRED);
     }
-    memcpy(replacement->server_account_id, parsed.account_id, sizeof(replacement->server_account_id));
-    memcpy(replacement->server_user_id, parsed.user_id, sizeof(replacement->server_user_id));
-    memcpy(replacement->email, parsed.email, sizeof(replacement->email));
-    memcpy(replacement->plan, parsed.plan, sizeof(replacement->plan));
-    replacement->expires_at = parsed.expires_at;
-    return commit_received(direct, credential, replacement);
+    memcpy(credential->server_account_id, parsed.account_id, sizeof(credential->server_account_id));
+    memcpy(credential->server_user_id, parsed.user_id, sizeof(credential->server_user_id));
+    memcpy(credential->email, parsed.email, sizeof(credential->email));
+    memcpy(credential->plan, parsed.plan, sizeof(credential->plan));
+    credential->expires_at = parsed.expires_at;
+    return commit_received(direct, credential);
 }
 
 quota_direct_result_t quota_direct_login_step(quota_direct_t *direct,
@@ -555,14 +560,14 @@ quota_direct_result_t quota_direct_refresh(quota_direct_t *direct,
          * Restore the reusable chain and honor Retry-After before another POST. */
         credential->refresh_inflight = false;
         if (!direct->hooks.persist(direct->hooks.context, credential)) {
-            direct->pending = malloc(sizeof(*direct->pending));
-            if (direct->pending) { *direct->pending = *credential; out.code = QUOTA_DIRECT_PERSIST_PENDING; }
-            else { credential->refresh_inflight = true; out.code = QUOTA_DIRECT_STORAGE_ERROR; }
+            direct->pending = credential; out.code = QUOTA_DIRECT_PERSIST_PENDING;
         }
     }
     else if (!response.admitted) {
         credential->refresh_inflight = false;
-        if (!direct->hooks.persist(direct->hooks.context, credential)) out.code = QUOTA_DIRECT_STORAGE_ERROR;
+        if (!direct->hooks.persist(direct->hooks.context, credential)) {
+            direct->pending = credential; out.code = QUOTA_DIRECT_PERSIST_PENDING;
+        }
     } else {
         /* The durable marker remains set. It is unsafe to issue this token again. */
         credential->auth_state = QUOTA_PORTABLE_AUTH_REAUTH;

@@ -195,7 +195,25 @@ int main(void) {
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+static bool reject_store_allocation;
+static unsigned store_allocations;
+static void *store_calloc(size_t count, size_t bytes) {
+    store_allocations++;
+    return reject_store_allocation ? NULL : calloc(count, bytes);
+}
+#define calloc store_calloc
 #include "quota_store.c"
+#undef calloc
+/* The already deployed v1 layout, independent of the implementation typedef. */
+typedef struct {
+    uint32_t magic;
+    uint16_t version, bytes;
+    quota_portable_credential_t value;
+    uint32_t crc;
+} legacy_credential_record_t;
+_Static_assert(sizeof(legacy_credential_record_t)==sizeof(credential_record_t),"v1 size changed");
+_Static_assert(offsetof(legacy_credential_record_t,value)==offsetof(credential_record_t,value),"v1 value moved");
+_Static_assert(offsetof(legacy_credential_record_t,crc)==offsetof(credential_record_t,crc),"v1 CRC moved");
 typedef struct {char key[16];size_t length;unsigned char data[16384];} item_t;
 static item_t items[10],pending;
 static size_t item_count;
@@ -226,6 +244,10 @@ esp_err_t nvs_commit(nvs_handle_t h) {
     item_t *item=find(pending.key);if (!item) {assert(item_count<10);item=&items[item_count++];}
     *item=pending;return ESP_OK;
 }
+static void assert_workspace_clear(void) {
+    const unsigned char *p=(const void *)&s_credential_record;
+    for(size_t i=0;i<sizeof(s_credential_record);i++) assert(p[i]==0);
+}
 int main(void) {
     assert(quota_store_init());
     quota_portable_config_t config={0},restored_config;
@@ -237,7 +259,9 @@ int main(void) {
     strcpy(c->id,"0123456789abcdef0123456789abcdef");c->generation=1;c->slot=0;
     c->provider=QUOTA_PROVIDER_CODEX;c->auth_state=QUOTA_PORTABLE_AUTH_READY;
     strcpy(c->server_account_id,"fake-workspace");strcpy(c->access_token,"old-access");strcpy(c->refresh_token,"old-refresh");
+    unsigned allocations=store_allocations;reject_store_allocation=true;
     assert(quota_store_save_credential(0,c));assert(quota_store_load_credential(0,read));
+    assert_workspace_clear();
     assert(!read->refresh_inflight);
     c->refresh_inflight=true;assert(quota_store_save_credential(0,c));
     assert(quota_store_load_credential(0,read)&&read->refresh_inflight);
@@ -250,6 +274,8 @@ int main(void) {
     int before=commits;memset(c->access_token,'x',sizeof(c->access_token));
     assert(!quota_store_save_credential(0,c)&&commits==before);
     strcpy(c->access_token,"new-access");
+    assert(store_allocations==allocations); /* External callers no longer need a 13 KiB scratch allocation. */
+    reject_store_allocation=false;
     quota_snapshot_t snapshot={0},restored;
     snapshot.refresh_seconds=300;snapshot.account_count=1;snapshot.revision=7;snapshot.server_time=1800000000;
     strcpy(snapshot.accounts[0].id,c->id);snapshot.accounts[0].provider=QUOTA_PROVIDER_CODEX;
@@ -264,10 +290,48 @@ int main(void) {
     ref.generation=2;assert(quota_store_load_snapshot(&ref,1,1800000010,&restored));
     assert(restored.account_count==0); /* Replaced credential never inherits old quota. */
     ref.generation=1;assert(!quota_store_load_snapshot(&ref,1,1800000000+31ULL*86400,&restored));
+
+    quota_portable_credential_t *workspace=quota_store_credential_buffer();
+    assert(workspace==quota_store_credential_buffer());
+    legacy_credential_record_t legacy={0};
+    legacy.magic=CREDENTIAL_MAGIC;legacy.version=1;legacy.bytes=sizeof(legacy);legacy.value=*c;
+    legacy.value.slot=1;legacy.value.generation=7;strcpy(legacy.value.id,"11111111111111111111111111111111");
+    legacy.crc=store_crc(&legacy,offsetof(legacy_credential_record_t,crc));
+    assert(nvs_set_blob(1,"account1",&legacy,sizeof(legacy))==ESP_OK&&nvs_commit(1)==ESP_OK);nvs_close(1);
+    allocations=store_allocations;reject_store_allocation=true;
+    assert(quota_store_load_credential(1,workspace));
+    assert(!memcmp(workspace,&legacy.value,sizeof(*workspace))); /* Existing v1 data loads in place. */
+    workspace->refresh_inflight=true;assert(quota_store_save_credential(1,workspace));
+    assert(workspace->refresh_inflight&&!strcmp(workspace->refresh_token,"new-refresh"));
+    strcpy(workspace->access_token,"received-access");strcpy(workspace->refresh_token,"received-refresh");
+    workspace->refresh_inflight=false;legacy.value=*workspace;
+    fail_commit=true;assert(!quota_store_save_credential(1,workspace));fail_commit=false;
+    assert(!memcmp(workspace,&legacy.value,sizeof(*workspace))); /* Failed commit retains received rotation for retry. */
+    legacy_credential_record_t committed;
+    memcpy(&committed,find("account1")->data,sizeof(committed));
+    assert(committed.value.refresh_inflight&&!strcmp(committed.value.refresh_token,"new-refresh"));
+    assert(quota_store_save_credential(1,workspace));
+    assert(!memcmp(workspace,&legacy.value,sizeof(*workspace)));
+    assert(store_allocations==allocations); /* Alias load/save and retry perform no heap allocation. */
+    reject_store_allocation=false;
+    assert(quota_store_save_config(&config));
+    assert(quota_store_load_config(&restored_config));
+    assert(quota_store_save_snapshot(&snapshot,&ref,1,1800000000));
+    assert(quota_store_load_snapshot(&ref,1,1800000010,&restored));
+    assert(!memcmp(workspace,&legacy.value,sizeof(*workspace))); /* Config/cache leave a borrowed credential alone. */
+    allocations=store_allocations;reject_store_allocation=true;
+    assert(quota_store_remove_credential(1,workspace->id,8));assert_workspace_clear();
+    assert(quota_store_load_credential(1,workspace));
+    assert(workspace->tombstone&&workspace->generation==8&&!strcmp(workspace->id,legacy.value.id));
+    assert(!quota_store_load_credential(QUOTA_MAX_ACCOUNTS,workspace));assert_workspace_clear();
+    item_t *bad=find("account1");assert(bad);bad->data[20]^=1;
+    assert(!quota_store_load_credential(1,workspace));assert_workspace_clear();
+    assert(store_allocations==allocations);
     assert(quota_store_remove_credential(0,c->id,2));assert(quota_store_load_credential(0,read));
     assert(read->tombstone&&read->generation==2&&read->access_token[0]==0&&read->refresh_token[0]==0);
     item_t *record=find("account0");assert(record);record->data[20]^=1;
     assert(!quota_store_load_credential(0,read));assert(read->id[0]==0&&read->refresh_token[0]==0);
+    assert_workspace_clear();
     free(c);free(read);puts("portable storage runtime checks passed");
 }
 '''
@@ -288,6 +352,8 @@ esp_err_t nvs_commit(nvs_handle_t);
             (path / "nvs_flash.h").write_text('#pragma once\n#include "nvs.h"\nesp_err_t nvs_flash_init_partition(const char*);\n')
             (path / "test.c").write_text(harness)
             subprocess.run([os.environ.get("CC", "cc"), "-std=c11", "-Wall", "-Wextra", "-Werror",
+                            "-Wno-deprecated-declarations",
+                            "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
                             "-I"+str(path), "-I"+str(ROOT / "main"), "-I"+str(ROOT / "tests/cjson"),
                             str(path / "test.c"), str(ROOT / "main/quota_logic.c"),
                             str(ROOT / "tests/cjson/cJSON.c"), "-lm", "-o", str(path / "test")], check=True)

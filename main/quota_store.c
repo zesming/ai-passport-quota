@@ -45,6 +45,7 @@ _Static_assert(sizeof(credential_record_t) <= 16384, "credential record exceeds 
 _Static_assert(sizeof(snapshot_record_t) <= 8192, "snapshot record exceeds bound");
 
 static bool s_ready;
+static credential_record_t s_credential_record;
 
 static uint32_t store_crc(const void *data, size_t length)
 {
@@ -176,40 +177,47 @@ bool quota_store_save_config(const quota_portable_config_t *config)
     return ok;
 }
 
+quota_portable_credential_t *quota_store_credential_buffer(void)
+{
+    return &s_credential_record.value;
+}
+
 bool quota_store_load_credential(uint8_t slot, quota_portable_credential_t *credential)
 {
     if (credential == NULL) return false;
+    credential_record_t *record = &s_credential_record;
+    bool workspace = credential == &record->value;
+    quota_portable_clear_secret(record, sizeof(*record));
     memset(credential, 0, sizeof(*credential));
     if (slot >= QUOTA_MAX_ACCOUNTS) return false;
-    credential_record_t *record = calloc(1, sizeof(*record));
-    if (record == NULL) return false;
     char key[] = "account0";
     key[7] = (char)('0' + slot);
     bool ok = read_record(key, record, sizeof(*record)) && record->magic == CREDENTIAL_MAGIC &&
               record->version == STORE_VERSION && record->bytes == sizeof(*record) &&
               record->crc == store_crc(record, offsetof(credential_record_t, crc)) &&
               credential_valid(&record->value, slot);
-    if (ok) *credential = record->value;
-    quota_portable_clear_secret(record, sizeof(*record));
-    free(record);
+    if (ok && !workspace) *credential = record->value;
+    if (!ok || !workspace) quota_portable_clear_secret(record, sizeof(*record));
     return ok;
 }
 
 bool quota_store_save_credential(uint8_t slot, const quota_portable_credential_t *credential)
 {
     if (!credential_valid(credential, slot)) return false;
-    credential_record_t *record = calloc(1, sizeof(*record));
-    if (record == NULL) return false;
+    credential_record_t *record = &s_credential_record;
+    bool workspace = credential == &record->value;
+    if (!workspace) {
+        quota_portable_clear_secret(record, sizeof(*record));
+        record->value = *credential;
+    }
     record->magic = CREDENTIAL_MAGIC;
     record->version = STORE_VERSION;
     record->bytes = sizeof(*record);
-    record->value = *credential;
     record->crc = store_crc(record, offsetof(credential_record_t, crc));
     char key[] = "account0";
     key[7] = (char)('0' + slot);
     bool ok = write_record(key, record, sizeof(*record));
-    quota_portable_clear_secret(record, sizeof(*record));
-    free(record);
+    if (!workspace) quota_portable_clear_secret(record, sizeof(*record));
     return ok;
 }
 
@@ -217,16 +225,18 @@ bool quota_store_remove_credential(uint8_t slot, const char *id, uint32_t genera
 {
     if (id == NULL || !quota_id_is_valid(id) || generation == 0 || slot >= QUOTA_MAX_ACCOUNTS)
         return false;
-    quota_portable_credential_t *credential = calloc(1, sizeof(*credential));
-    if (credential == NULL) return false;
-    memcpy(credential->id, id, QUOTA_ACCOUNT_ID_BYTES + 1);
+    /* id can itself belong to the workspace being replaced. */
+    char copied_id[QUOTA_ACCOUNT_ID_BYTES + 1];
+    memcpy(copied_id, id, sizeof(copied_id));
+    quota_portable_clear_secret(&s_credential_record, sizeof(s_credential_record));
+    quota_portable_credential_t *credential = quota_store_credential_buffer();
+    memcpy(credential->id, copied_id, sizeof(credential->id));
     credential->slot = slot;
     credential->generation = generation;
     credential->provider = QUOTA_PROVIDER_CODEX;
     credential->tombstone = true;
     bool ok = quota_store_save_credential(slot, credential);
-    quota_portable_clear_secret(credential, sizeof(*credential));
-    free(credential);
+    quota_portable_clear_secret(&s_credential_record, sizeof(s_credential_record));
     return ok;
 }
 

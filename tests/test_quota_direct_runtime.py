@@ -59,6 +59,7 @@ ESP_TEST = r'''
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdarg.h>
 struct client { esp_http_client_config_t config; int status; bool closed; unsigned steps; };
 static int mode;
 static int64_t now;
@@ -66,7 +67,15 @@ static unsigned initialized, closed, performed, stores;
 static unsigned growth_calls;
 static size_t growth_sizes[8];
 static bool awake;
+static unsigned warnings;
+static char warning_text[128];
 static quota_direct_credential_t saved;
+void quota_test_log(const char *tag,const char *format,...) {
+    assert(!strcmp(tag,"quota_direct"));
+    va_list args;va_start(args,format);
+    int length=vsnprintf(warning_text,sizeof(warning_text),format,args);va_end(args);
+    assert(length>0&&(size_t)length<sizeof(warning_text));warnings++;
+}
 void *quota_test_response_realloc(void *old,size_t bytes) {
     assert(growth_calls<8);growth_sizes[growth_calls++]=bytes;
     if(mode==10||mode==13)return NULL;
@@ -139,6 +148,7 @@ int main(void) {
     for(mode=0;mode<14;mode++) {
         now=0;initialized=closed=performed=stores=0;
         growth_calls=0;memset(growth_sizes,0,sizeof(growth_sizes));
+        warnings=0;warning_text[0]=0;
         awake=true;
         quota_direct_hooks_t hooks={.admit=gate,.account_current=current,.persist=save};
         quota_direct_t *d=quota_direct_create(&hooks,NULL,NULL);assert(d);
@@ -166,6 +176,8 @@ int main(void) {
             if(mode==10)assert(growth_calls==1&&growth_sizes[0]==8193);
             if(mode==12)assert(growth_calls==2&&growth_sizes[1]==32769);
         }
+        assert(warnings==((mode==10||mode==13)?1u:0u));
+        if(warnings)assert(!strcmp(warning_text,"response grow failed capacity=8192 length=3000"));
         quota_direct_destroy(d);
     }
     puts("ESP transport budget and close: PASS");return 0;
@@ -246,6 +258,8 @@ int main(void) {
             (temporary / "freertos").mkdir()
             (temporary / "esp_http_client.h").write_text(ESP_HEADER)
             (temporary / "esp_crt_bundle.h").write_text("#define esp_crt_bundle_attach ((void *)1)\n")
+            (temporary / "esp_log.h").write_text(
+                'void quota_test_log(const char *,const char *,...);\n#define ESP_LOGW quota_test_log\n')
             for name in ("esp_timer.h", "freertos/FreeRTOS.h", "freertos/task.h"):
                 (temporary / name).write_text('#include "esp_http_client.h"\n')
             source = temporary / "esp-runtime.c"

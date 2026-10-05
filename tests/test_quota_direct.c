@@ -56,9 +56,13 @@ static void test_auth_parsers(void)
     assert(identity.expires_at == 2000000000);
     assert(!quota_direct_parse_identity("a.%%%%.c", &identity));
     quota_direct_credential_t value = credential();
+    memset(value.access_token + strlen(value.access_token) + 1, 'X', sizeof(value.access_token) - strlen(value.access_token) - 1);
+    memset(value.refresh_token + strlen(value.refresh_token) + 1, 'Y', sizeof(value.refresh_token) - strlen(value.refresh_token) - 1);
     assert(quota_direct_parse_tokens(token_response, strlen(token_response), &identity,
         value.access_token, sizeof(value.access_token), value.refresh_token, sizeof(value.refresh_token), &identity));
     assert(!strcmp(value.refresh_token, "rotated-refresh"));
+    for (size_t i = strlen(value.access_token) + 1; i < sizeof(value.access_token); ++i) assert(value.access_token[i] == 0);
+    for (size_t i = strlen(value.refresh_token) + 1; i < sizeof(value.refresh_token); ++i) assert(value.refresh_token[i] == 0);
     char body[3000];
     char metadata_free_access[128]; jwt("{\"exp\":2000000000}", metadata_free_access, sizeof(metadata_free_access));
     snprintf(body, sizeof(body), "{\"access_token\":\"%s\"}", metadata_free_access);
@@ -75,9 +79,11 @@ static void test_auth_parsers(void)
     assert(!quota_direct_parse_tokens(body, strlen(body), NULL,
         value.access_token, sizeof(value.access_token), value.refresh_token, sizeof(value.refresh_token), &identity));
     strcpy(identity.account_id, "different-account");
+    quota_direct_credential_t unchanged = value;
     assert(!quota_direct_parse_tokens(token_response, strlen(token_response), &identity,
         value.access_token, sizeof(value.access_token), value.refresh_token, sizeof(value.refresh_token), &identity));
     assert(!strcmp(value.refresh_token, "rotated-refresh"));
+    assert(!memcmp(&value, &unchanged, sizeof(value)));
     assert(!quota_direct_parse_tokens("{\"access_token\":null}", 21, &identity,
         value.access_token, sizeof(value.access_token), value.refresh_token, sizeof(value.refresh_token), &identity));
 
@@ -226,6 +232,7 @@ typedef struct {
     unsigned stores;
     unsigned fail_store;
     unsigned login_phase;
+    const quota_direct_credential_t *persisted_pointer;
     quota_direct_credential_t stored;
 } fake_t;
 
@@ -243,6 +250,7 @@ static bool persist(void *context, const quota_direct_credential_t *value)
 {
     fake_t *fake = context;
     assert(account_current(context, value->id, value->generation));
+    fake->persisted_pointer = value;
     ++fake->stores;
     if (fake->stores == fake->fail_store) return false;
     fake->stored = *value;
@@ -346,12 +354,14 @@ static void test_rotation(void)
     fake.fail_store = 2;
     assert(quota_direct_refresh(direct, &value, NOW).code == QUOTA_DIRECT_PERSIST_PENDING);
     assert(fake.stored.refresh_inflight && quota_direct_has_pending_persist(direct));
+    assert(fake.persisted_pointer == &value && !strcmp(value.refresh_token, "rotated-refresh"));
     assert(quota_direct_refresh(direct, &value, NOW).code == QUOTA_DIRECT_PERSIST_PENDING);
     assert(fake.requests == 1);
     fake.awake = false;
     assert(quota_direct_retry_persist(direct).code == QUOTA_DIRECT_OK);
     assert(!fake.stored.refresh_inflight && !strcmp(fake.stored.refresh_token, "rotated-refresh"));
     assert(fake.requests == 1 && !quota_direct_has_pending_persist(direct));
+    assert(fake.persisted_pointer == &value && !strcmp(value.refresh_token, "rotated-refresh"));
     quota_direct_destroy(direct);
 
     memset(&fake, 0, sizeof(fake)); direct = create(&fake); value = credential(); fake.stored = value;
@@ -369,9 +379,55 @@ static void test_rotation(void)
 
     memset(&fake, 0, sizeof(fake)); direct = create(&fake); value = credential(); fake.stored = value;
     fake.authorization_failure = true;
+    quota_direct_credential_t unchanged = value; unchanged.refresh_inflight = true;
     assert(quota_direct_refresh(direct, &value, NOW).code == QUOTA_DIRECT_AUTH_REQUIRED);
     assert(fake.stored.refresh_inflight);
+    assert(!memcmp(&value, &unchanged, sizeof(value)));
     quota_direct_destroy(direct);
+}
+
+static void test_borrowed_pending(void)
+{
+    /* Destroy and account cancellation release a borrowed pointer without
+     * freeing/wiping it, including a stack-backed caller in this host test. */
+    for (unsigned scenario = 0; scenario < 3; ++scenario) {
+        fake_t fake = {0}; quota_direct_t *direct = create(&fake);
+        quota_direct_credential_t value = credential(); fake.stored = value;
+        fake.fail_store = 2; fake.refresh_429 = scenario == 2;
+        assert(quota_direct_refresh(direct, &value, NOW).code == QUOTA_DIRECT_PERSIST_PENDING);
+        assert(fake.persisted_pointer == &value && quota_direct_has_pending_persist(direct));
+        quota_direct_credential_t received = value;
+        unsigned requests = fake.requests;
+        if (scenario == 1) {
+            fake.exists = false;
+            assert(quota_direct_retry_persist(direct).code == QUOTA_DIRECT_CANCELED);
+            assert(!quota_direct_has_pending_persist(direct));
+        } else if (scenario == 2) {
+            fake.awake = false;
+            assert(quota_direct_retry_persist(direct).code == QUOTA_DIRECT_OK);
+            assert(!value.refresh_inflight && !fake.stored.refresh_inflight);
+            assert(!strcmp(value.refresh_token, "old-refresh"));
+        }
+        assert(fake.requests == requests);
+        quota_direct_destroy(direct);
+        assert(!memcmp(&value, &received, sizeof(value)));
+    }
+    fake_t fake = {0}; quota_direct_t *direct = create(&fake);
+    quota_direct_credential_t value = credential();
+    assert(quota_direct_login_begin(direct, &value, 0, NOW).code == QUOTA_DIRECT_WAITING);
+    assert(quota_direct_login_step(direct, &value, 5000, NOW).code == QUOTA_DIRECT_WAITING);
+    assert(quota_direct_login_step(direct, &value, 10000, NOW).code == QUOTA_DIRECT_WAITING);
+    fake.fail_store = 1;
+    assert(quota_direct_login_step(direct, &value, 10000, NOW).code == QUOTA_DIRECT_PERSIST_PENDING);
+    assert(fake.persisted_pointer == &value && !strcmp(value.refresh_token, "rotated-refresh"));
+    unsigned requests = fake.requests;
+    assert(quota_direct_login_step(direct, &value, 10001, NOW).code == QUOTA_DIRECT_PERSIST_PENDING);
+    quota_direct_login_cancel(direct); fake.awake = false;
+    assert(quota_direct_retry_persist(direct).code == QUOTA_DIRECT_OK);
+    assert(fake.requests == requests && fake.persisted_pointer == &value);
+    assert(!strcmp(value.refresh_token, "rotated-refresh"));
+    quota_direct_destroy(direct);
+    assert(!strcmp(value.refresh_token, "rotated-refresh"));
 }
 
 static void test_login_and_reads(void)
@@ -417,7 +473,7 @@ static void test_login_and_reads(void)
 
 int main(void)
 {
-    fixtures(); test_auth_parsers(); test_bounded_json_and_tokens(); test_quota_parsers(); test_rotation(); test_login_and_reads();
+    fixtures(); test_auth_parsers(); test_bounded_json_and_tokens(); test_quota_parsers(); test_rotation(); test_login_and_reads(); test_borrowed_pending();
     puts("quota direct parsers, login phases and rotation runtime: PASS");
     return 0;
 }

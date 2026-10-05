@@ -6,6 +6,32 @@ from runtime_helpers import ROOT, compile_and_run, extract_function
 
 
 class PortableServiceRuntime(unittest.TestCase):
+    def test_pending_tokens_keep_the_owner_buffer_until_saved(self):
+        source = (ROOT / "main/quota_portable_service.c").read_text()
+        clear = extract_function(source, "free_credential")
+        harness = r'''
+#include "quota_direct.h"
+#include <assert.h>
+#include <string.h>
+static quota_direct_t *s_direct=(quota_direct_t *)1;
+static bool pending;
+bool quota_direct_has_pending_persist(const quota_direct_t *direct) {
+    assert(direct==s_direct);return pending;
+}
+'''+clear+r'''
+int main(void) {
+    quota_direct_credential_t workspace={0};
+    quota_direct_credential_t *borrowed=&workspace;
+    strcpy(workspace.access_token,"received-token");
+    pending=true;free_credential(&borrowed);
+    assert(borrowed==&workspace&&!strcmp(workspace.access_token,"received-token"));
+    pending=false;free_credential(&borrowed);
+    assert(borrowed==NULL);
+    for(size_t i=0;i<sizeof(workspace);i++)assert(((unsigned char*)&workspace)[i]==0);
+}
+'''
+        compile_and_run(harness, "quota-portable-credential-lifetime-")
+
     def test_boot_merges_old_cache_without_hiding_new_accounts(self):
         source = (ROOT / "main/quota_portable_service.c").read_text()
         meta_type = re.search(r"typedef struct \{[^{}]*\} account_meta_t;", source)[0]
@@ -47,6 +73,8 @@ static bool quota_store_load_config(quota_portable_config_t *out) {
     memset(out,0,sizeof(*out));out->mode=QUOTA_MODE_DIRECT;out->refresh_seconds=300;return true;
 }
 static bool quota_store_save_config(const quota_portable_config_t *out) {(void)out;return true;}
+static quota_direct_credential_t workspace;
+static quota_direct_credential_t *quota_store_credential_buffer(void) {return &workspace;}
 static bool quota_store_load_credential(uint8_t slot,quota_direct_credential_t *out) {
     if(slot>1) return false;
     memset(out,0,sizeof(*out));out->slot=slot;out->generation=1;
@@ -55,7 +83,7 @@ static bool quota_store_load_credential(uint8_t slot,quota_direct_credential_t *
     out->refresh_inflight=slot==0;return true;
 }
 static void free_credential(quota_direct_credential_t **out) {
-    if(*out){quota_portable_clear_secret(*out,sizeof(**out));free(*out);*out=NULL;}
+    if(*out){quota_portable_clear_secret(*out,sizeof(**out));if(*out!=&workspace)free(*out);*out=NULL;}
 }
 static void publish_credential(const quota_direct_credential_t *value) {
     s_accounts[value->slot].used=true;s_accounts[value->slot].ref.generation=value->generation;
@@ -186,8 +214,10 @@ static int fake_settimeofday(const struct timeval *value,void *zone) {(void)zone
 static void copy(char *out,size_t cap,const char *in) {snprintf(out,cap,"%s",in?in:"");}
 static int snapshot_index(const char *id) {return quota_find_account_by_id(&s_snapshot,id);}
 static const char *result_error(quota_direct_result_code_t code) {(void)code;return "fake_error";}
+static quota_direct_credential_t workspace;
+static quota_direct_credential_t *quota_store_credential_buffer(void) {return &workspace;}
 static void free_credential(quota_direct_credential_t **value) {
-    if (*value) {quota_portable_clear_secret(*value,sizeof(**value));free(*value);*value=NULL;}
+    if (*value) {quota_portable_clear_secret(*value,sizeof(**value));if(*value!=&workspace)free(*value);*value=NULL;}
 }
 static void cache_tick(void) {}
 static void finish_job(const char *id,const char *error) {(void)id;(void)error;}

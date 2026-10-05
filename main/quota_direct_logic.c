@@ -224,8 +224,12 @@ bool quota_direct_parse_tokens(const char *body, size_t length,
         }
     }
     if (valid) {
+        quota_direct_secure_clear(access, access_capacity);
         memcpy(access, a->valuestring, strlen(a->valuestring) + 1);
-        if (r) memcpy(refresh, r->valuestring, strlen(r->valuestring) + 1);
+        if (r) {
+            quota_direct_secure_clear(refresh, refresh_capacity);
+            memcpy(refresh, r->valuestring, strlen(r->valuestring) + 1);
+        }
         *identity = parsed;
     }
     /* cJSON owns copies of credentials. Wipe before freeing. */

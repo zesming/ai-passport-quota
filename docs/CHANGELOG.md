@@ -8,11 +8,17 @@
 
 ## Unreleased
 
+### 2026-10-05 — One owner-held credential record
+
+The next real authorization ended with `NO_MEMORY`; the largest observed free block during polling was 10 KiB, while token acceptance and storage requested separate 13 KiB copies. Credential processing now uses one static record-backed buffer across the controller, provider and NVS. Validated tokens replace it in place, persistence borrows it until commit, and the owner then wipes it. Other credential operations wait while the buffer is borrowed. The NVS version-1 layout, identity checks and one-time exchange rules are unchanged. Rare response-allocation diagnostics record only sizes; phase changes are logged immediately, with fifteen-second repetition limits.
+
+Host tests: **PASS**, targeted provider/storage ASan/UBSan and four controller checks, including borrowed lifetime, malformed-response preservation, storage-only retries, caller-owned destruction, tail wiping and allocation-free version-1 storage. Cross-review found no ownership blocker. Build and Device tests: **NOT RUN yet**; the installed image remains `303de36a…`. The measured 8 KiB network stack had 652 bytes left during polling; success-path headroom remains a physical check.
+
 ### 2026-10-05 — Bounded allocation for code exchange
 
 During a continuous, non-resetting capture the owner remained at authorization completion, including after sleep/wake. Code inspection identified silent retries for request allocation and credential persistence. The exchange form now allocates its actual escaped length instead of reserving 13,696 bytes. Login diagnostics distinguish code, polling, exchange and save, with heap/stack measurements at most every fifteen seconds; no credential contents are logged. Received credentials and the rule against replaying an uncertain exchange are preserved.
 
-Host tests: **PASS**, three targeted ASan/UBSan provider checks and three controller checks. Coverage includes a short exchange under 512 bytes, maximum escaped inputs, invalid boundaries and allocation failure. Build and Device tests: **NOT RUN yet**; the installed image remains `3c7ac7e5…`. The actual stuck phase remains unverified until the new diagnostics run on the device.
+Build and Host tests: **PASS**, the complete ESP-IDF 5.5.3 gate and independent review. Targeted ASan/UBSan coverage includes a short exchange under 512 bytes, maximum escaped inputs, invalid boundaries and allocation failure. Installed bundle `303de36a151a4eff9c90480d3be7af7630b761a2c76a96179a3008e66bd6e4f9`, app 1,716,352 bytes, version `0624e66`, matching ELF SHA-256 `ecf8a37e47e5c93604d468a0e2e0b3b541e3534ad69c785d340c75cd6dda57e7`. Device tests: **PASS for three hash-verified component writes and startup**, with stored data retained. The preceding continuous run ended in authorization expiry, with a minimum observed free heap of 1,412 bytes and no crash markers; it did not enter an indefinite persistence retry. The actual exchange failure still needs the new phase diagnostics.
 
 ### 2026-10-05 — TLS allocation during device authorization
 

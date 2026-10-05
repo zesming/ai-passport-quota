@@ -89,4 +89,6 @@ DeepSeek 载荷使用 `provider: "deepseek"`、空 `email`、`plan: "API"`、最
 
 直连脱敏缓存与伴侣缓存独立，绑定服务/账号 ID 和凭证 generation，最多每十五分钟保存一次。删除/替换账号不能继承旧 generation 的钱包或额度。两种模式的 Codex Credits/重置扩展项仍仅存 RAM，冷启动后直到来源同步前不显示。便携分区**未加密**；CRC 和 NVS 提交机制用于损坏/提交检查，不保证保密或阻止闪存读取。不声明 secure boot、flash encryption 或 eFuse 保护。
 
+网络任务使用一份带记录头的凭据缓冲，供登录、密钥验证和轮询复用。待保存状态借用同一缓冲，必须保持有效且不改写，直至存储完成。其他凭据操作等待，配置/缓存使用独立记录。令牌验证后原地替换，NVS 直接写同一版本 1 记录，不复制整份凭据。
+
 设备固定文本使用 `assets/fonts/` 的两种子集字体。任意非 ASCII 账号身份字符回退为 `?`；精确显示需 ASCII 标签或明确扩展覆盖。真机显示、USB 配对、离线恢复、扩展时序和真实来源行为需要[验收检查](../development/README.zh_CN.md#验收与报告)，现有证据记于[变更日志](../CHANGELOG.zh_CN.md)。

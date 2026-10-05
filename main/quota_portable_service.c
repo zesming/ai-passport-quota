@@ -51,6 +51,7 @@ static uint32_t s_display_generation;
 static uint64_t s_setup_deadline, s_close_at, s_next_refresh, s_cache_at;
 static uint64_t s_connect_at, s_retry_at, s_login_deadline;
 static uint64_t s_login_trace_at;
+static const char *s_login_trace_phase;
 static uint8_t s_refresh_slot;
 static bool s_cycle;
 static esp_netif_t *s_ap;
@@ -73,7 +74,9 @@ static void changed(void) { if (s_hooks.notify) s_hooks.notify(); }
 static void wake(void) { if (s_hooks.wake) s_hooks.wake(); }
 static void free_credential(quota_direct_credential_t **value)
 {
-    if (*value) { quota_portable_clear_secret(*value, sizeof(**value)); free(*value); *value = NULL; }
+    if (*value && !quota_direct_has_pending_persist(s_direct)) {
+        quota_portable_clear_secret(*value, sizeof(**value)); *value = NULL;
+    }
 }
 static int slot_for(const char *id)
 {
@@ -467,7 +470,7 @@ static void process_command(quota_portable_command_t *command)
             if (config.mode != QUOTA_MODE_DIRECT) error = "unsupported"; else s_refresh = true;
             break;
         case QUOTA_PORTABLE_OP_ACCOUNT_REMOVE: {
-            if (config.mode != QUOTA_MODE_DIRECT || quota_direct_has_pending_persist(s_direct)) { error = "busy"; break; }
+            if (config.mode != QUOTA_MODE_DIRECT || s_login || s_key || quota_direct_has_pending_persist(s_direct)) { error = "busy"; break; }
             int slot = slot_for(command->account_id);
             if (slot < 0) { error = "invalid_request"; break; }
             if (!quota_store_remove_credential((uint8_t)slot, s_accounts[slot].ref.id, s_accounts[slot].ref.generation)) { error = "storage_failed"; break; }
@@ -480,7 +483,7 @@ static void process_command(quota_portable_command_t *command)
             if (config.mode != QUOTA_MODE_DIRECT || s_login || s_key || quota_direct_has_pending_persist(s_direct)) { error = "busy"; break; }
             int slot = command->account_id[0] ? slot_for(command->account_id) : free_slot();
             if (slot < 0 || (command->account_id[0] && s_accounts[slot].ref.provider != QUOTA_PROVIDER_CODEX)) { error = "invalid_request"; break; }
-            s_login = calloc(1, sizeof(*s_login)); if (!s_login) { error = "no_memory"; break; }
+            s_login = quota_store_credential_buffer();
             s_login_new = !command->account_id[0];
             if (s_login_new) initialize_account(s_login, QUOTA_PROVIDER_CODEX, slot, command->label);
             else if (!quota_store_load_credential((uint8_t)slot, s_login)) { free_credential(&s_login); error = "storage_failed"; break; }
@@ -496,7 +499,7 @@ static void process_command(quota_portable_command_t *command)
             if (config.mode != QUOTA_MODE_DIRECT || s_key || s_login || quota_direct_has_pending_persist(s_direct)) { error = "busy"; break; }
             int slot = command->account_id[0] ? slot_for(command->account_id) : free_slot();
             if (slot < 0 || (command->account_id[0] && s_accounts[slot].ref.provider != QUOTA_PROVIDER_DEEPSEEK)) { error = "invalid_request"; break; }
-            s_key = calloc(1, sizeof(*s_key)); if (!s_key) { error = "no_memory"; break; }
+            s_key = quota_store_credential_buffer();
             s_key_new = !command->account_id[0];
             if (s_key_new) initialize_account(s_key, QUOTA_PROVIDER_DEEPSEEK, slot, command->label);
             else if (!quota_store_load_credential((uint8_t)slot, s_key)) { free_credential(&s_key); error = "storage_failed"; break; }
@@ -541,9 +544,9 @@ static void login_tick(void)
     if (!s_login || s_view.login_state == QUOTA_PORTABLE_LOGIN_QUEUED) return;
     if (millis() >= s_login_deadline) { quota_direct_login_cancel(s_direct); complete_login(QUOTA_DIRECT_EXPIRED); return; }
     if (s_view.network_state != QUOTA_PORTABLE_NETWORK_READY) return;
-    bool trace = millis() >= s_login_trace_at;
     const char *phase = !s_login_started ? "code" : s_view.login_state == QUOTA_PORTABLE_LOGIN_EXCHANGING ? "exchange" : "poll";
-    if (trace) { s_login_trace_at = millis() + 15000; trace_login(phase, -1); }
+    bool trace = !s_login_trace_phase || strcmp(s_login_trace_phase, phase) || millis() >= s_login_trace_at;
+    if (trace) { s_login_trace_phase = phase; s_login_trace_at = millis() + 15000; trace_login(phase, -1); }
     quota_direct_result_t result;
     if (!s_login_started) {
         lock(); s_view.login_state = QUOTA_PORTABLE_LOGIN_REQUESTING_CODE; unlock(); changed();
@@ -602,8 +605,7 @@ static void source_tick(void)
         lock(); s_cycle = false; s_refreshing = false; s_next_refresh = millis() + (uint64_t)s_config.refresh_seconds * 1000; unlock();
         cache_tick(); changed(); return;
     }
-    int slot = s_refresh_slot; quota_direct_credential_t *credential = calloc(1, sizeof(*credential));
-    if (!credential) { s_failed = true; return; }
+    int slot = s_refresh_slot; quota_direct_credential_t *credential = quota_store_credential_buffer();
     if (!quota_store_load_credential((uint8_t)slot, credential)) { free_credential(&credential); s_failed = true; s_refresh_slot++; return; }
     lock(); s_refreshing = true; unlock(); changed();
     quota_direct_result_t result;
@@ -647,7 +649,7 @@ bool quota_portable_service_init(const quota_device_config_t *legacy, const quot
     s_snapshot.has_screen_timeout_seconds = true; s_snapshot.screen_timeout_seconds = s_config.screen_timeout_seconds;
     quota_direct_hooks_t direct_hooks = {.admit = admit, .account_current = account_current, .persist = persist};
     s_direct = quota_direct_create(&direct_hooks, NULL, NULL); if (!s_direct) return false;
-    quota_direct_credential_t *credential = calloc(1, sizeof(*credential)); if (!credential) return false;
+    quota_direct_credential_t *credential = quota_store_credential_buffer();
     quota_portable_account_ref_t refs[QUOTA_MAX_ACCOUNTS]; size_t count = 0;
     for (uint8_t i = 0; i < QUOTA_MAX_ACCOUNTS; i++) if (quota_store_load_credential(i, credential) && !credential->tombstone) { publish_credential(credential); refs[count++] = s_accounts[i].ref; }
     free_credential(&credential);
@@ -685,8 +687,14 @@ void quota_portable_service_tick(bool sleeping, uint32_t generation)
     /* Received token rotations must commit even after a display/mode change. */
     if (quota_direct_has_pending_persist(s_direct)) {
         quota_direct_result_t result = quota_direct_retry_persist(s_direct);
-        if (millis() >= s_login_trace_at) { s_login_trace_at = millis() + 15000; trace_login("save", result.code); }
+        if (!s_login_trace_phase || strcmp(s_login_trace_phase, "save") || millis() >= s_login_trace_at) {
+            s_login_trace_phase = "save"; s_login_trace_at = millis() + 15000; trace_login("save", result.code);
+        }
         if (result.code == QUOTA_DIRECT_OK && s_login) complete_login(QUOTA_DIRECT_OK);
+        else if (result.code != QUOTA_DIRECT_PERSIST_PENDING && !s_login && !s_key) {
+            quota_direct_credential_t *credential = quota_store_credential_buffer();
+            free_credential(&credential);
+        }
     }
     bool persistence_pending = quota_direct_has_pending_persist(s_direct);
     if (cancel && persistence_pending) { lock(); s_cancel = true; unlock(); }
