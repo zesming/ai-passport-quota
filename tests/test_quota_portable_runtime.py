@@ -253,7 +253,9 @@ esp_err_t nvs_flash_init_partition(const char *part) {assert(!strcmp(part,"porta
 esp_err_t nvs_open_from_partition(const char *part,const char *space,int mode,nvs_handle_t *out) {
     assert(!strcmp(part,"portable")&&!strcmp(space,"quota_port"));
     assert(mode==NVS_READONLY||mode==NVS_READWRITE);
-    if(open_error!=ESP_OK)return open_error;*out=1;return ESP_OK;
+    if(open_error!=ESP_OK)return open_error;
+    *out=1;
+    return ESP_OK;
 }
 void nvs_close(nvs_handle_t h) {assert(h==1);memset(&pending,0,sizeof(pending));}
 static item_t *find(const char *key) {

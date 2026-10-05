@@ -145,7 +145,8 @@ static void payload(esp_http_client_handle_t c,size_t bytes){
     const char *json="{\"is_available\":true,\"balance_infos\":[]}";
     char *body=malloc(bytes);assert(body);memset(body,' ',bytes);memcpy(body,json,strlen(json));
     event(c,HTTP_EVENT_ON_DATA,NULL,NULL,body,10);
-    if(!c->closed)event(c,HTTP_EVENT_ON_DATA,NULL,NULL,body+10,(int)(bytes-10));free(body);
+    if(!c->closed)event(c,HTTP_EVENT_ON_DATA,NULL,NULL,body+10,(int)(bytes-10));
+    free(body);
 }
 esp_err_t esp_http_client_perform(esp_http_client_handle_t c){
     performed++;c->steps++;
