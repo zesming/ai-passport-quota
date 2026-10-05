@@ -260,7 +260,18 @@ static int capture_flush(FILE *stream){(void)stream;return 0;}
 #define printf capture_printf
 #define fflush capture_flush
 ''' + function + r'''
-int main(void){send_pairing_result("1234abcd",false,"storage_write_unknown");assert(strstr(output,"\"error\":\"storage_write_unknown\"")&&strstr(output,"\"request_id\":\"1234abcd\""));send_pairing_result("1234abcd",false,"generation_exhausted");assert(strstr(output,"\"error\":\"generation_exhausted\""));send_pairing_result("bad-id",false,"unexpected");assert(strstr(output,"\"request_id\":\"00000000\"")&&strstr(output,"\"error\":\"invalid_frame\""));return 0;}
+int main(void) {
+    send_pairing_result("1234abcd",false,"storage_write_unknown");
+    assert(strstr(output,"\"error\":\"storage_write_unknown\"") &&
+           strstr(output,"\"request_id\":\"1234abcd\""));
+    send_pairing_result("1234abcd",false,"generation_exhausted");
+    assert(strstr(output,"\"error\":\"generation_exhausted\""));
+    const char invalid_id[9]="bad-id";
+    send_pairing_result(invalid_id,false,"unexpected");
+    assert(strstr(output,"\"request_id\":\"00000000\"") &&
+           strstr(output,"\"error\":\"invalid_frame\""));
+    return 0;
+}
 '''
         compile_and_run(harness, "ai-quota-usb-error-map-")
 
