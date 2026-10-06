@@ -8,6 +8,14 @@
 
 ## Unreleased
 
+### 2026-10-06 — Installed unified-account firmware
+
+Installed verified bundle `31c0f267df5ed0cdc655a48263f110ce3a04f54362ddf8528765401b7e4e9a32` (app version `c7a0544`) on the connected ESP32-C3 revision 1.1, 8 MB board. The device partition table matched before writing. Bootloader at `0x0`, partition table at `0x8000` and app at `0x10000` each passed write-hash verification. The erase ranges excluded both NVS partitions and PHY; no chip erase was used.
+
+Build/Host tests: **PASS**, reuse the exact bundle's complete gate and final source checks. GitHub checks passed on `8348a6e`: [static/companion](https://github.com/zesming/ai-passport-quota/actions/runs/37335294866), [firmware](https://github.com/zesming/ai-passport-quota/actions/runs/37335294580). Device tests: **component installation PASS**. Continuous passive serial capture observed Wi-Fi stopping at the two-minute screen timeout without crash markers in the captured interval. Capture started after reset, so startup/version logs are incomplete and do not independently confirm the boot descriptor. Logs remain private outside Git; the monitor does not write modem lines or reconnect.
+
+Pending: screen/fonts/icons, preserved catalog presentation, real Codex authorization and direct quota reads, TLS resource margins, sleep/wake and reboot recovery. Installation and the limited capture do not establish these results.
+
 ### 2026-10-05 — Unified device-owned accounts and setup
 
 Replaced the global device/computer mode switch with one device-owned catalog and setup page shared by phones and computers. Each account independently uses a device credential or the optional computer collector. Migration retains existing credentials, selected accounts, historical rows and networks; activating a full catalog swaps a named account without deletion. Collector changes require explicit verified rebind, and unknown remote accounts require import.
