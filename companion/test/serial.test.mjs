@@ -144,6 +144,6 @@ test('oversized outbound configuration is rejected before USB transmission', asy
 test('partial-save mode switch failure tells the user the pairing config was saved', () => {
   assert.equal(
     serialErrorMessage({ code: 'device_mode_switch_failed' }),
-    '电脑连接配置已保存，但切换到电脑同步模式失败。请重试配对或在小屏设置中切换模式。',
+    '电脑采集配置已保存，但采集器来源启用失败。请按「设备设置 → USB」重新配对。',
   );
 });

@@ -19,7 +19,7 @@ Firmware mappings are authoritative in [`bsp_pins.h`](../../components/bsp/inclu
 | Physical codec I2S0 wiring | MCLK 6, BCLK 5, WS 3, MCU DOUT 2, DIN 4 | No MCU-controlled amplifier-enable pin; not an active Quota API |
 | Native USB | GPIO18/19 | Reserved for USB Serial/JTAG; a data-capable cable is required |
 
-Button voltage windows are UP 0–150 mV, DOWN 150–447 mV and OK 447–1900 mV; released is approximately 3300 mV. The configured click window is 180 ms and long-press threshold 500 ms. `bsp_button_read_mv()` returns `-1` on read failure. Resistor/board changes need actual voltage measurements before updating the header. The power key has no supported software short-press signal; retain its hardware shutdown behavior.
+Button voltage windows are UP 0–150 mV, DOWN 150–447 mV and OK 447–1900 mV; released is approximately 3300 mV. Short presses emit on debounced release; long presses emit at 500 ms and suppress the release action. The locked button component's repeat wait is cleared after creation, with at least two debounce ticks required. `bsp_button_read_mv()` returns `-1` on read failure. Resistor/board changes need actual voltage measurements before updating the header. The power key has no supported software short-press signal; retain its hardware shutdown behavior.
 
 ## BSP ownership and initialization
 
@@ -32,7 +32,7 @@ Button voltage windows are UP 0–150 mV, DOWN 150–447 mV and OK 447–1900 mV
 
 ## Display and memory
 
-LVGL is fixed at **9.5.0**. The current port uses one 40-line internal DMA buffer (240 × 40 × 2 = 19,200 bytes), RGB565 byte swapping, portrait orientation and a 24 KB LVGL pool. The configured refresh period is 20 ms; this is not measured FPS. Rotation/mirroring belongs in the port display configuration, which can override panel settings.
+LVGL is fixed at **9.5.0**. The current port uses one 20-line internal DMA buffer (240 × 20 × 2 = 9,600 bytes), RGB565 byte swapping, portrait orientation and a 24 KB LVGL pool. The configured refresh period is 20 ms; this is not measured FPS. Rotation/mirroring belongs in the port display configuration, which can override panel settings.
 
 The final flush masks pixels outside the 30-pixel screen radius to black; do not replace it with a full-screen intermediate ARGB layer without checking memory. Fonts and brand descriptors stay in Flash. With no PSRAM, review TLS/Wi-Fi, LVGL, DMA and task-stack use together; measure free heap, minimum heap and largest block under real load. Configured 80 MHz SPI does not prove a board's signal margin.
 

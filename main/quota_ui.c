@@ -65,8 +65,9 @@ typedef struct {
     lv_obj_t *network_title;
     lv_obj_t *network_info;
     lv_obj_t *network_hint;
-    lv_obj_t *network_rows[2];
-    lv_obj_t *network_markers[2];
+    lv_obj_t *network_saved[QUOTA_PORTABLE_NETWORKS + 1];
+    lv_obj_t *device_rows[2];
+    lv_obj_t *device_markers[2];
     lv_obj_t *qr;
     lv_obj_t *qr_title;
     lv_obj_t *qr_hint;
@@ -253,7 +254,7 @@ static void create_focus_row(lv_obj_t **background, lv_obj_t **marker,
 static void create_settings_page(void)
 {
     create_header("设置", "");
-    static const char *const labels[] = {"账户管理", "刷新间隔", "立即刷新", "自动息屏", "网络与配网", "电脑采集配对"};
+    static const char *const labels[] = {"账户管理", "刷新间隔", "立即刷新", "自动息屏", "网络信息", "设备设置"};
     for (size_t i = 0; i < 6; i++) {
         int y = 43 + (int)i * 35;
         create_focus_row(&s_ui.setting_rows[i], &s_ui.setting_markers[i], y, 34);
@@ -324,7 +325,7 @@ static void create_interval_page(void)
 
 static void create_setup_page(void)
 {
-    create_header("电脑配对", "USB");
+    create_header("USB 配对", "");
     create_label(s_page, 20, 51, 200, 22, &quota_font_16, UI_INK,
                  LV_TEXT_ALIGN_CENTER, "可选电脑采集器");
     create_label(s_page, 20, 74, 200, 22, &quota_font_16, UI_INK,
@@ -348,21 +349,35 @@ static void create_setup_page(void)
 
 static void create_network_page(void)
 {
-    create_header("网络", "");
+    create_header("网络信息", "");
     s_ui.network_title = create_label(s_page, 12, 49, 216, 24, &quota_font_16,
                                       UI_INK, LV_TEXT_ALIGN_LEFT, "尚未配置网络");
     s_ui.network_info = create_label(s_page, 12, 80, 216, 44, &quota_font_12,
                                      UI_MUTED, LV_TEXT_ALIGN_LEFT, "");
-    static const char *const labels[] = {"设备设置", "重新连接"};
+    create_label(s_page, 12, 124, 216, 18, &quota_font_12,
+                 UI_MUTED, LV_TEXT_ALIGN_LEFT, "已保存 Wi-Fi");
+    for (size_t i = 0; i < QUOTA_PORTABLE_NETWORKS + 1; i++) {
+        s_ui.network_saved[i] = create_label(s_page, 12, 146 + (int)i * 25,
+            216, 22, &quota_font_16, UI_INK, LV_TEXT_ALIGN_LEFT, "");
+    }
+    s_ui.network_hint = create_label(s_page, 12, 255, 216, 24, &quota_font_12,
+                                     UI_MUTED, LV_TEXT_ALIGN_LEFT, "");
+    create_footer("长按 OK 返回");
+}
+
+static void create_device_settings_page(void)
+{
+    create_header("设备设置", "");
+    static const char *const labels[] = {"热点", "USB"};
+    static const char *const hints[] = {"手机和电脑管理账户", "配对可选电脑采集器"};
     for (size_t i = 0; i < 2; i++) {
-        int y = 145 + (int)i * 40;
-        create_focus_row(&s_ui.network_rows[i], &s_ui.network_markers[i], y, 35);
+        int y = 70 + (int)i * 76;
+        create_focus_row(&s_ui.device_rows[i], &s_ui.device_markers[i], y, 60);
         create_label(s_page, 22, y + 5, 196, 24, &quota_font_16,
                      UI_INK, LV_TEXT_ALIGN_LEFT, labels[i]);
+        create_label(s_page, 22, y + 32, 196, 20, &quota_font_12,
+                     UI_MUTED, LV_TEXT_ALIGN_LEFT, hints[i]);
     }
-    s_ui.network_hint = create_label(s_page, 12, 235, 216, 40, &quota_font_12,
-                                     UI_MUTED, LV_TEXT_ALIGN_LEFT,
-                                     "2.4 GHz 个人网络\n企业网络请用手机热点");
     create_footer("UP/DOWN 选择  OK 确认  长按返回");
 }
 
@@ -413,6 +428,7 @@ static void create_page(quota_screen_t screen)
         case QUOTA_SCREEN_SLEEP: create_sleep_page(); break;
         case QUOTA_SCREEN_SETUP: create_setup_page(); break;
         case QUOTA_SCREEN_NETWORK: create_network_page(); break;
+        case QUOTA_SCREEN_DEVICE_SETTINGS: create_device_settings_page(); break;
         case QUOTA_SCREEN_PHONE: create_qr_page(false); break;
         case QUOTA_SCREEN_AUTH: create_qr_page(true); break;
         default: create_home_page(); break;
@@ -421,15 +437,19 @@ static void create_page(quota_screen_t screen)
 
 static void set_label_text(lv_obj_t *label, const char *text)
 {
-    if (label != NULL && text != NULL) lv_label_set_text(label, text);
+    if (label != NULL && text != NULL && strcmp(lv_label_get_text(label), text) != 0)
+        lv_label_set_text(label, text);
 }
 
 static void set_row_focus(lv_obj_t *row, lv_obj_t *marker, bool focused)
 {
     if (row == NULL || marker == NULL) return;
-    lv_obj_set_style_bg_color(row, color(focused ? UI_PANEL : UI_BG), 0);
-    if (focused) lv_obj_clear_flag(marker, LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_add_flag(marker, LV_OBJ_FLAG_HIDDEN);
+    lv_color_t tone = color(focused ? UI_PANEL : UI_BG);
+    if (!lv_color_eq(lv_obj_get_style_bg_color(row, 0), tone))
+        lv_obj_set_style_bg_color(row, tone, 0);
+    bool hidden = lv_obj_has_flag(marker, LV_OBJ_FLAG_HIDDEN);
+    if (focused && hidden) lv_obj_clear_flag(marker, LV_OBJ_FLAG_HIDDEN);
+    else if (!focused && !hidden) lv_obj_add_flag(marker, LV_OBJ_FLAG_HIDDEN);
 }
 
 static void set_account_row_visible(size_t index, bool visible)
@@ -440,6 +460,7 @@ static void set_account_row_visible(size_t index, bool visible)
     };
     for (size_t i = 0; i < sizeof(objects) / sizeof(objects[0]); i++) {
         if (objects[i] == NULL) continue;
+        if (visible && objects[i] == s_ui.account_markers[index]) continue;
         if (visible) lv_obj_clear_flag(objects[i], LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(objects[i], LV_OBJ_FLAG_HIDDEN);
     }
@@ -685,7 +706,7 @@ static void render_home(const quota_navigation_t *navigation,
 static void render_settings(const quota_navigation_t *navigation,
                            const quota_service_view_t *service)
 {
-    static const char *const labels[] = {"账户管理", "刷新间隔", "立即刷新", "自动息屏", "网络与配网", "电脑采集配对"};
+    static const char *const labels[] = {"账户管理", "刷新间隔", "立即刷新", "自动息屏", "网络信息", "设备设置"};
     char values[6][24];
     snprintf(values[0], sizeof(values[0]), "%u 个", (unsigned)service->snapshot.account_count);
     if (!service->auto_refresh) snprintf(values[1], sizeof(values[1]), "手动");
@@ -697,8 +718,9 @@ static void render_settings(const quota_navigation_t *navigation,
     } else {
         snprintf(values[3], sizeof(values[3]), "%u 分钟", (unsigned)(service->screen_timeout_seconds / 60));
     }
-    snprintf(values[4], sizeof(values[4]), "%s", service->portable.setup_active ? "已打开" : "");
-    snprintf(values[5], sizeof(values[5]), "%s", service->pairing_preparing ? "准备中" : service->pairing_active ? "已打开" : "");
+    snprintf(values[4], sizeof(values[4]), "%u 个", (unsigned)service->portable.saved_network_count);
+    snprintf(values[5], sizeof(values[5]), "%s", service->pairing_preparing ? "准备中" :
+        service->pairing_active || service->portable.setup_active ? "已打开" : "");
     for (size_t i = 0; i < 6; i++) {
         set_row_focus(s_ui.setting_rows[i], s_ui.setting_markers[i],
                       i == navigation->settings_focus);
@@ -775,7 +797,7 @@ static void render_setup(const quota_service_view_t *service)
     }
     char countdown[32];
     if (service->pairing_preparing) {
-        snprintf(countdown, sizeof(countdown), "正在准备电脑配对");
+        snprintf(countdown, sizeof(countdown), "正在准备 USB 配对");
         lv_obj_set_style_text_color(s_ui.setup_countdown, color(UI_AMBER), 0);
         set_label_text(s_ui.setup_hint,
             strcmp(service->portable.login_error, "storage_failed") == 0
@@ -850,9 +872,21 @@ static const char *portable_error_text(const char *code)
     return "操作未完成 · 请重试";
 }
 
-static void render_network(const quota_navigation_t *navigation,
-                           const quota_portable_view_t *portable)
+static void render_network(const quota_portable_view_t *portable)
 {
+    for (size_t i = 0; i < QUOTA_PORTABLE_NETWORKS + 1; i++) {
+        char line[QUOTA_SSID_MAX_BYTES + 24] = "";
+        char saved[QUOTA_SSID_MAX_BYTES + 1];
+        if (!portable->storage_error[0] && i < portable->saved_network_count) {
+            quota_copy_display_ascii(portable->saved_network_ssids[i], saved, sizeof(saved));
+            snprintf(line, sizeof(line), "%s%s", i == portable->selected_saved_network ? "* " : "  ", saved);
+        } else if (!portable->storage_error[0] && i == portable->saved_network_count &&
+                   portable->pending_saved_network_present) {
+            quota_copy_display_ascii(portable->pending_saved_network_ssid, saved, sizeof(saved));
+            snprintf(line, sizeof(line), "待启用 %s", saved);
+        }
+        set_label_text(s_ui.network_saved[i], line);
+    }
     char ssid[QUOTA_SSID_MAX_BYTES + 1];
     quota_copy_display_ascii(portable->network_ssid, ssid, sizeof(ssid));
     if (portable->storage_error[0]) {
@@ -860,11 +894,9 @@ static void render_network(const quota_navigation_t *navigation,
         set_label_text(s_ui.network_info, portable_error_text(portable->storage_error));
         set_label_text(s_ui.network_hint, strcmp(portable->storage_error, "storage_write_unknown") == 0
             ? "设备正在确认保存" : "请保留数据并检查设备");
-        for (size_t i = 0; i < 2; i++)
-            set_row_focus(s_ui.network_rows[i], s_ui.network_markers[i], navigation->network_focus == i);
         return;
     }
-    set_label_text(s_ui.network_hint, "2.4 GHz 个人网络\n企业网络请用手机热点");
+    set_label_text(s_ui.network_hint, "修改网络请打开设备设置");
     set_label_text(s_ui.network_title, ssid[0] ? ssid : "尚未配置网络");
     char info[80];
     const char *status = portable->network_state == QUOTA_PORTABLE_NETWORK_READY ? "网络已连接" :
@@ -875,8 +907,12 @@ static void render_network(const quota_navigation_t *navigation,
         portable->network_state == QUOTA_PORTABLE_NETWORK_ERROR ? portable_error_text(portable->network_error) : "网络未连接";
     snprintf(info, sizeof(info), "%s\n%s", status, portable->network_ip);
     set_label_text(s_ui.network_info, info);
+}
+
+static void render_device_settings(const quota_navigation_t *navigation)
+{
     for (size_t i = 0; i < 2; i++)
-        set_row_focus(s_ui.network_rows[i], s_ui.network_markers[i], navigation->network_focus == i);
+        set_row_focus(s_ui.device_rows[i], s_ui.device_markers[i], navigation->device_settings_focus == i);
 }
 
 static void render_qr_data(const char *data)
@@ -1077,9 +1113,13 @@ void quota_ui_render(const quota_navigation_t *navigation,
     format_clock(service->clock_synchronized ? service->now_epoch : 0, clock_text, sizeof(clock_text));
     set_label_text(s_ui.clock, clock_text);
     for (size_t i = 0; i < 2; i++) {
-        lv_obj_set_style_line_color(s_ui.wifi_lines[i], color(service->connected ? UI_INK : UI_DIM), 0);
+        lv_color_t tone = color(service->connected ? UI_INK : UI_DIM);
+        if (!lv_color_eq(lv_obj_get_style_line_color(s_ui.wifi_lines[i], 0), tone))
+            lv_obj_set_style_line_color(s_ui.wifi_lines[i], tone, 0);
     }
-    lv_obj_set_style_bg_color(s_ui.wifi_dot, color(service->connected ? UI_INK : UI_DIM), 0);
+    lv_color_t wifi_tone = color(service->connected ? UI_INK : UI_DIM);
+    if (!lv_color_eq(lv_obj_get_style_bg_color(s_ui.wifi_dot, 0), wifi_tone))
+        lv_obj_set_style_bg_color(s_ui.wifi_dot, wifi_tone, 0);
     if (service->connected) lv_obj_add_flag(s_ui.wifi_slash, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_clear_flag(s_ui.wifi_slash, LV_OBJ_FLAG_HIDDEN);
 
@@ -1103,7 +1143,10 @@ void quota_ui_render(const quota_navigation_t *navigation,
             render_setup(service);
             break;
         case QUOTA_SCREEN_NETWORK:
-            render_network(navigation, &service->portable);
+            render_network(&service->portable);
+            break;
+        case QUOTA_SCREEN_DEVICE_SETTINGS:
+            render_device_settings(navigation);
             break;
         case QUOTA_SCREEN_PHONE:
             render_phone(navigation, &service->portable);

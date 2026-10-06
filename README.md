@@ -9,7 +9,7 @@ A quota dashboard for the FoloToy AI Passport: ESP32-C3, 240 × 320 display, 8 M
 Passport owns its accounts, Wi-Fi and refresh settings. A phone or computer opens the same device-hosted settings page; no computer service is required for device-managed accounts. Up to eight active accounts and three personal 2.4 GHz networks are supported.
 
 1. Install firmware using the [developer guide](docs/development/README.md).
-2. Long-press OK → **Network/setup → Device settings**. Join the temporary hotspot using the first QR or the displayed network name/password.
+2. Long-press OK → **Device settings → Hotspot**. Join the temporary hotspot using the first QR or the displayed network name/password.
 3. Short-press OK to show the page QR. Scan it after joining, or use the manual-entry step to enter the complete address and temporary setup key in a computer browser.
 4. Save Internet-capable Wi-Fi or a compatible phone hotspot. Add Codex or a DeepSeek API key, then finish setup so Passport can connect and validate.
 5. Codex authorization closes the device hotspot. Restore Internet access on the phone/computer, open the official authorization page shown on Passport, and enter its code. Passport saves its independently issued credentials.
@@ -23,6 +23,8 @@ Codex uses an experimental reproduction of the official client's device-code flo
 Up/Down switches accounts, short OK refreshes/confirms, and long OK opens settings/returns. Long Down turns the display off; the first complete function-key gesture only wakes it. The hardware power key retains long-press shutdown.
 
 Refresh intervals are 1/5/15/30 minutes; auto-sleep options are never/30 seconds/1/2/5/10 minutes. Screen-off stops Wi-Fi and new network requests; received credentials still finish saving. Wake shows cached values, restores Wi-Fi and refreshes when manually requested or due. Network/clock readiness and account errors are reported separately.
+
+Network information shows connection status and saved Wi-Fi names. Device settings offers Hotspot for account/settings management and USB for the optional collector.
 
 The status bar shows Wi-Fi, synchronized UTC+8 time and a green battery fill proportional to charge. Green is styling, not verified charging detection. Enterprise certificate Wi-Fi and Bluetooth Internet relay are not implemented; use personal Wi-Fi or a compatible hotspot.
 
@@ -40,7 +42,7 @@ npm run build
 npm start
 ```
 
-Open **http://127.0.0.1:4317/**. The optional compatibility collector uses isolated private profiles. Claude's official statusline supplies observations during normal usage; refreshing sends no paid model prompt. In desktop Chrome/Edge, click **Connect USB**, wait for Passport to start, then open its physical **Computer pairing** window and send configuration. The device uses pinned HTTPS on port **4318**. No autostart is installed. Private computer data lives in `~/.local/share/ai-passport-quota/` or `AIQ_STATE_DIR`.
+Open **http://127.0.0.1:4317/**. The optional compatibility collector uses isolated private profiles. Claude's official statusline supplies observations during normal usage; refreshing sends no paid model prompt. In desktop Chrome/Edge, click **Connect USB**, wait for Passport to start, then open its physical **Device settings → USB** window and send configuration. The device uses pinned HTTPS on port **4318**. No autostart is installed. Private computer data lives in `~/.local/share/ai-passport-quota/` or `AIQ_STATE_DIR`.
 
 ## Screenshots and development
 

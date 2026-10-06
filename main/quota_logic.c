@@ -850,10 +850,11 @@ quota_action_t quota_navigation_handle(quota_navigation_t *navigation,
         } else if (navigation->screen == QUOTA_SCREEN_SLEEP) {
             navigation->sleep_focus = wrap_index(navigation->sleep_focus,
                                                  direction, QUOTA_SCREEN_TIMEOUT_COUNT);
-        } else if (navigation->screen == QUOTA_SCREEN_NETWORK) {
-            navigation->network_focus = wrap_index(navigation->network_focus, direction, 2);
         } else if (navigation->screen == QUOTA_SCREEN_PHONE) {
             navigation->phone_step = wrap_index(navigation->phone_step, direction, 3);
+        } else if (navigation->screen == QUOTA_SCREEN_DEVICE_SETTINGS) {
+            navigation->device_settings_focus = wrap_index(
+                navigation->device_settings_focus, direction, 2);
         }
         return QUOTA_ACTION_NONE;
     }
@@ -862,8 +863,7 @@ quota_action_t quota_navigation_handle(quota_navigation_t *navigation,
         if (navigation->screen == QUOTA_SCREEN_HOME) {
             navigation->screen = QUOTA_SCREEN_SETTINGS;
         } else if (navigation->screen == QUOTA_SCREEN_SETUP) {
-            navigation->screen = navigation->configured
-                               ? navigation->setup_return_screen : QUOTA_SCREEN_HOME;
+            navigation->screen = navigation->setup_return_screen;
         } else if (navigation->screen == QUOTA_SCREEN_PHONE) {
             navigation->screen = navigation->setup_return_screen;
             return QUOTA_ACTION_CLOSE_PHONE;
@@ -874,6 +874,8 @@ quota_action_t quota_navigation_handle(quota_navigation_t *navigation,
                    navigation->screen == QUOTA_SCREEN_SLEEP ||
                    navigation->screen == QUOTA_SCREEN_NETWORK ||
                    navigation->screen == QUOTA_SCREEN_ACCOUNTS) {
+            navigation->screen = QUOTA_SCREEN_SETTINGS;
+        } else if (navigation->screen == QUOTA_SCREEN_DEVICE_SETTINGS) {
             navigation->screen = QUOTA_SCREEN_SETTINGS;
         } else {
             navigation->screen = QUOTA_SCREEN_HOME;
@@ -905,10 +907,9 @@ quota_action_t quota_navigation_handle(quota_navigation_t *navigation,
                 }
             } else if (navigation->settings_focus == 4) {
                 navigation->screen = QUOTA_SCREEN_NETWORK;
-                navigation->network_focus = 0;
             } else {
-                navigation->setup_return_screen = QUOTA_SCREEN_SETTINGS;
-                navigation->screen = QUOTA_SCREEN_SETUP;
+                navigation->device_settings_focus = 0;
+                navigation->screen = QUOTA_SCREEN_DEVICE_SETTINGS;
             }
             return QUOTA_ACTION_NONE;
         case QUOTA_SCREEN_ACCOUNTS:
@@ -934,11 +935,16 @@ quota_action_t quota_navigation_handle(quota_navigation_t *navigation,
         case QUOTA_SCREEN_SETUP:
             return QUOTA_ACTION_NONE;
         case QUOTA_SCREEN_NETWORK:
-            if (navigation->network_focus == 1) return QUOTA_ACTION_RECONNECT;
-            navigation->setup_return_screen = QUOTA_SCREEN_NETWORK;
-            navigation->screen = QUOTA_SCREEN_PHONE;
+            return QUOTA_ACTION_NONE;
+        case QUOTA_SCREEN_DEVICE_SETTINGS:
             navigation->phone_step = 0;
-            return QUOTA_ACTION_OPEN_PHONE;
+            navigation->setup_return_screen = QUOTA_SCREEN_DEVICE_SETTINGS;
+            if (navigation->device_settings_focus == 0) {
+                navigation->screen = QUOTA_SCREEN_PHONE;
+                return QUOTA_ACTION_OPEN_PHONE;
+            }
+            navigation->screen = QUOTA_SCREEN_SETUP;
+            return QUOTA_ACTION_NONE;
         case QUOTA_SCREEN_PHONE:
             navigation->phone_step = wrap_index(navigation->phone_step, 1, 3);
             return QUOTA_ACTION_RENEW_PHONE;

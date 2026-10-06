@@ -17,6 +17,9 @@ static button_handle_t s_btn[BSP_BTN_COUNT];
 static bsp_btn_cb_t    s_cb;
 static void           *s_user;
 static volatile bool   s_ready;
+static bool s_long_pressed[BSP_BTN_COUNT];
+
+_Static_assert(CONFIG_BUTTON_DEBOUNCE_TICKS >= 2, "release navigation needs at least two debounce ticks");
 
 // ADC1 是 unit 级独占资源:iot_button 与 bsp_button_read_mv() 必须共用同一个 oneshot
 // 句柄。谁第二个调 adc_oneshot_new_unit() 谁就拿到 "adc1 is already in use"。
@@ -75,10 +78,21 @@ static void on_event(void *arg, void *usr_data, bsp_btn_ev_t ev) {
     if (!s_ready || !s_cb) return;
     s_cb((bsp_btn_t)(intptr_t)usr_data, ev, s_user);
 }
-static void cb_press (void *a, void *u) { on_event(a, u, BSP_BTN_PRESS);  }
-static void cb_click (void *a, void *u) { on_event(a, u, BSP_BTN_CLICK);  }
-static void cb_double(void *a, void *u) { on_event(a, u, BSP_BTN_DOUBLE); }
-static void cb_long  (void *a, void *u) { on_event(a, u, BSP_BTN_LONG);   }
+static void cb_press(void *a, void *u) {
+    s_long_pressed[(intptr_t)u] = false;
+    on_event(a, u, BSP_BTN_PRESS);
+}
+static void cb_long(void *a, void *u) {
+    if (!s_ready || s_long_pressed[(intptr_t)u]) return;
+    s_long_pressed[(intptr_t)u] = true;
+    on_event(a, u, BSP_BTN_LONG);
+}
+static void cb_release(void *a, void *u) {
+    if (!s_ready || s_long_pressed[(intptr_t)u]) return;
+    /* A release can precede the first HOLD tick after the long threshold. */
+    if (iot_button_get_pressed_time(a) >= BSP_BTN_LONG_PRESS_MS) cb_long(a, u);
+    else on_event(a, u, BSP_BTN_CLICK);
+}
 
 // 初始化中途失败时先停掉所有 button driver，再释放本文件持有的校准与 ADC unit。
 // button driver 仍在轮询时不能先删 ADC，否则 timer callback 会访问失效句柄。
@@ -117,9 +131,10 @@ static void button_cleanup(void) {
 
 static esp_err_t register_callbacks(button_handle_t button, void *index) {
     esp_err_t e = iot_button_register_cb(button, BUTTON_PRESS_DOWN, NULL, cb_press, index);
-    if (e == ESP_OK) e = iot_button_register_cb(button, BUTTON_SINGLE_CLICK, NULL, cb_click, index);
-    if (e == ESP_OK) e = iot_button_register_cb(button, BUTTON_DOUBLE_CLICK, NULL, cb_double, index);
-    if (e == ESP_OK) e = iot_button_register_cb(button, BUTTON_LONG_PRESS_START, NULL, cb_long, index);
+    if (e == ESP_OK) e = iot_button_register_cb(button, BUTTON_PRESS_UP, NULL, cb_release, index);
+    /* v4.2.0 reads past the START callback array while a key remains held.
+     * HOLD avoids that path; the per-key flag keeps one LONG per gesture. */
+    if (e == ESP_OK) e = iot_button_register_cb(button, BUTTON_LONG_PRESS_HOLD, NULL, cb_long, index);
     return e;
 }
 
@@ -189,6 +204,10 @@ esp_err_t bsp_button_init(bsp_btn_cb_t cb, void *user) {
             button_cleanup();
             return e;
         }
+        /* v4.2.0: drain the repeat wait on the next tick, before another
+         * debounced press. A repeat-up state would otherwise miss LONG. */
+        e = iot_button_set_param(s_btn[i], BUTTON_SHORT_PRESS_TIME_MS, NULL);
+        if (e != ESP_OK) { button_cleanup(); return e; }
         void *idx = (void *)(intptr_t)i;
         e = register_callbacks(s_btn[i], idx);
         if (e != ESP_OK) {
@@ -200,8 +219,8 @@ esp_err_t bsp_button_init(bsp_btn_cb_t cb, void *user) {
 
     s_sample_valid = false;
     s_ready = true;
-    ESP_LOGI(TAG, "按键就绪:ADC1_CH%d 三键分压,短按 %dms 长按 %dms",
-             BSP_BTN_ADC_CHANNEL, BSP_BTN_SHORT_PRESS_MS, BSP_BTN_LONG_PRESS_MS);
+    ESP_LOGI(TAG, "按键就绪:ADC1_CH%d 三键分压,松手响应 长按 %dms",
+             BSP_BTN_ADC_CHANNEL, BSP_BTN_LONG_PRESS_MS);
     return ESP_OK;
 }
 

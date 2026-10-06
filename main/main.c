@@ -218,6 +218,12 @@ static void process_button(const quota_app_event_t *event, quota_service_view_t 
 
 static void process_event(const quota_app_event_t *event)
 {
+    if (event->kind == QUOTA_APP_EVENT_BUTTON && event->button_event == BSP_BTN_PRESS &&
+        !s_display.sleeping && !s_display_power_pending) {
+        /* Awake PRESS resets idle time; the debounced release or LONG does the work. */
+        s_display.last_input_ms = (uint64_t)(esp_timer_get_time() / 1000);
+        return;
+    }
     quota_service_get_view(&s_view_work);
     switch (event->kind) {
         case QUOTA_APP_EVENT_BUTTON:

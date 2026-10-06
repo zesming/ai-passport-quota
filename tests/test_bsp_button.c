@@ -7,7 +7,7 @@
 struct button_dev_t { button_driver_t *driver; bool live; };
 static struct button_dev_t buttons[BSP_BTN_COUNT];
 static int adc_token, cal_token, adc_live, cal_live, live_buttons;
-static int create_calls, callback_calls, fail_create, fail_callback;
+static int create_calls, callback_calls, param_calls, fail_create, fail_callback, fail_param;
 static int fail_adc, fail_channel, fail_cal, fail_read, fail_convert, fail_delete;
 static int raw_mv, reads, events;
 static int64_t clock_us;
@@ -72,13 +72,18 @@ esp_err_t iot_button_register_cb(button_handle_t h, button_event_t ev, button_ev
     cb(h, u); // No user callbacks may escape a partial initialization.
     return ++callback_calls == fail_callback ? ESP_ERR_NO_MEM : ESP_OK;
 }
+esp_err_t iot_button_set_param(button_handle_t h, button_param_t param, void *value) {
+    assert(h->live && param == BUTTON_SHORT_PRESS_TIME_MS && value == NULL);
+    return ++param_calls == fail_param ? ESP_ERR_NO_MEM : ESP_OK;
+}
+uint32_t iot_button_get_pressed_time(button_handle_t h) { (void)h; return 0; }
 static void event_cb(bsp_btn_t btn, bsp_btn_ev_t ev, void *u) {
     assert(btn == BSP_BTN_OK && ev == BSP_BTN_CLICK && u == &events);
     ++events;
 }
 static void reset_faults(void) {
     fail_adc = fail_channel = fail_cal = fail_read = fail_convert = fail_delete = 0;
-    fail_create = fail_callback = create_calls = callback_calls = 0;
+    fail_create = fail_callback = fail_param = create_calls = callback_calls = param_calls = 0;
 }
 static void assert_clean(void) {
     assert(!adc_live && !cal_live && !live_buttons && !s_ready && !s_adc && !s_cali);
@@ -105,8 +110,12 @@ int main(void) {
         reset_faults(); fail_create = i;
         assert(bsp_button_init(event_cb, &events) != ESP_OK); retry_success();
     }
-    for (int i = 1; i <= BSP_BTN_COUNT * 4; ++i) {
+    for (int i = 1; i <= BSP_BTN_COUNT * 3; ++i) {
         reset_faults(); fail_callback = i;
+        assert(bsp_button_init(event_cb, &events) != ESP_OK); retry_success();
+    }
+    for (int i = 1; i <= BSP_BTN_COUNT; ++i) {
+        reset_faults(); fail_param = i;
         assert(bsp_button_init(event_cb, &events) != ESP_OK); retry_success();
     }
     reset_faults(); fail_adc = 1;
@@ -117,7 +126,10 @@ int main(void) {
     assert(bsp_button_init(event_cb, &events) != ESP_OK); retry_success();
     assert(events == 0);
     assert(bsp_button_init(event_cb, &events) == ESP_OK);
-    cb_click(NULL, (void *)(intptr_t)BSP_BTN_OK); assert(events == 1);
+    s_long_pressed[BSP_BTN_OK] = false;
+    cb_release(NULL, (void *)(intptr_t)BSP_BTN_OK); assert(events == 1);
+    s_long_pressed[BSP_BTN_OK] = true;
+    cb_release(NULL, (void *)(intptr_t)BSP_BTN_OK); assert(events == 1);
     check_voltage(0, BSP_BTN_UP); check_voltage(149, BSP_BTN_UP);
     check_voltage(150, BSP_BTN_DOWN); check_voltage(446, BSP_BTN_DOWN);
     check_voltage(447, BSP_BTN_OK); check_voltage(1899, BSP_BTN_OK);

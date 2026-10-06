@@ -50,7 +50,6 @@ static void lv_obj_set_x(lv_obj_t *label, int value) { (void)label; (void)value;
 static void lv_obj_set_height(lv_obj_t *label, int value) { (void)label; (void)value; }
 static unsigned lv_obj_get_width(lv_obj_t *label) { return label->width; }
 static void lv_qrcode_set_size(lv_obj_t *label, unsigned value) { label->width=value; }
-static void set_row_focus(lv_obj_t *row, lv_obj_t *marker, bool focus) { (void)row; (void)marker; (void)focus; }
 static void render_qr_data(const char *value) { qr_visible=value && value[0]; }
 '''+functions+r'''
 static void bind(void) {
@@ -61,8 +60,9 @@ static void bind(void) {
     for (unsigned i=0;i<2;i++) {
         BIND(balance_heading[i]); BIND(balance_total[i]); BIND(metric_name[i]);
         BIND(metric_reset[i]); BIND(metric_value[i]); BIND(metric_bar[i]);
-        BIND(extra_name[i]); BIND(extra_value[i]); BIND(network_rows[i]); BIND(network_markers[i]);
+        BIND(extra_name[i]); BIND(extra_value[i]);
     }
+    for (unsigned i=0;i<QUOTA_PORTABLE_NETWORKS+1;i++) BIND(network_saved[i]);
     BIND(network_title); BIND(network_info); BIND(network_hint);
     BIND(qr); BIND(qr_title); BIND(qr_hint); BIND(qr_countdown);
     BIND(manual_address); BIND(manual_caption); BIND(manual_secret); BIND(footer);
@@ -85,7 +85,7 @@ int main(void) {
         assert(!strcmp(s_ui.home_provider->text,titles[i]));
         assert(!strstr(s_ui.home_plan->text,"打开设备设置"));
         assert(s_ui.home_status->color==UI_AMBER);
-        render_network(&nav,&service.portable);
+        render_network(&service.portable);
         assert(!strcmp(s_ui.network_title->text,titles[i]));
         assert(strstr(s_ui.network_info->text,titles[i]));
         nav.phone_step=2; render_phone(&nav,&service.portable);
@@ -100,14 +100,101 @@ int main(void) {
     service.portable.storage_error[0]=0;
     render_home(&nav,&service); assert(!strcmp(s_ui.home_provider->text,"暂无账户"));
     assert(strstr(s_ui.home_plan->text,"打开设备设置"));
-    render_network(&nav,&service.portable); assert(!strcmp(s_ui.network_title->text,"尚未配置网络"));
-    assert(strstr(s_ui.network_hint->text,"2.4 GHz"));
+    render_network(&service.portable); assert(!strcmp(s_ui.network_title->text,"尚未配置网络"));
+    assert(strstr(s_ui.network_hint->text,"设备设置"));
+    service.portable.saved_network_count=3; service.portable.selected_saved_network=1;
+    for (unsigned i=0;i<3;i++) snprintf(service.portable.saved_network_ssids[i],
+        sizeof(service.portable.saved_network_ssids[i]),"Saved-%u",i);
+    service.portable.pending_saved_network_present=true;
+    snprintf(service.portable.pending_saved_network_ssid,
+        sizeof(service.portable.pending_saved_network_ssid),"Historical");
+    render_network(&service.portable);
+    assert(!strcmp(s_ui.network_saved[0]->text,"  Saved-0"));
+    assert(!strcmp(s_ui.network_saved[1]->text,"* Saved-1"));
+    assert(!strcmp(s_ui.network_saved[3]->text,"待启用 Historical"));
+    service.portable.saved_network_count=1; service.portable.pending_saved_network_present=false;
+    render_network(&service.portable);
+    assert(s_ui.network_saved[1]->text[0]==0 && s_ui.network_saved[3]->text[0]==0);
+    snprintf(service.portable.storage_error,sizeof(service.portable.storage_error),"storage_invalid");
+    render_network(&service.portable); assert(s_ui.network_saved[0]->text[0]==0);
+    service.portable.storage_error[0]=0;
     render_auth(&service.portable); assert(qr_visible);
     puts("physical storage-error visibility and recovery rendering passed");
 }
 '''
         compile_and_run(harness, "quota-physical-storage-ui-", (
             "main/quota_logic.c", "tests/cjson/cJSON.c"))
+
+    def test_unchanged_menu_does_not_reallocate_text_or_repaint_rows(self):
+        source = (ROOT / "main/quota_ui.c").read_text()
+        functions = "\n".join(extract_function(source, name) for name in
+            ("set_label_text", "set_row_focus", "set_account_row_visible", "render_accounts"))
+        harness = r'''
+#include <assert.h>
+#include "quota_logic.h"
+#include <stdbool.h>
+#include <stdio.h>
+#include <string.h>
+typedef struct { char text[64]; unsigned flags, bg; } lv_obj_t;
+typedef unsigned lv_color_t;
+typedef struct { quota_snapshot_t snapshot; } quota_service_view_t;
+static struct { lv_obj_t *header_info, *account_rows[QUOTA_MAX_ACCOUNTS+1], *account_markers[QUOTA_MAX_ACCOUNTS+1],
+    *account_primary[QUOTA_MAX_ACCOUNTS+1], *account_secondary[QUOTA_MAX_ACCOUNTS+1]; } s_ui;
+#define UI_PANEL 1
+#define UI_BG 0
+#define LV_OBJ_FLAG_HIDDEN 1
+static unsigned texts, backgrounds;
+static unsigned color(unsigned c) { return c; }
+static unsigned lv_obj_get_style_bg_color(lv_obj_t *o,unsigned part) { (void)part; return o->bg; }
+static bool lv_color_eq(unsigned a,unsigned b) { return a==b; }
+static const char *lv_label_get_text(lv_obj_t *o) { return o->text; }
+static void lv_label_set_text(lv_obj_t *o,const char *t) { ++texts; snprintf(o->text,sizeof(o->text),"%s",t); }
+static bool lv_obj_has_flag(lv_obj_t *o,unsigned f) { return (o->flags&f)!=0; }
+static void lv_obj_add_flag(lv_obj_t *o,unsigned f) { o->flags|=f; }
+static void lv_obj_clear_flag(lv_obj_t *o,unsigned f) { o->flags&=~f; }
+static void lv_obj_set_style_bg_color(lv_obj_t *o,unsigned c,unsigned part) { (void)part; ++backgrounds; o->bg=c; }
+'''+functions+r'''
+int main(void) {
+    lv_obj_t row[6]={0}, marker[6]={0}, label[6]={0};
+    for (unsigned i=0;i<6;i++) marker[i].flags=LV_OBJ_FLAG_HIDDEN;
+    for (unsigned frame=0;frame<3;frame++) for (unsigned i=0;i<6;i++) {
+        set_label_text(&label[i],"设置"); set_row_focus(&row[i],&marker[i],i==0);
+    }
+    assert(texts==6 && backgrounds==1);
+    for (unsigned i=0;i<6;i++) set_row_focus(&row[i],&marker[i],i==1);
+    assert(backgrounds==3 && texts==6);
+    set_label_text(&label[1],""); assert(texts==7 && !label[1].text[0]);
+    s_ui.account_rows[0]=&row[1]; s_ui.account_markers[0]=&marker[1];
+    s_ui.account_primary[0]=&label[0]; s_ui.account_secondary[0]=&label[1];
+    set_account_row_visible(0,true); set_row_focus(&row[1],&marker[1],true);
+    assert(backgrounds==3 && row[1].bg==UI_PANEL);
+    set_account_row_visible(0,false); set_account_row_visible(0,true);
+    set_row_focus(&row[1],&marker[1],false);
+    assert(backgrounds==4 && row[1].bg==UI_BG && (marker[1].flags&LV_OBJ_FLAG_HIDDEN));
+    lv_obj_t account_rows[QUOTA_MAX_ACCOUNTS+1]={0}, markers[QUOTA_MAX_ACCOUNTS+1]={0};
+    lv_obj_t primary[QUOTA_MAX_ACCOUNTS+1]={0}, secondary[QUOTA_MAX_ACCOUNTS+1]={0}, header={0};
+    s_ui.header_info=&header;
+    for(unsigned i=0;i<QUOTA_MAX_ACCOUNTS+1;i++) {
+        s_ui.account_rows[i]=&account_rows[i]; s_ui.account_markers[i]=&markers[i];
+        s_ui.account_primary[i]=&primary[i]; s_ui.account_secondary[i]=&secondary[i];
+        markers[i].flags=LV_OBJ_FLAG_HIDDEN;
+    }
+    quota_service_view_t view={0}; quota_navigation_t nav={0}; view.snapshot.account_count=2;
+    strcpy(view.snapshot.accounts[0].email,"first@example.invalid");
+    strcpy(view.snapshot.accounts[1].email,"second@example.invalid");
+    texts=backgrounds=0; render_accounts(&nav,&view);
+    assert(backgrounds==1 && account_rows[0].bg==UI_PANEL);
+    unsigned initial_texts=texts; render_accounts(&nav,&view);
+    assert(backgrounds==1 && texts==initial_texts);
+    nav.account_focus=1; render_accounts(&nav,&view);
+    assert(backgrounds==3 && account_rows[1].bg==UI_PANEL);
+    view.snapshot.account_count=0; nav.account_focus=0; render_accounts(&nav,&view);
+    view.snapshot.account_count=2; render_accounts(&nav,&view);
+    assert(account_rows[0].bg==UI_PANEL && account_rows[1].bg==UI_BG && (markers[1].flags&LV_OBJ_FLAG_HIDDEN));
+    puts("unchanged menu setters and two-row focus movement passed");
+}
+'''
+        compile_and_run(harness, "quota-menu-redraw-", ("main/quota_logic.c", "tests/cjson/cJSON.c"))
 
 
 if __name__ == "__main__":

@@ -670,6 +670,17 @@ static void sync_public_locked(void)
     view->refresh_seconds=s_model.refresh_seconds; view->auto_refresh=s_model.auto_refresh; view->screen_timeout_seconds=s_model.screen_timeout_seconds;
     view->clock_synchronized=s_clock_ready; view->now_epoch=epoch();
     copy(s_view.storage_error,sizeof(s_view.storage_error),s_storage_error);
+    s_view.saved_network_count = s_model.network_count <= QUOTA_PORTABLE_NETWORKS
+        ? s_model.network_count : QUOTA_PORTABLE_NETWORKS;
+    s_view.selected_saved_network = s_model.selected_network;
+    memset(s_view.saved_network_ssids, 0, sizeof(s_view.saved_network_ssids));
+    for (unsigned i = 0; i < s_view.saved_network_count; i++) {
+        copy(s_view.saved_network_ssids[i], sizeof(s_view.saved_network_ssids[i]),
+             s_model.networks[i].ssid);
+    }
+    s_view.pending_saved_network_present = s_model.pending_network_present;
+    copy(s_view.pending_saved_network_ssid, sizeof(s_view.pending_saved_network_ssid),
+         s_model.pending_network_present ? s_model.pending_network.ssid : "");
     memset(s_view.account_errors,0,sizeof(s_view.account_errors)); memset(s_view.account_retry_at,0,sizeof(s_view.account_retry_at));
     for(unsigned i=0;i<s_snapshot.account_count;i++) {
         int row=quota_catalog_find(&s_model,s_snapshot.accounts[i].id); if(row<0)continue;

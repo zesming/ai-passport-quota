@@ -6,7 +6,7 @@ Passport stores accounts and updates them itself. Phones and computers use the s
 
 ## Open settings
 
-A physical **Network/setup → Device settings** action opens a temporary WPA2 hotspot for ten minutes. Each window generates a new password and independent 43-character setup key. New provider/collector HTTPS pauses while setup is requested or open; received credentials still finish saving. The baseline is personal 2.4 GHz Wi-Fi or a compatible Internet-capable phone hotspot.
+A physical **Device settings → Hotspot** action opens a temporary WPA2 hotspot for ten minutes. Each window generates a new password and independent 43-character setup key. New provider/collector HTTPS pauses while setup is requested or open; received credentials still finish saving. The baseline is personal 2.4 GHz Wi-Fi or a compatible Internet-capable phone hotspot.
 
 | Device step | Phone or computer action |
 | --- | --- |
@@ -32,7 +32,7 @@ Jobs remain queued/running until actual completion; a closing-command ACK allows
 
 ## Device controls and refresh
 
-Keep the 240 × 320 dark display and 216 × 8 quota tracks. HOME Up/Down switches accounts, short OK refreshes all and long OK opens settings. Submenus use short OK to confirm and long OK to return. AUTH long OK cancels unsent work or returns from terminal state. Long Down sleeps; the first complete wake gesture only wakes. Optional Computer pairing remains a physical 120-second USB action, with no permanent reader or autostart.
+Keep the 240 × 320 dark display and 216 × 8 quota tracks. HOME Up/Down switches accounts, short OK refreshes all and long OK opens settings. Submenus use short OK to confirm and long OK to return. AUTH long OK cancels unsent work or returns from terminal state. Long Down sleeps; the first complete wake gesture only wakes. Network information is a passive saved-Wi-Fi/status page. Device settings offers Hotspot and USB; entering the chooser opens neither transport. USB remains a physical 120-second collector-pairing action, with no permanent reader or autostart.
 
 One device cadence controls manual or 1/5/15/30-minute refresh. Screen-off closes AP/Wi-Fi and admits no new HTTP; current bounded requests may settle. Authorization pauses but its deadline continues. Received-token persistence and deadlines continue without network. Wake presents cache, reconnects and resumes due/manual work. Collector cache reads are silent and do not move the provider deadline. Setup/login holds the display awake only within its window, preserving the saved never/30/60/120/300/600-second sleep setting.
 

@@ -9,6 +9,7 @@ const PREVIEW_SCREENS = [
   ['accounts', '账户'],
   ['add', '添加账户'],
 ];
+const SETTINGS_PREVIEW_CHILDREN = new Set(['network-info', 'device-settings']);
 
 function Logo({ provider, size = 28 }) {
   const openAI = provider === 'codex';
@@ -270,6 +271,8 @@ export function App() {
   const [panel, setPanel] = useState('device');
   const [previewScreen, setPreviewScreen] = useState('home');
   const [settingFocus, setSettingFocus] = useState(0);
+  const [deviceSettingsFocus, setDeviceSettingsFocus] = useState(0);
+  const [hotspotStep, setHotspotStep] = useState(0);
   const [toast, setToast] = useState('');
   const [busyAction, setBusyAction] = useState('');
   const [providerDialog, setProviderDialog] = useState(false);
@@ -412,7 +415,7 @@ export function App() {
       if (serialConnection.current?.port !== (event.port ?? event.target)) return;
       void disconnectDevice();
       setSerialMessage('');
-      setSerialError('USB 已断开。请重新连接 USB，再打开小屏配对窗口。');
+      setSerialError('USB 已断开。请重新连接 USB，等待小屏启动后再打开「设备设置 → USB」配对窗口。');
     };
     navigator.serial?.addEventListener('disconnect', disconnected);
     return () => {
@@ -601,7 +604,11 @@ export function App() {
     if (index === 0) setPreviewScreen('accounts');
     if (index === 1 || index === 3) setPanel('refresh');
     if (index === 2) refreshAccount(previewAccount?.id);
-    if (index === 4) setPanel('setup');
+    if (index === 4) setPreviewScreen('network-info');
+    if (index === 5) {
+      setDeviceSettingsFocus(0);
+      setPreviewScreen('device-settings');
+    }
   }
 
   function shortOK() {
@@ -613,17 +620,32 @@ export function App() {
       else setPreviewScreen('add');
     } else if (previewScreen === 'add') {
       setProviderDialog(true);
+    } else if (previewScreen === 'device-settings') {
+      setPreviewScreen(deviceSettingsFocus === 0 ? 'hotspot-setup' : 'usb-pairing');
+      setHotspotStep(0);
+    } else if (previewScreen === 'hotspot-setup') {
+      setHotspotStep(current => (current + 1) % 3);
     }
   }
 
   function longOK() {
-    setPreviewScreen(current => current === 'home' ? 'settings' : 'home');
-    setSettingFocus(0);
+    if (previewScreen === 'home') {
+      setPreviewScreen('settings');
+      setSettingFocus(0);
+    } else if (SETTINGS_PREVIEW_CHILDREN.has(previewScreen)) {
+      setPreviewScreen('settings');
+    } else if (previewScreen === 'hotspot-setup' || previewScreen === 'usb-pairing') {
+      setPreviewScreen('device-settings');
+    } else {
+      setPreviewScreen('home');
+    }
   }
 
   function direction(delta) {
     if (previewScreen === 'home' || previewScreen === 'accounts') moveAccount(delta);
-    else if (previewScreen === 'settings') setSettingFocus(current => (current + delta + 5) % 5);
+    else if (previewScreen === 'settings') setSettingFocus(current => (current + delta + 6) % 6);
+    else if (previewScreen === 'device-settings') setDeviceSettingsFocus(current => (current + delta + 2) % 2);
+    else if (previewScreen === 'hotspot-setup') setHotspotStep(current => (current + delta + 3) % 3);
   }
 
   useEffect(() => {
@@ -685,7 +707,7 @@ export function App() {
       connection.session = await openDeviceSerial(port, connection.requestId);
       if (serialConnection.current !== connection) { await connection.session.close(); return; }
       setSerialConnected(true);
-      setSerialMessage('USB 已连接。等待小屏启动，再打开「电脑配对」窗口，然后发送配置。');
+      setSerialMessage('USB 已连接。等待小屏启动，再按「设备设置 → USB」打开「USB 配对」窗口，然后发送配置。');
     } catch (error) {
       if (serialConnection.current !== connection) return;
       serialConnection.current = null;
@@ -718,7 +740,7 @@ export function App() {
     }
     const connection = serialConnection.current;
     if (!connection?.session || !serialConnected) {
-      setSerialError('请先连接 USB，再打开小屏「电脑配对」窗口。');
+      setSerialError('请先连接 USB，再在小屏选择「设备设置 → USB」打开「USB 配对」窗口。');
       return;
     }
 
@@ -805,7 +827,7 @@ export function App() {
 
       <div className="workspace">
         <section className="preview-panel" aria-labelledby="preview-title">
-          <div className="section-heading"><div><h2 id="preview-title">电脑采集小屏预览</h2><span>仅预览此电脑采集账户，未读取 Passport 的全部设备账户。</span></div><span className="screen-size">240 × 320</span></div>
+          <div className="section-heading"><div><h2 id="preview-title">电脑采集小屏预览</h2><span>此预览显示电脑采集账户和本机采集设置；设备网络和设置状态请以实际设备为准。</span></div><span className="screen-size">240 × 320</span></div>
           <nav className="screen-tabs" aria-label="切换电脑采集预览画面">
             {PREVIEW_SCREENS.map(([value, label]) => (
               <button key={value} type="button" className={previewScreen === value ? 'active' : ''} aria-pressed={previewScreen === value} onClick={() => setPreviewScreen(value)}>{label}</button>
@@ -830,14 +852,54 @@ export function App() {
                   <div className="device-settings">
                     {[
                       ['账户管理', `${authenticatedAccounts.length} 个`],
-                      ['自动刷新', apiState ? autoRefresh ? `${refreshSeconds / 60} 分钟` : '关闭' : '—'],
+                      ['刷新间隔', apiState ? autoRefresh ? `${refreshSeconds / 60} 分钟` : '手动' : '—'],
                       ['立即刷新', busyAction.includes('/refresh') ? '提交中' : ''],
-                      ['息屏时间', apiState ? screenTimeoutLabel(screenTimeoutSeconds) : '—'],
-                      ['配对', '电脑端'],
+                      ['自动息屏', apiState ? screenTimeoutLabel(screenTimeoutSeconds) : '—'],
+                      ['网络信息', ''],
+                      ['设备设置', ''],
                     ].map(([label, value], index) => <button key={label} type="button" className={settingFocus === index ? 'focused' : ''} onClick={() => { setSettingFocus(index); activateSetting(index); }}><span>{label}</span><span>{value}</span></button>)}
                   </div>
-                  <div className="device-explanation">Passport 账户请用设备设置<br />此预览来自电脑采集器</div>
                   <div className="device-footer"><span>↑↓ 选择 · OK 确认</span><span>长按返回</span></div>
+                </>}
+
+                {previewScreen === 'network-info' && <>
+                  <DeviceHeader title="网络信息" info="" nowSeconds={nowSeconds} />
+                  <div className="device-explanation" style={{ marginTop: 18, lineHeight: '22px' }}>
+                    <strong>当前状态：</strong><span>请以设备屏幕显示为准。</span><br />
+                    <strong>已保存 Wi‑Fi：</strong><span>SSID 由设备本地保存。</span><br />
+                    <span>修改网络请打开设备设置。</span>
+                  </div>
+                  <div className="device-footer"><span>只读信息</span><span>长按返回</span></div>
+                </>}
+
+                {previewScreen === 'device-settings' && <>
+                  <DeviceHeader title="设备设置" info="" nowSeconds={nowSeconds} />
+                  <div className="device-settings" style={{ paddingTop: 34 }}>
+                    {[
+                      ['热点', '手机和电脑管理账户'],
+                      ['USB', '配对可选电脑采集器'],
+                    ].map(([label, value], index) => <button key={label} type="button" className={deviceSettingsFocus === index ? 'focused' : ''} onClick={() => { setDeviceSettingsFocus(index); setPreviewScreen(index === 0 ? 'hotspot-setup' : 'usb-pairing'); setHotspotStep(0); }} style={{ height: 60, display: 'block', textAlign: 'left' }}><strong>{label}</strong><span style={{ display: 'block', textAlign: 'left' }}>{value}</span></button>)}
+                  </div>
+                  <div className="device-footer"><span>热点为默认选项</span><span>长按返回</span></div>
+                </>}
+
+                {previewScreen === 'hotspot-setup' && <>
+                  <DeviceHeader title="设备设置" info={`${hotspotStep + 1}/3`} nowSeconds={nowSeconds} />
+                  <div className="pairing-intro">
+                    {['连接设备热点', '打开设置网页', '输入设置密钥'][hotspotStep]}
+                    <br />
+                    <span>此预览不显示设备二维码、网络名或密钥。</span>
+                  </div>
+                  <div className="pairing-code"><span>热点设置</span><strong>{hotspotStep + 1}/3</strong><small>请按实际设备屏幕操作</small></div>
+                  <div className="device-footer"><span>↑↓ / OK 下一步</span><span>长按返回</span></div>
+                </>}
+
+                {previewScreen === 'usb-pairing' && <>
+                  <DeviceHeader title="USB 配对" info="" nowSeconds={nowSeconds} />
+                  <div className="pairing-intro">可选电脑采集器<br />仅用于电脑账户更新</div>
+                  <div className="device-providers"><div><Logo provider="codex" size={34} /><span>Codex</span></div><div><Logo provider="claude" size={34} /><span>Claude</span></div><div><Logo provider="deepseek" size={34} /><span>DeepSeek</span></div></div>
+                  <div className="device-explanation">请通过 USB 配对采集器<br />账户凭证保留在电脑中</div>
+                  <div className="device-footer"><span>配对窗口由设备控制</span><span>长按返回</span></div>
                 </>}
 
                 {previewScreen === 'accounts' && <>
@@ -886,7 +948,7 @@ export function App() {
 
           {panel === 'device' && <div className="setup-panel">
             <div className="setup-title"><div><h3>打开同一个设备设置页</h3><p>手机和电脑都在 Passport 的本地页面管理账户、Wi‑Fi、刷新与显示。</p></div></div>
-            <div className="setup-gate"><strong>在设备上打开「设备设置」</strong><span>先连接屏幕第一步的设备热点，再打开第二步的二维码。电脑也可手动输入第三步的地址与完整设置密钥。</span></div>
+            <div className="setup-gate"><strong>在设备上选择「设备设置 → 热点」</strong><span>先连接屏幕第一步的设备热点，再打开第二步的二维码。电脑也可手动输入第三步的地址与完整设置密钥。</span></div>
             <a className="primary login-link" href="http://192.168.4.1" target="_blank" rel="noreferrer">打开设备设置页 ↗</a>
             <p className="source-note">打开前请先连接设备热点。此地址在手机和电脑上相同；设置密钥只在设备屏幕显示，并只在当前网页内存中使用。</p>
             <div className="info-note"><strong>Passport 保存账户并自行更新</strong><p>Codex 与 DeepSeek 可在设备上独立更新。完成官方授权时，请让手机或电脑接入可用网络，并按设备屏幕继续。</p><p>Claude 需要手动运行可选电脑采集器。已保存在电脑中的账户凭证不会自动导入 Passport，也不会按邮箱合并账户。</p></div>
@@ -946,7 +1008,8 @@ export function App() {
 
           {apiState && panel === 'setup' && <div className="setup-panel">
             <div className="setup-title"><div><h3>配对可选电脑采集器</h3><p>通过 USB 配对当前手动运行的采集器。</p></div><span className={`device-state ${apiState.device?.enabled ? 'good' : ''}`}><i />{apiState.device?.enabled ? '电脑采集服务已启用' : '尚未连接设备'}</span></div>
-            <div className="setup-gate"><strong>{serialConnected ? '2. 打开小屏「电脑配对」，再发送配置' : '1. 先连接 USB，等待小屏启动'}</strong><span>USB 连接可能使设备重启。连接后再打开小屏配对窗口，并在 120 秒内发送配置。</span></div>
+            <div className="setup-gate"><strong>{serialConnected ? '2. 在小屏选择「设备设置 → USB」，打开「USB 配对」后发送配置' : '1. 先连接 USB，等待小屏启动'}</strong><span>USB 连接可能使设备重启。先连接并等待启动，再打开小屏配对窗口；配对窗口限时 120 秒。</span></div>
+            <p className="source-note">USB 仅配置可选电脑采集器连接，不传输 Passport 原生账户凭证；设备账户请通过「设备设置 → 热点」的二维码页面管理。</p>
             {serialConnected
               ? <button type="button" className="secondary wide" onClick={() => void disconnectDevice()} disabled={serialBusy}>取消 USB 连接</button>
               : <button type="button" className="secondary wide" onClick={connectDevice} disabled={serialBusy || Boolean(busyAction)}>{serialBusy ? '正在连接 USB…' : '连接 USB'}</button>}

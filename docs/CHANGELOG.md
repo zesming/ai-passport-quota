@@ -8,6 +8,16 @@
 
 ## Unreleased
 
+### 2026-10-06 — Simplified settings and responsive keys
+
+Settings now has passive Network information (connection/IP and committed saved Wi-Fi names) and Device settings (Hotspot / USB). Hotspot retains the shared account/settings page; USB retains the physical collector-pairing window and same-session desktop flow. USB does not manage native credentials. README and desktop preview/guidance follow these routes.
+
+Short keys emit on debounced release without the 180 ms multi-click wait; repeated taps are separate actions. Long release emits no short action, and the first complete wake gesture remains consumed. Unchanged labels/styles are skipped, account focus owns its marker, and awake PRESS only resets idle time. The BSP uses guarded HOLD callbacks plus release-time long detection to avoid the locked button component's START callback overread. No tasks or display buffers were added.
+
+Build/Host tests: **PASS**, complete ESP-IDF 5.5.3 gate, font coverage, navigation, committed-network/candidate separation, stable/account-row redraw and power lifecycle regressions. The locked button handler passed ASan/UBSan with rapid taps, subsequent holds, bounce, wake and 495/500/515/700 ms release boundaries. Companion: **55 tests and production build PASS**. Browser: **synthetic route/return and chooser layout checks PASS**. Independent review findings are closed.
+
+Verified bundle `198051593cd560bc62da8ad6caa201e8935c293ac89cf1b4438b95d2fec8be4a`, app 1,760,096 bytes, version `320e68e-dirty`, ELF SHA-256 `619493dd85347a16eb01a45c57abe657deb87ea3e6989fdbeb93a4ed7fd8c295`. Device installation and physical response/wake/pairing acceptance are pending: no Passport USB connection was available after validation. These checks do not measure hardware latency or establish native provider authorization.
+
 ### 2026-10-06 — USB pairing receive fix
 
 Corrected a USB receive defect found while investigating pairing timeouts. ESP-IDF 5.5.3's basic USB VFS skips hardware input when `O_NONBLOCK` is set without an installed driver. Startup now explicitly selects its non-waiting FIFO callbacks and clears that flag; no reader task or driver buffers were added.

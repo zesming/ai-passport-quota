@@ -320,7 +320,8 @@ static void test_navigation(void)
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_UP, 3) == QUOTA_ACTION_NONE);
     assert(navigation.settings_focus == 5);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 3) == QUOTA_ACTION_NONE);
-    assert(navigation.screen == QUOTA_SCREEN_SETUP);
+    assert(navigation.screen == QUOTA_SCREEN_DEVICE_SETTINGS);
+    assert(navigation.device_settings_focus == 0);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 3) == QUOTA_ACTION_NONE);
     assert(navigation.screen == QUOTA_SCREEN_SETTINGS);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_DOWN, 3) == QUOTA_ACTION_NONE);
@@ -370,13 +371,25 @@ static void test_portable_navigation(void)
     navigation.screen = QUOTA_SCREEN_SETTINGS;
     navigation.settings_focus = 4;
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_NONE);
-    assert(navigation.screen == QUOTA_SCREEN_NETWORK && navigation.network_focus == 0);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_DOWN, 2) == QUOTA_ACTION_NONE);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_RECONNECT);
     assert(navigation.screen == QUOTA_SCREEN_NETWORK);
-    quota_navigation_handle(&navigation, QUOTA_INPUT_UP, 2);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_OPEN_PHONE);
+    /* Network details are passive: button input causes no action or page change. */
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_UP, 2) == QUOTA_ACTION_NONE);
+    assert(navigation.screen == QUOTA_SCREEN_NETWORK);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_DOWN, 2) == QUOTA_ACTION_NONE);
+    assert(navigation.screen == QUOTA_SCREEN_NETWORK);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_NONE);
+    assert(navigation.screen == QUOTA_SCREEN_NETWORK);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 2) == QUOTA_ACTION_NONE);
+    assert(navigation.screen == QUOTA_SCREEN_SETTINGS);
+
+    navigation.settings_focus = 5;
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_NONE);
+    assert(navigation.screen == QUOTA_SCREEN_DEVICE_SETTINGS);
+    assert(navigation.device_settings_focus == 0); /* Hotspot is the default choice. */
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) ==
+           QUOTA_ACTION_OPEN_PHONE);
     assert(navigation.screen == QUOTA_SCREEN_PHONE && navigation.phone_step == 0);
+    assert(navigation.setup_return_screen == QUOTA_SCREEN_DEVICE_SETTINGS);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_RENEW_PHONE);
     assert(navigation.phone_step == 1);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_RENEW_PHONE);
@@ -388,13 +401,33 @@ static void test_portable_navigation(void)
     quota_navigation_handle(&navigation, QUOTA_INPUT_DOWN, 2);
     assert(navigation.phone_step == 0);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 2) == QUOTA_ACTION_CLOSE_PHONE);
-    assert(navigation.screen == QUOTA_SCREEN_NETWORK);
+    assert(navigation.screen == QUOTA_SCREEN_DEVICE_SETTINGS);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 2) == QUOTA_ACTION_NONE);
+    assert(navigation.screen == QUOTA_SCREEN_SETTINGS);
+
+    navigation.settings_focus = 5;
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_NONE);
+    assert(navigation.screen == QUOTA_SCREEN_DEVICE_SETTINGS &&
+           navigation.device_settings_focus == 0);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_UP, 2) == QUOTA_ACTION_NONE);
+    assert(navigation.device_settings_focus == 1);
+    navigation.configured = false;
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_NONE);
+    assert(navigation.screen == QUOTA_SCREEN_SETUP);
+    assert(navigation.setup_return_screen == QUOTA_SCREEN_DEVICE_SETTINGS);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 2) == QUOTA_ACTION_NONE);
+    assert(navigation.screen == QUOTA_SCREEN_DEVICE_SETTINGS);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 2) == QUOTA_ACTION_NONE);
+    assert(navigation.screen == QUOTA_SCREEN_SETTINGS);
+
     navigation.screen = QUOTA_SCREEN_AUTH;
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_NONE);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 2) == QUOTA_ACTION_CANCEL_AUTH);
     assert(navigation.screen == QUOTA_SCREEN_ACCOUNTS);
     /* Appended screens/actions must not renumber the legacy USB state contract. */
-    assert(QUOTA_SCREEN_SETUP == 5 && QUOTA_ACTION_PERSIST_SELECTION == 3);
+    assert(QUOTA_SCREEN_SETUP == 5 && QUOTA_SCREEN_NETWORK == 6 &&
+           QUOTA_SCREEN_PHONE == 7 && QUOTA_SCREEN_AUTH == 8 &&
+           QUOTA_SCREEN_DEVICE_SETTINGS == 9 && QUOTA_ACTION_PERSIST_SELECTION == 3);
 }
 
 static void test_navigation_after_external_settings_change(void)

@@ -80,6 +80,12 @@ typedef struct {
     char account_errors[QUOTA_MAX_ACCOUNTS][QUOTA_PORTABLE_ERROR_BYTES + 1];
     uint64_t account_retry_at[QUOTA_MAX_ACCOUNTS];
     quota_account_source_t account_sources[QUOTA_MAX_ACCOUNTS];
+    /* Password-free snapshot of the committed saved network inventory. */
+    uint8_t saved_network_count;
+    uint8_t selected_saved_network;
+    char saved_network_ssids[QUOTA_PORTABLE_NETWORKS][QUOTA_SSID_MAX_BYTES + 1];
+    bool pending_saved_network_present;
+    char pending_saved_network_ssid[QUOTA_SSID_MAX_BYTES + 1];
 } quota_portable_view_t;
 
 typedef struct {

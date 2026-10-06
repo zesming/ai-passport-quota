@@ -4,6 +4,50 @@ from runtime_helpers import ROOT, extract_function, compile_and_run
 
 
 class PowerRuntime(unittest.TestCase):
+    def test_awake_press_skips_render_but_wake_and_power_retry_do_not(self):
+        function = extract_function((ROOT / "main/main.c").read_text(), "process_event")
+        harness = r'''
+#include "quota_logic.h"
+#include <assert.h>
+#include <stdio.h>
+enum { BSP_BTN_DOWN, BSP_BTN_OK };
+enum { BSP_BTN_PRESS, BSP_BTN_CLICK };
+enum { QUOTA_APP_EVENT_BUTTON, QUOTA_APP_EVENT_SNAPSHOT, QUOTA_APP_EVENT_SETTINGS_RESULT,
+       QUOTA_APP_EVENT_CONFIGURATION_RESULT, QUOTA_APP_EVENT_CONNECTION, QUOTA_APP_EVENT_PAIRING_TICK };
+typedef struct { unsigned kind, button, button_event; bool success,auto_refresh;
+    uint16_t refresh_seconds,screen_timeout_seconds; } quota_app_event_t;
+static quota_display_state_t s_display;
+static quota_navigation_t s_navigation;
+static bool s_display_power_pending;
+static int s_view_work;
+static unsigned reads,renders,actions;
+static int64_t esp_timer_get_time(void) { return 1000000; }
+static void quota_service_get_view(void *view) { (void)view; reads++; }
+static void reconcile_account_selection(void *view) { (void)view; }
+static void render_application(void) { renders++; }
+static void process_button(const quota_app_event_t *e,void *view) {
+    (void)view;
+    if(quota_display_handle_key(&s_display,1000,e->button_event==BSP_BTN_PRESS?
+        QUOTA_KEY_PRESS:QUOTA_KEY_CLICK,e->button==BSP_BTN_DOWN)) actions++;
+}
+'''+function+r'''
+int main(void) {
+    quota_app_event_t event={.kind=QUOTA_APP_EVENT_BUTTON,.button=BSP_BTN_OK,.button_event=BSP_BTN_PRESS};
+    process_event(&event); assert(reads==0 && renders==0 && s_display.last_input_ms==1000);
+    s_display.sleeping=true; process_event(&event);
+    assert(reads==1 && renders==1 && !s_display.sleeping && s_display.consume_wake_gesture);
+    event.button_event=BSP_BTN_CLICK; process_event(&event);
+    assert(actions==0 && !s_display.consume_wake_gesture);
+    event.button_event=BSP_BTN_PRESS; process_event(&event);
+    assert(reads==2 && renders==2);
+    event.button_event=BSP_BTN_CLICK; process_event(&event); assert(actions==1);
+    s_display_power_pending=true; event.button_event=BSP_BTN_PRESS; process_event(&event);
+    assert(reads==4 && renders==4 && actions==1);
+    puts("awake PRESS fast path preserves complete wake and pending-power retries");
+}
+'''
+        compile_and_run(harness, "quota-press-render-", ("main/quota_logic.c", "tests/cjson/cJSON.c"))
+
     def test_display_retry_cpu_lock_and_application_wait(self):
         source = (ROOT / "main/main.c").read_text()
         functions = "\n".join(extract_function(source, name) for name in (
@@ -185,11 +229,11 @@ static void key(bsp_btn_ev_t event) {
     process_button(&button, &s_view_work); render_application();
 }
 static void open_setup(void) {
-    s_navigation.screen=QUOTA_SCREEN_NETWORK; s_navigation.network_focus=0;
+    s_navigation.screen=QUOTA_SCREEN_DEVICE_SETTINGS; s_navigation.device_settings_focus=0;
     key(BSP_BTN_CLICK); assert(s_navigation.screen==QUOTA_SCREEN_PHONE);
     render_application(); render_application();
     assert(s_navigation.screen==QUOTA_SCREEN_PHONE);
-    key(BSP_BTN_LONG); assert(s_navigation.screen==QUOTA_SCREEN_NETWORK);
+    key(BSP_BTN_LONG); assert(s_navigation.screen==QUOTA_SCREEN_DEVICE_SETTINGS);
 }
 int main(void) {
     quota_portable_login_state_t terminal[]={QUOTA_PORTABLE_LOGIN_SUCCESS,

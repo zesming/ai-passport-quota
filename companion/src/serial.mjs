@@ -131,17 +131,17 @@ export function startDeviceSerial(port, requestId) {
 export function serialErrorMessage(error) {
   if (error?.code === 'serial_timeout') {
     const flags = error.diagnostics;
-    if (!flags?.received_data) return '未收到设备回应。请先重新连接 USB，再打开小屏「电脑配对」窗口后发送配置。';
+    if (!flags?.received_data) return '未收到设备回应。请先重新连接 USB，等待小屏启动，再按「设备设置 → USB」打开「USB 配对」窗口并发送配置。';
     if (flags.result_seen) return '已收到设备回复，但配置请求未得到对应确认。请刷新此网页并重新配对。';
-    if (flags.ready_seen) return '设备已启动，但没有确认配置。请重新打开小屏配对窗口后重试。';
-    return '已收到 USB 信息，但没有配置确认。请先重新连接 USB，等待小屏启动，再打开「电脑配对」窗口后发送配置。';
+    if (flags.ready_seen) return '设备已启动，但没有确认配置。请按「设备设置 → USB」重新打开「USB 配对」窗口后重试。';
+    return '已收到 USB 信息，但没有配置确认。请先重新连接 USB，等待小屏启动，再按「设备设置 → USB」打开「USB 配对」窗口并发送配置。';
   }
   if (['serial_read_error', 'serial_write_error', 'serial_closed'].includes(error?.code)) return 'USB 连接中断。请关闭占用设备的串口工具，重新插拔 USB 线后重试。';
   const rejected = {
-    pairing_closed: '小屏配对窗口已关闭。请在小屏重新打开配对窗口后重试。',
+    pairing_closed: '小屏「USB 配对」窗口已关闭。请按「设备设置 → USB」重新打开后重试。',
     invalid_config: '设备收到配置，但信息无效。请检查 Wi‑Fi 名称和本机地址后重试。',
     storage_error: '设备收到配置，但保存失败。请重启小屏后重试。',
-    mode_switch_failed: '电脑连接配置已保存，但切换到电脑同步模式失败。请重试配对或在小屏设置中切换模式。',
+    mode_switch_failed: '电脑采集配置已保存，但采集器来源启用失败。请按「设备设置 → USB」重新配对。',
     frame_too_long: '配置内容超过设备协议允许的大小。',
     unsupported_version: '网页与设备固件版本不匹配。请更新到配套版本。',
   };

@@ -132,6 +132,7 @@ typedef enum {
     QUOTA_SCREEN_NETWORK,
     QUOTA_SCREEN_PHONE,
     QUOTA_SCREEN_AUTH,
+    QUOTA_SCREEN_DEVICE_SETTINGS,
 } quota_screen_t;
 
 typedef enum {
@@ -162,12 +163,12 @@ typedef struct {
     uint8_t settings_focus;
     uint8_t interval_focus;
     uint8_t sleep_focus;
-    uint8_t network_focus;
     uint8_t phone_step;
     uint16_t refresh_seconds;
     bool auto_refresh;
     uint16_t screen_timeout_seconds;
     bool configured;
+    uint8_t device_settings_focus;
 } quota_navigation_t;
 
 typedef enum {

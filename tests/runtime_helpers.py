@@ -18,12 +18,12 @@ def extract_function(source, name, declaration=None):
     return match[0]
 
 
-def compile_and_run(harness, prefix, sources=()):
+def compile_and_run(harness, prefix, sources=(), flags=()):
     with tempfile.TemporaryDirectory(prefix=prefix) as directory:
         path = Path(directory)
         (path / "test.c").write_text(harness)
         subprocess.run([os.environ.get("CC", "cc"), "-std=c11", "-Wall", "-Wextra",
-                        "-Werror", "-I" + str(ROOT / "main"), "-I" + str(ROOT / "tests/cjson"),
+                        "-Werror", *flags, "-I" + str(ROOT / "main"), "-I" + str(ROOT / "tests/cjson"),
                         str(path / "test.c"), *(str(ROOT / name) for name in sources),
                         "-lm", "-o", str(path / "test")], check=True)
         subprocess.run([str(path / "test")], check=True)
