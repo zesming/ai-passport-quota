@@ -16,7 +16,7 @@ Short keys emit on debounced release without the 180 ms multi-click wait; repeat
 
 Build/Host tests: **PASS**, complete ESP-IDF 5.5.3 gate, font coverage, navigation, committed-network/candidate separation, stable/account-row redraw and power lifecycle regressions. The locked button handler passed ASan/UBSan with rapid taps, subsequent holds, bounce, wake and 495/500/515/700 ms release boundaries. Companion: **55 tests and production build PASS**. Browser: **synthetic route/return and chooser layout checks PASS**. Independent review findings are closed.
 
-Verified bundle `198051593cd560bc62da8ad6caa201e8935c293ac89cf1b4438b95d2fec8be4a`, app 1,760,096 bytes, version `320e68e-dirty`, ELF SHA-256 `619493dd85347a16eb01a45c57abe657deb87ea3e6989fdbeb93a4ed7fd8c295`. Device installation and physical response/wake/pairing acceptance are pending: no Passport USB connection was available after validation. These checks do not measure hardware latency or establish native provider authorization.
+Verified bundle `198051593cd560bc62da8ad6caa201e8935c293ac89cf1b4438b95d2fec8be4a`, app 1,760,096 bytes, version `320e68e-dirty`, ELF SHA-256 `619493dd85347a16eb01a45c57abe657deb87ea3e6989fdbeb93a4ed7fd8c295`. Device tests: **component installation PASS** on the reconnected ESP32-C3 revision 1.1, embedded 8 MB board. The device partition table matched; three component write hashes passed at `0x0` / `0x8000` / `0x10000`, followed by reset. Both NVS partitions and PHY were excluded from erase ranges. The owner confirmed the new menu/chooser, repeated key responses and sleep/wake behavior. These checks do not measure hardware latency or establish native provider authorization.
 
 ### 2026-10-06 — USB pairing receive fix
 
