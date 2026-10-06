@@ -3,6 +3,7 @@
 #include "quota_store.h"
 
 #include "cJSON.h"
+#include "driver/usb_serial_jtag_vfs.h"
 #include "esp_event.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
@@ -943,8 +944,11 @@ bool quota_service_init(void)
 bool quota_service_start(void)
 {
     if (s_events == NULL || s_mutex == NULL) return false;
+    /* The basic USB console polls the FIFO without waiting. In IDF 5.5.3,
+     * O_NONBLOCK instead checks a driver ring buffer that we do not install. */
+    usb_serial_jtag_vfs_use_nonblocking();
     int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
-    if (flags < 0 || fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK) < 0) return false;
+    if (flags < 0 || fcntl(STDIN_FILENO, F_SETFL, flags & ~O_NONBLOCK) < 0) return false;
     if (s_network_task == NULL && xTaskCreate(network_task, "quota_network",
             NETWORK_TASK_STACK, NULL, NETWORK_TASK_PRIORITY, &s_network_task) != pdPASS) {
         s_network_task = NULL;

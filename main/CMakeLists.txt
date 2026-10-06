@@ -14,5 +14,5 @@ idf_component_register(
          "${CMAKE_CURRENT_LIST_DIR}/../assets/fonts/quota_font_16.c"
     INCLUDE_DIRS "."
     EMBED_TXTFILES "portable_setup.html"
-    REQUIRES bsp esp_event esp_http_client esp_http_server esp_netif esp_pm esp_timer esp_wifi json nvs_flash mbedtls lwip
+    REQUIRES bsp esp_driver_usb_serial_jtag esp_event esp_http_client esp_http_server esp_netif esp_pm esp_timer esp_wifi json nvs_flash mbedtls lwip
 )

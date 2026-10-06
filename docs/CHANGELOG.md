@@ -8,6 +8,14 @@
 
 ## Unreleased
 
+### 2026-10-06 — USB pairing receive fix
+
+Fixed pairing timeouts while the physical computer-pairing window was open. ESP-IDF 5.5.3's basic USB VFS skips hardware input when `O_NONBLOCK` is set without an installed driver. Startup now explicitly selects its non-waiting FIFO callbacks and clears that flag; no reader task or driver buffers were added.
+
+Build and Host tests: **PASS**, complete gate and independent review. The new installed-SDK regression reproduces the old failure and validates a 4096-byte frame received in 64-byte parts, immediate empty reads and one worker. Existing window, sleep and partial-frame checks passed. Synthetic FIFO checks do not prove physical USB transport.
+
+Device tests: **component installation PASS**. Verified bundle `e11a8d6e38fc28c9bdd944ce9a901abc7ae160793dc31ee81d1a770214e101ef` (app version `9aec731-dirty`, ELF SHA-256 `d89adacc95b241dbac8e54b23420fedf2e243c1a9aed47fcfee7dc8d2a041ae4`) was written at `0x0` / `0x8000` / `0x10000`, with matching device partitions and three successful write-hash checks. NVS and PHY were preserved. Desktop pairing and subsequent collector updates await device acceptance.
+
 ### 2026-10-06 — Installed unified-account firmware
 
 Installed verified bundle `31c0f267df5ed0cdc655a48263f110ce3a04f54362ddf8528765401b7e4e9a32` (app version `c7a0544`) on the connected ESP32-C3 revision 1.1, 8 MB board. The device partition table matched before writing. Bootloader at `0x0`, partition table at `0x8000` and app at `0x10000` each passed write-hash verification. The erase ranges excluded both NVS partitions and PHY; no chip erase was used.

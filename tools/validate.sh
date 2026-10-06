@@ -58,6 +58,7 @@ run_firmware_checks() (
     fi
 
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_quota_direct_sdk_headers.py
+    PYTHONDONTWRITEBYTECODE=1 python3 tests/test_quota_usb_sdk.py
 
     validation_build_dir="$(mktemp -d /tmp/ai-passport-firmware.XXXXXX)"
     trap 'case "${validation_build_dir}" in /tmp/ai-passport-firmware.*) rm -rf -- "${validation_build_dir}" ;; esac' EXIT
