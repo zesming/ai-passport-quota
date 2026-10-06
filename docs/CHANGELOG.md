@@ -14,9 +14,11 @@ Corrected a USB receive defect found while investigating pairing timeouts. ESP-I
 
 Build and Host tests: **PASS**, complete gate and independent review. The new installed-SDK regression reproduces the old failure and validates a 4096-byte frame received in 64-byte parts, immediate empty reads and one worker. Existing window, sleep and partial-frame checks passed. Synthetic FIFO checks do not prove physical USB transport.
 
-Device tests: **component installation PASS**. Verified bundle `e11a8d6e38fc28c9bdd944ce9a901abc7ae160793dc31ee81d1a770214e101ef` (app version `9aec731-dirty`, ELF SHA-256 `d89adacc95b241dbac8e54b23420fedf2e243c1a9aed47fcfee7dc8d2a041ae4`) was written at `0x0` / `0x8000` / `0x10000`, with matching device partitions and three successful write-hash checks. NVS and PHY were preserved. Desktop pairing and subsequent collector updates await device acceptance.
+Device tests: **component installation PASS**. Verified bundle `e11a8d6e38fc28c9bdd944ce9a901abc7ae160793dc31ee81d1a770214e101ef` (app version `9aec731-dirty`, ELF SHA-256 `d89adacc95b241dbac8e54b23420fedf2e243c1a9aed47fcfee7dc8d2a041ae4`) was written at `0x0` / `0x8000` / `0x10000`, with matching device partitions and three successful write-hash checks. NVS and PHY were preserved.
 
 The device acknowledged a harmless invalid-version probe after USB was opened before entering the physical window. Browser pairing still timed out and the screen returned home. The desktop flow now opens USB and releases reset control lines first, then waits for the physical window before sending on the same connection. Companion tests: **55 PASS**, production build and initial browser step/disabled-send check **PASS**. A reopened-port 4096-byte probe stalled without an ACK; physical bulk/configuration acceptance remains pending. Both GitHub checks passed for firmware-fix commit `e2f2386`.
+
+Device tests: **desktop pairing PASS**, user-confirmed saved-source ACK using the new connect/window/send sequence. The running collector received new authenticated device requests afterward. This validates the actual submitted configuration and connection; maximum-size hardware frames and displayed account observations were not separately accepted.
 
 ### 2026-10-06 — Installed unified-account firmware
 
