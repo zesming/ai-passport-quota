@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { startDeviceSerial, serialErrorMessage } from '../src/serial.mjs';
+import { openDeviceSerial, startDeviceSerial, serialErrorMessage } from '../src/serial.mjs';
 
 const encoder = new TextEncoder();
 const requestId = '0123abcd';
 const ack = (id = requestId, ok = true, error = null) => `@AIQ:${JSON.stringify({ v: 1, op: 'result', request_id: id, ok, error })}\r\n`;
 const frame = encoder.encode('@AIQ:{"v":1,"op":"configure"}\n');
 
-function fixture(t, onWrite = () => {}) {
+function fixture(t, onWrite = () => {}, start = true) {
   let input;
   const events = [];
   const port = {
@@ -21,10 +21,50 @@ function fixture(t, onWrite = () => {}) {
       abort() { events.push('abort'); },
     }),
   };
-  const session = startDeviceSerial(port, requestId);
-  t.after(() => session.close());
+  const session = start ? startDeviceSerial(port, requestId) : null;
+  t.after(() => session?.close());
   return { port, session, input, events };
 }
+
+test('opening USB prepares control signals but waits for an explicit send on the same port', async t => {
+  const { port, events } = fixture(t, (_, input) => input.enqueue(encoder.encode(ack())), false);
+  let opens = 0, closes = 0;
+  port.open = async options => {
+    assert.deepEqual(options, { baudRate: 115200, bufferSize: 4096, flowControl: 'none' });
+    opens++;
+  };
+  port.setSignals = async signals => {
+    assert.deepEqual(signals, { dataTerminalReady: false, requestToSend: false });
+    assert.equal(port.readable.locked, true);
+    events.push('signals');
+  };
+  port.close = async () => {
+    assert.equal(port.readable.locked || port.writable.locked, false);
+    closes++;
+  };
+  const session = await openDeviceSerial(port, requestId);
+  t.after(() => session.close());
+  assert.equal(events.includes('write'), false);
+  assert.equal((await session.send(frame, { timeoutMs: 100, bootWaitMs: 0 })).ok, true);
+  assert.equal(events.indexOf('signals') < events.indexOf('write'), true);
+  await session.close();
+  assert.equal(opens, 1);
+  assert.equal(closes, 1);
+});
+
+test('a failed control-signal setup releases stream locks and the opened port', async t => {
+  const { port, events } = fixture(t, () => {}, false);
+  let closes = 0;
+  port.open = async () => {};
+  port.setSignals = async () => { throw new Error('signals unavailable'); };
+  port.close = async () => {
+    assert.equal(port.readable.locked || port.writable.locked, false);
+    closes++;
+  };
+  await assert.rejects(openDeviceSerial(port, requestId), /signals unavailable/);
+  assert.equal(events.includes('write'), false);
+  assert.equal(closes, 1);
+});
 
 test('USB receives before pairing preparation and retains an ACK arriving during the write', async t => {
   const { session, input, events, port } = fixture(t, async (_, controller) => {

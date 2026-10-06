@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { DeviceSerialError, serialErrorMessage, startDeviceSerial } from './serial.mjs';
+import { DeviceSerialError, serialErrorMessage, openDeviceSerial } from './serial.mjs';
 import { deepSeekRmbDisplay } from './deepseek-display.mjs';
 import { INTERVALS as REFRESH_OPTIONS, SCREEN_TIMEOUT_SECONDS as SCREEN_TIMEOUT_OPTIONS, DEFAULT_SCREEN_TIMEOUT_SECONDS, MAX_ACCOUNTS, privateIPv4 } from '../shared/contract.mjs';
 
@@ -287,6 +287,8 @@ export function App() {
   const [serialError, setSerialError] = useState('');
   const [serialMessage, setSerialMessage] = useState('');
   const [serialBusy, setSerialBusy] = useState(false);
+  const [serialConnected, setSerialConnected] = useState(false);
+  const serialConnection = useRef(null);
   const [selectedAddress, setSelectedAddress] = useState('');
   const [copiedLaunch, setCopiedLaunch] = useState(false);
   const pollLock = useRef(false);
@@ -402,8 +404,22 @@ export function App() {
   }, [addresses, selectedAddress]);
 
   useEffect(() => {
-    if (panel !== 'setup') setWifiPassword('');
+    if (panel !== 'setup') void disconnectDevice();
   }, [panel]);
+
+  useEffect(() => {
+    const disconnected = event => {
+      if (serialConnection.current?.port !== (event.port ?? event.target)) return;
+      void disconnectDevice();
+      setSerialMessage('');
+      setSerialError('USB 已断开。请重新连接 USB，再打开小屏配对窗口。');
+    };
+    navigator.serial?.addEventListener('disconnect', disconnected);
+    return () => {
+      navigator.serial?.removeEventListener('disconnect', disconnected);
+      void disconnectDevice();
+    };
+  }, []);
 
   useEffect(() => () => window.clearTimeout(pressTimer.current), []);
 
@@ -643,6 +659,45 @@ export function App() {
     window.setTimeout(() => { wasLongPress.current = false; }, 0);
   }
 
+  async function disconnectDevice() {
+    const connection = serialConnection.current;
+    serialConnection.current = null;
+    setSerialConnected(false);
+    setWifiPassword('');
+    await connection?.session?.close();
+  }
+
+  async function connectDevice() {
+    if (serialBusy || serialConnection.current) return;
+    setSerialError('');
+    setSerialMessage('');
+    if (!navigator.serial?.requestPort) {
+      setSerialError('请在桌面版 Chrome 或 Edge 中打开本地应用。');
+      return;
+    }
+    const connection = { requestId: makeRequestId(), session: null };
+    serialConnection.current = connection;
+    setSerialBusy(true);
+    try {
+      const port = await navigator.serial.requestPort({ filters: [{ usbVendorId: 0x303a, usbProductId: 0x1001 }] });
+      if (serialConnection.current !== connection) return;
+      connection.port = port;
+      connection.session = await openDeviceSerial(port, connection.requestId);
+      if (serialConnection.current !== connection) { await connection.session.close(); return; }
+      setSerialConnected(true);
+      setSerialMessage('USB 已连接。等待小屏启动，再打开「电脑配对」窗口，然后发送配置。');
+    } catch (error) {
+      if (serialConnection.current !== connection) return;
+      serialConnection.current = null;
+      setSerialError(error?.name === 'NotFoundError' || error?.name === 'AbortError'
+        ? '未选择串口设备。'
+        : error?.name === 'InvalidStateError' ? '设备串口正在使用中。请关闭其他配对网页或串口工具后重试。'
+          : serialErrorMessage(error) ?? '无法连接 USB。请确认设备已启动，再重新连接。');
+    } finally {
+      setSerialBusy(false);
+    }
+  }
+
   async function configureDevice(event) {
     event.preventDefault();
     setSerialError('');
@@ -661,23 +716,15 @@ export function App() {
       setSerialError('请先选择一个本机私有 IPv4 地址。');
       return;
     }
-    if (!navigator.serial?.requestPort) {
-      setSerialError('此浏览器没有 Web Serial 支持。请在桌面版 Chrome 或 Edge 中打开本地应用。');
+    const connection = serialConnection.current;
+    if (!connection?.session || !serialConnected) {
+      setSerialError('请先连接 USB，再打开小屏「电脑配对」窗口。');
       return;
     }
 
-    let port = null;
-    let opened = false;
-    let serial = null;
     let pairingSession = null;
     setSerialBusy(true);
     try {
-      port = await navigator.serial.requestPort({ filters: [{ usbVendorId: 0x303a, usbProductId: 0x1001 }] });
-      await port.open({ baudRate: 115200, bufferSize: 4096 });
-      opened = true;
-      const requestId = makeRequestId();
-      serial = startDeviceSerial(port, requestId);
-
       const pairing = await requestJson('/api/pairing', {
         method: 'POST',
         body: { address: selectedAddress },
@@ -694,7 +741,7 @@ export function App() {
       const frame = {
         v: 1,
         op: 'configure',
-        request_id: requestId,
+        request_id: connection.requestId,
         ssid: wifiSsid,
         password: wifiPassword,
         base_url: pairing.base_url,
@@ -704,7 +751,7 @@ export function App() {
       };
       const encoded = new TextEncoder().encode(`@AIQ:${JSON.stringify(frame)}\n`);
       if (encoded.byteLength > 4096) throw new Error('配置内容超过设备协议允许的大小。');
-      const ack = await serial.send(encoded);
+      const ack = await connection.session.send(encoded);
       if (!ack.ok) throw new DeviceSerialError(`device_${ack.error}`, {});
       setSerialMessage('采集器来源已保存。Wi‑Fi 配置仍需设备连接验证，请查看设备结果；再在设备设置页导入所需账户。');
       setToast('电脑采集器来源已保存，网络待验证。');
@@ -724,11 +771,7 @@ export function App() {
         void requestJson('/api/pairing/abort', { method: 'POST', body: { session_id: pairingSession } }).catch(() => {});
       }
     } finally {
-      try { await serial?.close(); } catch { /* close port below */ }
-      if (port && opened) {
-        try { await port.close(); } catch { /* device may already have closed */ }
-      }
-      setWifiPassword('');
+      await disconnectDevice();
       setSerialBusy(false);
     }
   }
@@ -903,7 +946,10 @@ export function App() {
 
           {apiState && panel === 'setup' && <div className="setup-panel">
             <div className="setup-title"><div><h3>配对可选电脑采集器</h3><p>通过 USB 配对当前手动运行的采集器。</p></div><span className={`device-state ${apiState.device?.enabled ? 'good' : ''}`}><i />{apiState.device?.enabled ? '电脑采集服务已启用' : '尚未连接设备'}</span></div>
-            <div className="setup-gate"><strong>先在设备屏幕上进入「设置 / 电脑采集配对」</strong><span>设备会在该页面开放最多 120 秒的配置时间。准备好后，再点击连接按钮选择串口。</span></div>
+            <div className="setup-gate"><strong>{serialConnected ? '2. 打开小屏「电脑配对」，再发送配置' : '1. 先连接 USB，等待小屏启动'}</strong><span>USB 连接可能使设备重启。连接后再打开小屏配对窗口，并在 120 秒内发送配置。</span></div>
+            {serialConnected
+              ? <button type="button" className="secondary wide" onClick={() => void disconnectDevice()} disabled={serialBusy}>取消 USB 连接</button>
+              : <button type="button" className="secondary wide" onClick={connectDevice} disabled={serialBusy || Boolean(busyAction)}>{serialBusy ? '正在连接 USB…' : '连接 USB'}</button>}
             <div className="setup-current-device">
               <div><span>本机设备地址</span><strong>{apiState.device?.base_url || '未配置'}</strong></div>
               <div><span>设备最近连接</span><strong>{apiState.device?.last_seen ? formatDate(apiState.device.last_seen) : '尚无连接记录'}</strong></div>
@@ -917,7 +963,7 @@ export function App() {
               {serialError && <div className="serial-error" role="alert">{serialError}</div>}
               {serialMessage && <div className="serial-success" role="status">{serialMessage}</div>}
               {!navigator.serial?.requestPort && <div className="serial-hint">当前浏览器未提供 Web Serial。请在连接到本机应用的桌面版 Chrome 或 Edge 中操作。</div>}
-              <button type="submit" className="primary wide" disabled={serialBusy || Boolean(busyAction) || !addresses.length || !apiState.csrf_token}>{serialBusy ? <><span className="button-spinner" />正在通过 USB 配对采集器…</> : '通过 USB 配对采集器'}</button>
+              <button type="submit" className="primary wide" disabled={!serialConnected || serialBusy || Boolean(busyAction) || !addresses.length || !apiState.csrf_token}>{serialBusy && serialConnected ? <><span className="button-spinner" />正在发送配置…</> : '发送配置'}</button>
             </form>
             <div className="setup-footnote"><strong>连接注意</strong><p>配置过程最多等待设备响应 15 秒。完成后串口会关闭，密码会清除。Wi‑Fi 或本机证书 / IP 变化时，请重新进入设备设置页并配对一次。</p></div>
             <div className="lan-controls"><div><strong>可选电脑采集服务</strong><small>{apiState.device?.enabled ? `当前服务地址：${apiState.device.base_url || '本机'}` : '连接设备后，本机程序会启用安全同步服务。'}</small></div><button type="button" className="secondary" onClick={stopDeviceSync} disabled={!apiState.device?.enabled || Boolean(busyAction)}>停止同步</button></div>

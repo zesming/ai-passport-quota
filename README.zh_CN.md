@@ -40,7 +40,7 @@ npm run build
 npm start
 ```
 
-打开 **http://127.0.0.1:4317/**。可选兼容采集器使用隔离私有账户档案。Claude 在正常使用时由官方 statusline 提供额度；刷新不发送付费模型提示。USB 配对需要桌面 Chrome/Edge 和 Passport 的物理**电脑配对**窗口，设备通过 **4318** 端口固定证书 HTTPS 同步。不安装自启动。电脑私有资料位于 `~/.local/share/ai-passport-quota/` 或 `AIQ_STATE_DIR`。
+打开 **http://127.0.0.1:4317/**。可选兼容采集器使用隔离私有账户档案。Claude 在正常使用时由官方 statusline 提供额度；刷新不发送付费模型提示。在桌面 Chrome/Edge 中先点**连接 USB**，等待小屏启动，再打开设备的**电脑配对**窗口并发送配置。设备通过 **4318** 端口固定证书 HTTPS 同步。不安装自启动。电脑私有资料位于 `~/.local/share/ai-passport-quota/` 或 `AIQ_STATE_DIR`。
 
 ## 截图与开发
 

@@ -9,6 +9,30 @@ export class DeviceSerialError extends Error {
   }
 }
 
+// Open once before the user enters the physical window: changing USB control
+// lines can reset a C3, so configuration must not reopen the port.
+export async function openDeviceSerial(port, requestId) {
+  let session;
+  let opened = false;
+  const close = async () => {
+    await session?.close();
+    if (opened) {
+      opened = false;
+      try { await port.close(); } catch { /* disconnected already */ }
+    }
+  };
+  try {
+    await port.open({ baudRate: 115200, bufferSize: 4096, flowControl: 'none' });
+    opened = true;
+    session = startDeviceSerial(port, requestId);
+    await port.setSignals({ dataTerminalReady: false, requestToSend: false });
+    return { send: session.send, close };
+  } catch (error) {
+    await close();
+    throw error;
+  }
+}
+
 // Start receiving as soon as the port opens, including while pairing HTTP and
 // USB writes are pending. Only diagnostic flags survive; raw input is discarded.
 export function startDeviceSerial(port, requestId) {
@@ -107,10 +131,10 @@ export function startDeviceSerial(port, requestId) {
 export function serialErrorMessage(error) {
   if (error?.code === 'serial_timeout') {
     const flags = error.diagnostics;
-    if (!flags?.received_data) return '未收到设备的 USB 回应。请重新插拔 USB 线后重试，并选择 USB JTAG/serial debug unit。';
+    if (!flags?.received_data) return '未收到设备回应。请先重新连接 USB，再打开小屏「电脑配对」窗口后发送配置。';
     if (flags.result_seen) return '已收到设备回复，但配置请求未得到对应确认。请刷新此网页并重新配对。';
     if (flags.ready_seen) return '设备已启动，但没有确认配置。请重新打开小屏配对窗口后重试。';
-    return '已收到 USB 信息，但设备未完成配置。请重新插拔 USB 线，等待小屏启动后重试。';
+    return '已收到 USB 信息，但没有配置确认。请先重新连接 USB，等待小屏启动，再打开「电脑配对」窗口后发送配置。';
   }
   if (['serial_read_error', 'serial_write_error', 'serial_closed'].includes(error?.code)) return 'USB 连接中断。请关闭占用设备的串口工具，重新插拔 USB 线后重试。';
   const rejected = {

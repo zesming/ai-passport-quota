@@ -40,7 +40,7 @@ npm run build
 npm start
 ```
 
-Open **http://127.0.0.1:4317/**. The optional compatibility collector uses isolated private profiles. Claude's official statusline supplies observations during normal usage; refreshing sends no paid model prompt. USB pairing requires desktop Chrome/Edge and Passport's physical **Computer pairing** window. The device uses pinned HTTPS on port **4318**. No autostart is installed. Private computer data lives in `~/.local/share/ai-passport-quota/` or `AIQ_STATE_DIR`.
+Open **http://127.0.0.1:4317/**. The optional compatibility collector uses isolated private profiles. Claude's official statusline supplies observations during normal usage; refreshing sends no paid model prompt. In desktop Chrome/Edge, click **Connect USB**, wait for Passport to start, then open its physical **Computer pairing** window and send configuration. The device uses pinned HTTPS on port **4318**. No autostart is installed. Private computer data lives in `~/.local/share/ai-passport-quota/` or `AIQ_STATE_DIR`.
 
 ## Screenshots and development
 
