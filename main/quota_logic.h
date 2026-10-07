@@ -22,6 +22,8 @@
 #define QUOTA_BALANCE_CURRENCIES 2
 #define QUOTA_CREDITS_BALANCE_BYTES 32
 #define QUOTA_PAIRING_WINDOW_MS 120000
+/* A USB session opener silent this long has lost its page and may be replaced by a new opener. */
+#define QUOTA_USB_OPENER_IDLE_MS 6000
 
 typedef enum {
     QUOTA_PROVIDER_CODEX = 0,

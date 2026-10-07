@@ -152,7 +152,7 @@ static companion_workspace_t *s_companion_work;
 static quota_frame_decoder_t *s_usb_decoder;
 static atomic_uint_fast64_t s_usb_deadline;
 static atomic_bool s_usb_io_busy;
-static uint64_t s_usb_partial_at;
+static uint64_t s_usb_partial_at,s_usb_opener_at;
 static char s_usb_session[QUOTA_USB_SESSION_BYTES+1],s_usb_opener[9];
 static bool s_balance_cache_present;
 
@@ -897,6 +897,11 @@ static void send_usb_state(const char *id,const char *session)
     else send_usb_result(id,NULL,usb_authorized(session)?"state_unavailable":"session_expired",false);
     quota_portable_clear_secret(response,QUOTA_USB_RESPONSE_BYTES);free(response);
 }
+static void new_usb_session(void)
+{
+    for(unsigned i=0;i<QUOTA_USB_SESSION_BYTES;i++)s_usb_session[i]="0123456789abcdef"[esp_random()&15];
+    s_usb_session[QUOTA_USB_SESSION_BYTES]=0;
+}
 static void handle_serial_frame(const char *frame,size_t length)
 {
     quota_usb_request_t *request=calloc(1,sizeof(*request));const char *error=NULL;
@@ -916,9 +921,12 @@ static void handle_serial_frame(const char *frame,size_t length)
         if(saved){set_system_time_if_newer(time);quota_service_close_pairing_window();}
     }else if(request->op==QUOTA_USB_OPEN){
         if(!usb_active())send_usb_result(request->request_id,NULL,"session_expired",false);
-        else if(s_usb_opener[0]&&strcmp(s_usb_opener,request->request_id))send_usb_result(request->request_id,NULL,"session_busy",false);
+        /* One serial port has one host owner, so an opener silent past the idle limit has lost its link (page reload) and may be replaced. */
+        else if(s_usb_opener[0]&&strcmp(s_usb_opener,request->request_id)&&monotonic_ms()-s_usb_opener_at<QUOTA_USB_OPENER_IDLE_MS)send_usb_result(request->request_id,NULL,"session_busy",false);
         else{
-            memcpy(s_usb_opener,request->request_id,9);
+            /* A takeover revokes the previous page's session so only one page keeps control. */
+            if(s_usb_opener[0]&&strcmp(s_usb_opener,request->request_id))new_usb_session();
+            memcpy(s_usb_opener,request->request_id,9);s_usb_opener_at=monotonic_ms();
             char response[320];uint64_t left=(usb_deadline_ms()-monotonic_ms()+999)/1000;
             int bytes=snprintf(response,sizeof(response),"@AIQ:{\"v\":2,\"op\":\"result\",\"request_id\":\"%.8s\",\"ok\":true,\"session_id\":\"%.32s\",\"remaining_seconds\":%u,\"max_command_bytes\":2048,\"max_frame_bytes\":4096,\"max_state_bytes\":16384}\n",request->request_id,s_usb_session,(unsigned)left);
             if(usb_active()&&bytes>0&&(size_t)bytes<sizeof(response))(void)fwrite(response,1,(size_t)bytes,stdout);
@@ -926,10 +934,12 @@ static void handle_serial_frame(const char *frame,size_t length)
         }
     }else if(!usb_authorized(request->session_id))send_usb_result(request->request_id,NULL,usb_active()?"invalid_session":"session_expired",false);
     else if(request->op==QUOTA_USB_STATE){
+        s_usb_opener_at=monotonic_ms();
         char id[9],session[QUOTA_USB_SESSION_BYTES+1];memcpy(id,request->request_id,sizeof(id));memcpy(session,request->session_id,sizeof(session));
         quota_portable_clear_secret(request,sizeof(*request));free(request);request=NULL;
         send_usb_state(id,session);quota_portable_clear_secret(session,sizeof(session));
     }else{
+        s_usb_opener_at=monotonic_ms();
         quota_portable_submit_result_t result=QUOTA_PORTABLE_SUBMIT_INVALID;
 #ifdef ESP_PLATFORM
         if(request->op==QUOTA_USB_COMMAND)result=quota_portable_service_submit(&request->body.command,QUOTA_SETUP_USB);
@@ -956,8 +966,7 @@ static void service_pairing_tick(bool sleeping)
         if(!quota_portable_service_prepare_usb())return;
 #endif
         unsigned char ignored[64];unsigned drained=0;while(drained<4096){ssize_t count=read(STDIN_FILENO,ignored,sizeof(ignored));if(count<=0)break;drained+=(unsigned)count;}
-        for(unsigned i=0;i<QUOTA_USB_SESSION_BYTES;i++)s_usb_session[i]="0123456789abcdef"[esp_random()&15];
-        s_usb_session[QUOTA_USB_SESSION_BYTES]=0;s_usb_opener[0]=0;
+        new_usb_session();s_usb_opener[0]=0;
         mutex_lock();s_pairing_screen_open=true;s_pairing_opened_at_ms=(int64_t)monotonic_ms();
         atomic_store(&s_usb_deadline,(uint64_t)s_pairing_opened_at_ms+QUOTA_PAIRING_WINDOW_MS);
         s_view.pairing_preparing=false;s_view.pairing_active=true;s_view.pairing_seconds_left=QUOTA_PAIRING_WINDOW_MS/1000;mutex_unlock();

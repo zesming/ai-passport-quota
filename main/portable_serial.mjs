@@ -90,7 +90,7 @@ function startReader(port, { maxLineBytes = DEFAULT_LINE_BYTES } = {}) {
   })().catch(() => { if (!stopped) fail('serial_read_error'); });
 
   return {
-    async send(frameBytes, requestId, { timeoutMs = 15000, bootWaitMs = 1500 } = {}) {
+    async send(frameBytes, requestId, { timeoutMs = 15000, bootWaitMs = 1500, onWritten } = {}) {
       if (!(frameBytes instanceof Uint8Array)) frameBytes = new Uint8Array(frameBytes);
       if (frameBytes.byteLength > 4096) throw new DeviceSerialError('frame_too_long', diagnostics);
       if (!REQUEST_ID.test(requestId ?? '')) throw new DeviceSerialError('serial_invalid_request_id', diagnostics);
@@ -117,6 +117,7 @@ function startReader(port, { maxLineBytes = DEFAULT_LINE_BYTES } = {}) {
       }, timeoutMs);
       const write = writer.write(frameBytes).then(() => {
         current.writePending = false;
+        onWritten?.();
         return response;
       }, () => {
         current.writePending = false;
@@ -211,10 +212,10 @@ export class UsbDeviceSession {
     this.pendingMutation = null;
   }
 
-  async exchange(frame, { timeoutMs = 15000, retryOnce = false, maxFrameBytes = 4096 } = {}) {
+  async exchange(frame, { timeoutMs = 15000, retryOnce = false, maxFrameBytes = 4096, onWritten } = {}) {
     const encoded = encoder.encode(`@AIQ:${JSON.stringify(frame)}\n`);
     if (encoded.byteLength > maxFrameBytes) throw new DeviceSerialError('frame_too_long');
-    const send = () => this.serial.send(encoded, frame.request_id, { timeoutMs, bootWaitMs: 0 });
+    const send = () => this.serial.send(encoded, frame.request_id, { timeoutMs, bootWaitMs: 0, onWritten });
     try { return await send(); } catch (error) {
       if (!retryOnce || error?.code !== 'serial_timeout' || this.closed) throw error;
       return send();
@@ -287,14 +288,17 @@ export class UsbDeviceSession {
     const pending = { requestId: frame.request_id, sessionId: this.sessionId };
     this.pendingMutation = pending;
     const remainingMs = () => Math.max(0, this.sessionExpiresAt - this.now());
-    const send = timeoutMs => this.exchange(packet, { timeoutMs, maxFrameBytes: this.limits.max_frame_bytes });
+    // onTransmit fires only once a frame has been written to the port; a rejection before that never reached the device.
+    const send = timeoutMs => this.exchange(packet, { timeoutMs, maxFrameBytes: this.limits.max_frame_bytes, onWritten: frame.onTransmit });
     let result;
+    let retried = false;
     try {
       result = await send(Math.min(90000, remainingMs()));
     } catch (error) {
       if (error?.code !== 'serial_timeout' || this.closed || pending.sessionId !== this.sessionId || remainingMs() <= 0) {
         throw error;
       }
+      retried = true;
       try {
         result = await send(Math.min(90000, remainingMs()));
       } catch {
@@ -303,7 +307,8 @@ export class UsbDeviceSession {
     }
     if (!result.ok) {
       this.pendingMutation = null;
-      throw new DeviceSerialError(`device_${result.error_code ?? result.error ?? 'rejected'}`);
+      // retry_used: a rejection after a resend may answer the resend while the first write was already processed.
+      throw new DeviceSerialError(`device_${result.error_code ?? result.error ?? 'rejected'}`, { retry_used: retried });
     }
     this.assertSession(result);
     if (result.accepted !== true || result.request_id !== frame.request_id) {
@@ -317,8 +322,8 @@ export class UsbDeviceSession {
     return this.mutation({ op: 'command', request_id: body.request_id, body });
   }
 
-  collectorConfigure(endpoint, requestId = this.requestId()) {
-    return this.mutation({ op: 'collector_configure', request_id: requestId, endpoint });
+  collectorConfigure(endpoint, requestId = this.requestId(), onTransmit) {
+    return this.mutation({ op: 'collector_configure', request_id: requestId, endpoint, onTransmit });
   }
 
   async close() {
@@ -349,8 +354,8 @@ export function serialErrorMessage(error) {
     mode_switch_failed: '电脑采集配置已保存，但采集器来源启用失败。请重新打开 USB 设置。',
     frame_too_long: '配置内容超过设备协议允许的大小。',
     unsupported_version: '网页与设备固件版本不匹配。请更新到配套版本。',
-    session_busy: '设备已由另一个 USB 设置页面连接。请关闭另一个页面后重试。',
-    invalid_session: 'USB 设置窗口已过期。请重新打开窗口并连接设备状态。',
+    session_busy: '设备刚刚由另一个 USB 设置页面连接。请关闭另一个页面，或等待数秒后重试。',
+    invalid_session: '已在另一个页面继续设置，或设备窗口已重新打开。如需在此页面继续，请重新连接设备状态。',
     session_expired: 'USB 设置窗口已过期。请重新打开窗口并连接设备状态。',
   };
   if (error?.code?.startsWith('device_')) return rejected[error.code.slice(7)] ?? '设备收到配置，但拒绝了此次请求。请重新打开 USB 设置后重试。';

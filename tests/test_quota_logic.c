@@ -345,13 +345,31 @@ static void test_navigation(void)
     assert(navigation.settings_focus == 1);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 1) == QUOTA_ACTION_NONE);
     assert(navigation.screen == QUOTA_SCREEN_INTERVAL);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_DOWN, 1) == QUOTA_ACTION_NONE);
+    assert(navigation.interval_focus == 2); /* focus starts on the current 5 minute setting */
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_UP, 1) == QUOTA_ACTION_NONE);
     assert(navigation.interval_focus == 1);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 1) ==
            QUOTA_ACTION_APPLY_SETTINGS);
     assert(navigation.screen == QUOTA_SCREEN_SETTINGS && navigation.refresh_seconds == 60);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 1) == QUOTA_ACTION_NONE);
-    assert(navigation.screen == QUOTA_SCREEN_INTERVAL);
+    assert(navigation.screen == QUOTA_SCREEN_INTERVAL && navigation.interval_focus == 1);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_UP, 1) == QUOTA_ACTION_NONE);
+    assert(navigation.interval_focus == 0);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 1) ==
+           QUOTA_ACTION_APPLY_SETTINGS);
+    assert(!navigation.auto_refresh);
+    /* With auto refresh off, focus starts on the toggle; choosing an interval turns it back on. */
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 1) == QUOTA_ACTION_NONE);
+    assert(navigation.screen == QUOTA_SCREEN_INTERVAL && navigation.interval_focus == 0);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_DOWN, 1) == QUOTA_ACTION_NONE);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_DOWN, 1) == QUOTA_ACTION_NONE);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 1) ==
+           QUOTA_ACTION_APPLY_SETTINGS);
+    assert(navigation.auto_refresh && navigation.refresh_seconds == 300);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 1) == QUOTA_ACTION_NONE);
+    assert(navigation.screen == QUOTA_SCREEN_INTERVAL && navigation.interval_focus == 2);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_UP, 1) == QUOTA_ACTION_NONE);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_UP, 1) == QUOTA_ACTION_NONE);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 1) ==
            QUOTA_ACTION_APPLY_SETTINGS);
     assert(!navigation.auto_refresh);
@@ -451,10 +469,10 @@ static void test_navigation_after_external_settings_change(void)
     navigation.interval_focus = 2;
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 1) ==
            QUOTA_ACTION_APPLY_SETTINGS);
-    assert(!navigation.auto_refresh && navigation.refresh_seconds == 300);
+    assert(navigation.auto_refresh && navigation.refresh_seconds == 300);
 
-    quota_navigation_sync_settings(&navigation, 61, true, 120);
-    assert(!navigation.auto_refresh && navigation.refresh_seconds == 300);
+    quota_navigation_sync_settings(&navigation, 61, false, 120);
+    assert(navigation.auto_refresh && navigation.refresh_seconds == 300);
 }
 
 static void test_display_sleep_and_wake_gestures(void)

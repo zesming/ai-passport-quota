@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { webcrypto } from 'node:crypto';
+import { UsbDeviceSession, startDeviceSerial, serialErrorMessage as deviceSerialMessage } from '../main/portable_serial.mjs';
 const html=fs.readFileSync(new URL('../main/portable_setup.html',import.meta.url),'utf8');
 const source=fs.readFileSync(new URL('../main/portable_setup.mjs',import.meta.url),'utf8').replace(/^import .*;\s*/, '');
 const secret='s'.repeat(43);
@@ -12,14 +13,14 @@ assert(!/mode_select|id="mode"|switch-direct/.test(html),'shared setup has no gl
 assert(html.includes('src="./portable_setup.mjs"'),'embedded page loads the shared external module');
 assert(!/<script>/.test(html),'shared setup has no inline script');
 function harness({usb=false,usbSession=null}={}){
- const nodes=new Map(),windowEvents=new Map();
+ const nodes=new Map(),windowEvents=new Map(),intervals=[];
  const node=id=>{if(!nodes.has(id))nodes.set(id,{id,value:'',innerHTML:'',textContent:'',className:'',hidden:false,disabled:false,checked:false,dataset:{},classList:{toggle(){}},setAttribute(){},querySelectorAll(){return [];},querySelector(){return node(id+'-button');}});return nodes.get(id);};
  for(const match of html.matchAll(/id="([^"]+)"/g))node(match[1]);
  const tabs=['accounts','network','settings'].map(tab=>({dataset:{tab},classList:{toggle(){}},setAttribute(){}}));
  const document={hidden:false,getElementById:node,querySelectorAll:selector=>selector==='[data-tab]'?tabs:selector==='button,input,select'?[...nodes.values()]:[],addEventListener(){}};
- const context={document,addEventListener:(name,handler)=>windowEvents.set(name,handler),location:{hash:'',search:usb?'?transport=usb':'',pathname:'/',hostname:'localhost'},history:{replaceState(_a,_b,path){context.cleaned=path;}},URL,URLSearchParams,TextEncoder,Date,crypto:webcrypto,navigator:{serial:{requestPort:async()=>({})}},DeviceSerialError:class extends Error{constructor(code){super(code);this.code=code;}},serialErrorMessage:error=>error?.code||null,makeUsbRequestId:()=>'1234abcd',openUsbDeviceSession:async()=>usbSession,setInterval(){},setTimeout:callback=>callback(),fetch:async()=>{throw Error('unexpected fetch');}};
+ const context={document,addEventListener:(name,handler)=>windowEvents.set(name,handler),location:{hash:'',search:usb?'?transport=usb':'',pathname:'/',hostname:'localhost'},history:{replaceState(_a,_b,path){context.cleaned=path;}},URL,URLSearchParams,TextEncoder,Date,crypto:webcrypto,navigator:{serial:{requestPort:async()=>({})}},DeviceSerialError:class extends Error{constructor(code){super(code);this.code=code;}},serialErrorMessage:error=>error?.code||null,makeUsbRequestId:()=>'1234abcd',openUsbDeviceSession:async()=>usbSession,setInterval(callback){intervals.push(callback);},setTimeout:callback=>callback(),fetch:async()=>{throw Error('unexpected fetch');}};
  vm.createContext(context);vm.runInContext(source+`\nglobalThis.test={render,jobText,accountStatus,command,poll,launchCodex,startSession,connectUsbPort,connectUsbSession,configureCollector,setup(stateValue){state=stateValue;stopped=false;busy=false;launchBusy=false;setupSecret='${secret}';},select(id){selectedId=id;confirmation=null;removingId='';},getSecret(){return setupSecret;},hasSession};`,context);
- return {context,node,test:context.test,emitWindow:name=>windowEvents.get(name)?.()};
+ return {context,document,node,test:context.test,emitWindow:name=>windowEvents.get(name)?.(),tickIntervals:async()=>{intervals.forEach(callback=>callback());await new Promise(resolve=>setImmediate(resolve));}};
 }
 const account=(id='synthetic-account',provider='deepseek',extra={})=>({id,provider,label:'Synthetic '+id,source:'device',status:'ok',balance:{balance_infos:[{currency:'CNY',total_balance:'123.456700'}]},...extra});
 const state=()=>({session:{remaining_seconds:590},network:{connected:true,state:'connected',ssid:'Synthetic Wi-Fi',saved_networks:[{index:0,ssid:'Synthetic Wi-Fi',selected:true},{index:1,ssid:'Other synthetic Wi-Fi',selected:false}]},clock:{synchronized:true,epoch:1800000000},settings:{auto_refresh:true,refresh_seconds:300,screen_timeout_seconds:120},accounts:[account()],pending_accounts:[],collector:{configured:true,connected:false,epoch:1,discovery:[]},jobs:[],operation:{kind:'none'}});
@@ -86,12 +87,22 @@ for(const reject of [false,true]){
  await node('collector-accounts').onclick({target:{id:'',closest:()=>({dataset:{import:'remote-claude'}})}});assert.equal(sent.filter(item=>item.body?.op==='external_import').length,0,'discovery does not import automatically');await node('collector-accounts').onclick(click('import-confirm'));assert.equal(sent.at(-1).body.op,'external_import');assert.equal(sent.at(-1).body.remote_account_id,'remote-claude');
  await test.launchCodex('');assert.deepEqual(sent.slice(-2).map(item=>item.body.op),['codex_queue','codex_launch']);assert.equal(test.hasSession(),true,'Codex login keeps the USB settings session open');
 }
-{
- const s=state();const sent=[];const usb={async openSession(){return {session_id:'b'.repeat(32),remaining_seconds:90};},async stateGet(){return s;},jobProvesAdmission(){return false;},async collectorConfigure(endpoint,id){sent.push({endpoint,id});throw Object.assign(new Error('expired'),{code:'device_session_expired'});},async close(){}};
+for(const scenario of [
+ {name:'expiry reported before the frame was written',transmit:false,code:'device_session_expired',abort:true,expired:true},
+ {name:'explicit device rejection after the write',transmit:true,code:'device_busy',abort:true,text:'设备正在处理，请稍后重试。'},
+ {name:'write failure',transmit:false,code:'serial_write_error',abort:true},
+ {name:'receipt unconfirmed after the write',transmit:true,code:'serial_timeout',abort:false},
+ {name:'window expiry answered after the write',transmit:true,code:'device_session_expired',abort:false,expired:true,maybeSaved:true},
+ {name:'rejection answering a resend',transmit:true,code:'device_busy',retried:true,abort:false,maybeSaved:true},
+]){
+ const s=state();const sent=[];const usb={async openSession(){return {session_id:'b'.repeat(32),remaining_seconds:90};},async stateGet(){return s;},jobProvesAdmission(){return false;},async collectorConfigure(endpoint,id,onTransmit){sent.push({endpoint,id});if(scenario.transmit)onTransmit();throw Object.assign(new Error('failed'),{code:scenario.code,diagnostics:{retry_used:Boolean(scenario.retried)}});},async close(){}};
  const {context,node,test}=harness({usb:true,usbSession:usb});const hostRequests=[];
- context.fetch=async(path,options={})=>{hostRequests.push({path,options});if(path==='/api/state')return response({csrf_token:'synthetic-csrf',interfaces:[{name:'Wi-Fi',address:'192.168.1.8'}],device:{}});if(path==='/api/pairing')return response({base_url:'https://192.168.1.8:4318',pair_token:'q'.repeat(43),server_cert_pem:'CERTIFICATE '.repeat(60),server_time:1800000000,pairing_session:'pair-expired-ack'});if(path==='/api/pairing/abort')return response({ok:true});throw Error(`unexpected host API ${path}`);};
+ context.fetch=async(path,options={})=>{hostRequests.push({path,options});if(path==='/api/state')return response({csrf_token:'synthetic-csrf',interfaces:[{name:'Wi-Fi',address:'192.168.1.8'}],device:{}});if(path==='/api/pairing')return response({base_url:'https://192.168.1.8:4318',pair_token:'q'.repeat(43),server_cert_pem:'CERTIFICATE '.repeat(60),server_time:1800000000,pairing_session:'pair-failed'});if(path==='/api/pairing/abort')return response({ok:true});throw Error(`unexpected host API ${path}`);};
  await test.connectUsbPort();await test.connectUsbSession();node('collector-address').value='192.168.1.8';await test.configureCollector();
- assert.equal(sent.length,1,'collector configuration was transmitted before session expiry was reported');assert(!hostRequests.some(item=>item.path==='/api/pairing/abort'),'a possibly saved pairing is retained after transmission');assert(node('message').textContent.includes('可能已保存'));assert(node('message').textContent.includes('勿撤销或重新配对'));assert(node('message').textContent.includes('读取状态核对'));
+ assert.equal(sent.length,1,scenario.name);assert.equal(hostRequests.some(item=>item.path==='/api/pairing/abort'),scenario.abort,`${scenario.name}: pairing abort`);assert.equal(node('message').textContent.includes('可能已保存')||node('message').textContent.includes('无法确认电脑采集器配置'),Boolean(scenario.maybeSaved),`${scenario.name}: maybe-saved notice`);if(scenario.maybeSaved)assert(node('message').textContent.includes('勿撤销或重新配对')||node('message').textContent.includes('请勿撤销或重新配对'),scenario.name);
+ if(scenario.text)assert.equal(node('message').textContent,scenario.text,scenario.name);
+ if(scenario.expired)assert.equal(test.hasSession(),false,'an expired window ends the session');
+ if(scenario.name.startsWith('window expiry answered'))assert(node('message').textContent.includes('读取状态核对'));
 }
 {
  const s=state();let testRef;let reads=0,resets=0,closes=0;const sent=[];
@@ -115,5 +126,57 @@ for(const usbMode of [false,true]){
  assert.equal(test.hasSession(),false);assert.equal(test.getSecret(),'');assert.equal(node('session-content').hidden,true);
  for(const id of ['session-secret','wifi-password','deepseek-key','replace-key'])assert.equal(node(id).value,'');
  assert.equal(closes,usbMode?1:0,'the window pagehide event releases USB without another request');
+}
+{
+ /* Wi-Fi password rules match the device: 8-63 bytes, or exactly 64 hex digits; empty only for an open network. */
+ const {context,node,test}=harness(),s=state();test.setup(s);test.render();const posts=capture(context,s);
+ const submit=async(password,open=false)=>{posts.length=0;node('ssid').value='Synthetic Wi-Fi';node('wifi-password').value=password;node('open-network').checked=open;node('network-slot').value='';await node('network-form').onsubmit({preventDefault(){}});await new Promise(resolve=>setImmediate(resolve));return posts.length===1;};
+ assert.equal(await submit('abc1234'),false);assert(node('message').textContent.includes('8 至 63'));
+ assert.equal(await submit('中中中'),true,'9 UTF-8 bytes satisfy the device minimum');assert.equal(posts[0].password,'中中中');
+ assert.equal(await submit('x'.repeat(63)),true);
+ assert.equal(await submit('z'.repeat(64)),false);assert(node('message').textContent.includes('十六进制'));
+ assert.equal(await submit('aB09'.repeat(16)),true);
+ assert.equal(await submit('x'.repeat(65)),false);assert.equal(await submit('中'.repeat(22)),false,'66 bytes exceed the limit');
+ assert.equal(await submit('',true),true);assert.equal(posts[0].password,'');
+}
+for(const [code,text] of [['busy','设备正在处理，请稍后重试。'],['request_conflict','此操作编号已使用，请重试。'],['invalid_command','输入不符合要求，请检查后重试。'],['state_unavailable','设备状态暂时不可用，请稍后重试。'],['no_memory','设备资源不足，请稍后重试。']]){
+ const s=state();const usb={async openSession(){return {session_id:'d'.repeat(32),remaining_seconds:90};},async stateGet(){return s;},jobProvesAdmission(){return false;},async command(){throw Object.assign(new Error(code),{code:'device_'+code});},async close(){}};
+ const {context,node,test}=harness({usb:true,usbSession:usb});context.fetch=async path=>{if(path==='/api/state')return response({csrf_token:'synthetic-csrf',interfaces:[],device:{}});throw Error('unexpected host API');};
+ await test.connectUsbPort();await test.connectUsbSession();await test.command('refresh',{},'');assert.equal(node('message').textContent,text,`device_${code} uses the shared message table`);assert.equal(test.hasSession(),true,'a device rejection keeps the session');
+}
+for(const code of ['serial_closed','serial_read_error','serial_write_timeout']){
+ let closes=0;const s=state();const usb={async openSession(){return {session_id:'e'.repeat(32),remaining_seconds:90};},async stateGet(){return s;},jobProvesAdmission(){return false;},async command(){throw Object.assign(new Error(code),{code});},async close(){closes++;}};
+ const {context,node,test}=harness({usb:true,usbSession:usb});context.fetch=async path=>{if(path==='/api/state')return response({csrf_token:'synthetic-csrf',interfaces:[],device:{}});throw Error('unexpected host API');};
+ await test.connectUsbPort();await test.connectUsbSession();assert.equal(node('usb-open').hidden,true);await test.command('refresh',{},'');await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(closes,1,`${code} releases the dead serial link`);assert.equal(test.hasSession(),false);assert.equal(node('usb-open').hidden,false,'the Connect button reappears');
+}
+{
+ /* Real serial layer: onTransmit fires only after the frame is written. */
+ assert(deviceSerialMessage(Object.assign(new Error('busy'),{code:'device_session_busy'})).includes('数秒'));
+ const makePort=({failWrite=false}={})=>{let controller;const writes=[];const readable=new ReadableStream({start(c){controller=c;}});const writable=new WritableStream({write(chunk){if(failWrite)throw Error('write failed');writes.push(chunk);const id=JSON.parse(new TextDecoder().decode(chunk).slice(5)).request_id;controller.enqueue(new TextEncoder().encode(`@AIQ:${JSON.stringify({v:2,op:'result',request_id:id,ok:true})}\n`));}});return {port:{readable,writable},writes};};
+ const frame=new TextEncoder().encode('@AIQ:'+JSON.stringify({v:2,op:'state_get',request_id:'0a0b0c0d'})+'\n');
+ let fired=0;const ok=makePort();const serial=startDeviceSerial(ok.port,'0a0b0c0d');
+ const result=await serial.send(frame,{timeoutMs:1000,bootWaitMs:0,onWritten(){fired++;assert.equal(ok.writes.length,1,'frame is already written');}});assert.equal(result.ok,true);assert.equal(fired,1);await serial.close();
+ const bad=makePort({failWrite:true});const failing=startDeviceSerial(bad.port,'0a0b0c0d');fired=0;
+ await assert.rejects(failing.send(frame,{timeoutMs:1000,bootWaitMs:0,onWritten(){fired++;}}),{code:'serial_write_error'});assert.equal(fired,0,'a failed write is not reported as transmitted');await failing.close();
+ const session=new UsbDeviceSession({async send(_bytes,_id,options){options.onWritten?.();return {ok:false,error_code:'busy'};},async close(){}},{requestId:()=>'11223344'});
+ session.sessionId='f'.repeat(32);session.limits={max_command_bytes:2048,max_frame_bytes:4096,max_state_bytes:16384};session.sessionExpiresAt=Date.now()+60000;
+ let transmitted=0;await assert.rejects(session.collectorConfigure({base_url:'https://192.168.1.8:4318'},'55667788',()=>{transmitted++;}),{code:'device_busy'});assert.equal(transmitted,1);
+ const timeoutThenBusy=new UsbDeviceSession({calls:0,async send(_bytes,_id,options){options.onWritten?.();if(this.calls++===0)throw Object.assign(new Error('timeout'),{code:'serial_timeout'});return {ok:false,error_code:'busy'};},async close(){}},{requestId:()=>'11223344'});
+ timeoutThenBusy.sessionId='f'.repeat(32);timeoutThenBusy.limits=session.limits;timeoutThenBusy.sessionExpiresAt=Date.now()+60000;
+ await assert.rejects(timeoutThenBusy.collectorConfigure({base_url:'https://192.168.1.8:4318'},'55667788'),error=>error.code==='device_busy'&&error.diagnostics.retry_used===true);
+ assert.equal(session.sessionId.length,32);await assert.rejects(session.collectorConfigure({base_url:'x'},'55667788'),error=>error.code==='device_busy'&&error.diagnostics.retry_used===false);
+ session.sessionExpiresAt=Date.now()-1;transmitted=0;await assert.rejects(session.collectorConfigure({base_url:'https://192.168.1.8:4318'},'55667788',()=>{transmitted++;}),{code:'device_session_expired'});assert.equal(transmitted,0,'a locally detected expiry never reaches the device');
+}
+{
+ /* A hidden USB page keeps polling so the device never sees its session as idle; the superseded page learns why it was cut off. */
+ const s=state();let reads=0,throwInvalid=false;const usb={async openSession(){return {session_id:'a1'.repeat(16),remaining_seconds:90};},async stateGet(){reads++;if(throwInvalid)throw Object.assign(new Error('invalid'),{code:'device_invalid_session'});return s;},jobProvesAdmission(){return false;},async close(){}};
+ const {context,document,node,test,tickIntervals}=harness({usb:true,usbSession:usb});context.fetch=async path=>{if(path==='/api/state')return response({csrf_token:'synthetic-csrf',interfaces:[],device:{}});throw Error('unexpected host API');};
+ await test.connectUsbPort();await test.connectUsbSession();const before=reads;document.hidden=true;await tickIntervals();assert.equal(reads,before+1,'a hidden page with an open USB session still reads state');
+ throwInvalid=true;await tickIntervals();assert.equal(test.hasSession(),false);assert(deviceSerialMessage(Object.assign(new Error('x'),{code:'device_invalid_session'})).includes('另一个页面'));
+ document.hidden=true;const idle=reads;await tickIntervals();assert.equal(reads,idle,'no session, no hidden polling');
+}
+{
+ const {context,document,test,tickIntervals}=harness(),s=state();let fetches=0;test.setup(s);context.fetch=async()=>{fetches++;return response(s);};document.hidden=true;await tickIntervals();assert.equal(fetches,0,'hidden AP pages stay quiet');
 }
 console.log('Shared device page: AP regression and USB-native settings, secret routing, fixed Codex URL, collector pairing and explicit import PASS');

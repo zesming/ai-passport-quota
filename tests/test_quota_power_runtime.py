@@ -447,6 +447,7 @@ static void set_input(const char *bytes) {
             next(line for line in source.splitlines() if line.startswith("static bool usb_active(")),
             next(line for line in source.splitlines() if line.startswith("static bool usb_blocked(")),
             extract_function(source, "release_usb_decoder"),
+            extract_function(source, "new_usb_session"),
             extract_function(source, "service_pairing_tick"),
         ))
         functions += "\n" + extract_function(source, "quota_service_open_pairing_window", "void")

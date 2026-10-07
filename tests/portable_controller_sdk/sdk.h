@@ -15,8 +15,10 @@ typedef struct {unsigned char ssid[33];} wifi_ap_record_t;
 typedef struct {uint32_t addr;} esp_ip4_addr_t;
 typedef struct {esp_ip4_addr_t ip;} esp_netif_ip_info_t;
 typedef struct {int unused;} esp_netif_t;
-typedef struct {bool start;} esp_sntp_config_t;
-#define ESP_NETIF_SNTP_DEFAULT_CONFIG(host) ((esp_sntp_config_t){false})
+#define CONFIG_LWIP_SNTP_MAX_SERVERS 3
+typedef struct {bool start; size_t num_of_servers; const char *servers[CONFIG_LWIP_SNTP_MAX_SERVERS];} esp_sntp_config_t;
+#define ESP_SNTP_SERVER_LIST(...) { __VA_ARGS__ }
+#define ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(count,list) ((esp_sntp_config_t){.start=true,.num_of_servers=(count),.servers=list})
 #define IPSTR "%u.%u.%u.%u"
 #define IP2STR(ip) 192u,168u,1u,2u
 #define ESP_LOGI(tag,fmt,...) do {(void)(tag);if(false)printf(fmt,__VA_ARGS__);}while(0)

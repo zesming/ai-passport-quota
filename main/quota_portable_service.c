@@ -16,9 +16,12 @@
 #include <string.h>
 #include <sys/time.h>
 
+_Static_assert(CONFIG_LWIP_SNTP_MAX_SERVERS >= 3, "clock sync configures three NTP servers; raise CONFIG_LWIP_SNTP_MAX_SERVERS in sdkconfig.defaults");
 #define QUEUE_DEPTH 4
 #define NETWORK_TIMEOUT_MS 25000ULL
 #define CACHE_INTERVAL_MS 900000ULL
+#define OPEN_RETRY_MS 5000ULL
+#define OPEN_RETRY_MAX 3
 typedef struct {
     quota_portable_auth_state_t auth;
     char error[QUOTA_PORTABLE_ERROR_BYTES + 1];
@@ -65,6 +68,8 @@ static unsigned s_head, s_count, s_job_count;
 static job_t s_jobs[QUEUE_DEPTH];
 static bool s_store_ready, s_clock_ready, s_sntp, s_sleeping, s_wifi_active;
 static bool s_open, s_close, s_cancel, s_refresh, s_reconnect, s_selection_dirty;
+static uint64_t s_open_retry_at;
+static uint8_t s_open_failures;
 static bool s_refreshing, s_failed, s_cache_dirty;
 static uint32_t s_display_generation, s_seen_display_generation;
 static bool s_wake_read_pending;
@@ -443,17 +448,23 @@ static bool migrate_model(const quota_device_config_t *legacy,uint16_t legacy_ti
         for(unsigned i=0;i<s_model.entry_count;i++) if(s_model.entries[i].source==QUOTA_ACCOUNT_DEVICE) {
             copy(refs[count].id,sizeof(refs[count].id),s_model.entries[i].binding.native.credential_id); refs[count].provider=s_model.entries[i].provider; refs[count++].generation=s_model.entries[i].binding.native.credential_generation;
         }
-        quota_snapshot_t *native_cache=calloc(1,sizeof(*native_cache));
+        /* Merge into a private copy; the public snapshot changes only under the common lock. */
+        quota_snapshot_t *merged=malloc(sizeof(*merged));
+        if(merged){lock();*merged=s_snapshot;unlock();}
+        quota_snapshot_t *native_cache=merged?calloc(1,sizeof(*native_cache)):NULL;
         if(native_cache&&quota_store_load_snapshot(refs,count,s_model.last_known_time,native_cache)) for(unsigned i=0;i<native_cache->account_count;i++) {
             int row=quota_catalog_find(&s_model,native_cache->accounts[i].id); int index=snapshot_index(native_cache->accounts[i].id);
-            if(row>=0&&index>=0&&s_model.entries[row].source==QUOTA_ACCOUNT_DEVICE) quota_catalog_copy_observation(&s_snapshot,(size_t)index,native_cache,i);
+            if(row>=0&&index>=0&&s_model.entries[row].source==QUOTA_ACCOUNT_DEVICE) quota_catalog_copy_observation(merged,(size_t)index,native_cache,i);
         }
         free(native_cache);
-        for(unsigned i=0;i<old->account_count;i++) for(unsigned row=0;row<s_model.entry_count;row++) {
-            const quota_catalog_entry_t *entry=&s_model.entries[row]; int index=snapshot_index(entry->logical_id);
-            if(entry->source==QUOTA_ACCOUNT_LEGACY&&index>=0&&!strcmp(entry->binding.legacy.remote_id,old->accounts[i].id)&&old->accounts[i].has_observed_at&&epoch()-old->accounts[i].observed_at<30ULL*24*3600) quota_catalog_copy_observation(&s_snapshot,(size_t)index,old,i);
+        if(merged) {
+            for(unsigned i=0;i<old->account_count;i++) for(unsigned row=0;row<s_model.entry_count;row++) {
+                const quota_catalog_entry_t *entry=&s_model.entries[row]; int index=snapshot_index(entry->logical_id);
+                if(entry->source==QUOTA_ACCOUNT_LEGACY&&index>=0&&!strcmp(entry->binding.legacy.remote_id,old->accounts[i].id)&&old->accounts[i].has_observed_at&&epoch()-old->accounts[i].observed_at<30ULL*24*3600) quota_catalog_copy_observation(merged,(size_t)index,old,i);
+            }
+            for(unsigned i=0;i<merged->account_count;i++){int row=quota_catalog_find(&s_model,merged->accounts[i].id);if(row>=0&&s_accounts[row].auth==QUOTA_PORTABLE_AUTH_REAUTH)merged->accounts[i].status=QUOTA_STATUS_EXPIRED;}
+            lock();s_snapshot=*merged;sync_public_locked();unlock();free(merged);
         }
-        for(unsigned i=0;i<s_snapshot.account_count;i++){int row=quota_catalog_find(&s_model,s_snapshot.accounts[i].id);if(row>=0&&s_accounts[row].auth==QUOTA_PORTABLE_AUTH_REAUTH)s_snapshot.accounts[i].status=QUOTA_STATUS_EXPIRED;}
         s_cache_dirty=true;
     }
     dispose_candidate(candidate); free(old); return ok;
@@ -664,6 +675,16 @@ static bool open_setup(void)
     if (!ok) close_setup();
     changed(); return ok;
 }
+/* A failed open retries after a backoff, then gives up; OK on the closed-window screen requests it again. */
+static void open_attempt(void)
+{
+    lock();s_open=false;unlock();
+    bool ok=open_setup();
+    lock();
+    if(ok||++s_open_failures>=OPEN_RETRY_MAX){s_open_failures=0;s_open_retry_at=0;}
+    else{s_open=true;s_open_retry_at=millis()+OPEN_RETRY_MS;}
+    unlock();
+}
 static bool connected_ip(char ip[16])
 {
     wifi_ap_record_t ap; esp_netif_ip_info_t info;
@@ -762,7 +783,8 @@ static void maintain_network(void)
             if(!ok){if(!s_dirty_model)cancel_candidate("storage_failed");return;}
             finish_job(s_network_job,NULL);s_candidate_pending=false;s_candidate_swap=false;s_candidate_deadline=0;quota_portable_clear_secret(&s_candidate,sizeof(s_candidate));
         }
-        if(!s_sntp){esp_sntp_config_t ntp=ESP_NETIF_SNTP_DEFAULT_CONFIG("time.cloudflare.com");ntp.start=true;s_sntp=esp_netif_sntp_init(&ntp)==ESP_OK;}
+        /* lwIP falls through the list on timeout. Server Date headers are not a clock source: TLS certificate checks need time first. */
+        if(!s_sntp){esp_sntp_config_t ntp=ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(3,ESP_SNTP_SERVER_LIST("time.cloudflare.com","ntp.aliyun.com","pool.ntp.org"));ntp.start=true;s_sntp=esp_netif_sntp_init(&ntp)==ESP_OK;}
         if(s_sntp&&esp_netif_sntp_sync_wait(0)==ESP_OK){lock();s_clock_ready=epoch()>=1704067200ULL;unlock();}
         lock();s_view.network_state=s_clock_ready?QUOTA_PORTABLE_NETWORK_READY:QUOTA_PORTABLE_NETWORK_CONNECTED;
         copy(s_view.network_ip,sizeof(s_view.network_ip),ip);copy(s_view.network_error,sizeof(s_view.network_error),s_clock_ready?"":"time_required");unlock();return;
@@ -1015,9 +1037,11 @@ static void source_tick(void)
         finish_operation(result.code==QUOTA_DIRECT_OK?NULL:result.code==QUOTA_DIRECT_AUTH_REQUIRED?"invalid_key":result_error(result.code));return;
     }
     if(s_operation.kind!=OP_NONE)return;
+    /* An open USB session owns the serial link: scheduled polling waits. Explicit refresh and post-configure discovery (s_wake_read_pending) still run. */
+    bool scheduled=!usb_active();
     if(s_wake_read_pending&&s_model.legacy.enabled){(void)legacy_tick(false);return;}
-    if(!s_cycle&&(s_refresh||(s_model.auto_refresh&&millis()>=s_next_refresh))){s_cycle=true;s_refresh=false;s_refresh_slot=0;s_cycle_legacy_done=false;s_failed=false;}
-    if(!s_cycle){if(s_model.legacy.enabled&&(s_wake_read_pending||millis()>=s_next_legacy_read))(void)legacy_tick(false);return;}
+    if(!s_cycle&&(s_refresh||(scheduled&&s_model.auto_refresh&&millis()>=s_next_refresh))){s_cycle=true;s_refresh=false;s_refresh_slot=0;s_cycle_legacy_done=false;s_failed=false;}
+    if(!s_cycle){if(s_model.legacy.enabled&&(s_wake_read_pending||(scheduled&&millis()>=s_next_legacy_read)))(void)legacy_tick(false);return;}
     while(s_refresh_slot<s_model.entry_count&&(s_model.entries[s_refresh_slot].activity!=QUOTA_ACCOUNT_ACTIVE||s_model.entries[s_refresh_slot].source!=QUOTA_ACCOUNT_DEVICE||s_accounts[s_refresh_slot].retry_ms>millis()||s_accounts[s_refresh_slot].auth==QUOTA_PORTABLE_AUTH_REAUTH))s_refresh_slot++;
     if(s_refresh_slot>=s_model.entry_count){if(!s_cycle_legacy_done&&s_model.legacy.enabled){if(legacy_tick(true))s_cycle_legacy_done=true;return;}s_cycle=false;s_next_refresh=millis()+(uint64_t)s_model.refresh_seconds*1000;return;}
     int row=s_refresh_slot;const quota_catalog_entry_t *entry=&s_model.entries[row];quota_direct_credential_t *credential=quota_store_credential_acquire();if(!credential){storage_failed(QUOTA_STORE_READ_NO_MEMORY);return;}
@@ -1155,7 +1179,7 @@ void quota_portable_service_tick(bool sleeping,uint32_t generation)
     if(!s_initialized)return;
     lock();s_sleeping=sleeping;s_display_generation=generation;
     if(generation!=s_seen_display_generation&&!sleeping){s_seen_display_generation=generation;s_wake_read_pending=true;}
-    bool open=s_open,close=s_close,cancel=s_cancel,reconnect=s_reconnect;s_close=s_cancel=s_reconnect=false;unlock();
+    bool open=s_open,open_due=s_open&&millis()>=s_open_retry_at,close=s_close,cancel=s_cancel,reconnect=s_reconnect;s_close=s_cancel=s_reconnect=false;unlock();
     retry_dirty();save_tick();
     if((!s_model_ready||s_authority_retry)&&!s_dirty_model&&s_operation.kind==OP_NONE){if(!s_store_ready)s_store_ready=quota_store_init();if(s_store_ready)load_authority();}
     recover_intent();
@@ -1166,10 +1190,11 @@ void quota_portable_service_tick(bool sleeping,uint32_t generation)
     if(close||(s_view.setup_active&&millis()>=s_setup_deadline)||(s_close_at&&millis()>=s_close_at)||(sleeping&&s_view.setup_active)){close_setup();s_close_at=0;}
     if(s_usb_close_at&&millis()>=s_usb_close_at){s_usb_close_at=0;if(s_hooks.usb_close&&s_hooks.usb_deadline_ms&&s_hooks.usb_deadline_ms()==s_usb_close_window)s_hooks.usb_close();s_usb_close_window=0;}
     if(usb_blocked()){lock();sync_public_locked();unlock();return;}
-    if(!sleeping&&open&&!s_view.setup_active&&!storage_barrier()) {
+    if(open&&s_view.setup_active){lock();s_open=false;unlock();} /* Already open: the existing session is what the user sees. */
+    else if(!sleeping&&open_due&&!storage_barrier()) {
         if(s_operation.kind==OP_LOGIN&&s_operation.started&&!s_operation.received)finish_operation("canceled");
-        if(!storage_barrier()&&s_operation.kind!=OP_LOGIN) { lock();s_open=false;unlock();if(!open_setup()){lock();s_open=true;unlock();} }
-        else if(!s_operation.started) { lock();s_open=false;unlock();if(!open_setup()){lock();s_open=true;unlock();} }
+        if(!storage_barrier()&&s_operation.kind!=OP_LOGIN) open_attempt();
+        else if(!s_operation.started) open_attempt();
     }
     quota_portable_command_t command;bool have=false;
     lock();if(s_queue&&s_count){command=s_queue[s_head];quota_portable_clear_secret(&s_queue[s_head],sizeof(s_queue[0]));s_head=(s_head+1)%QUEUE_DEPTH;s_count--;have=true;for(unsigned i=0;i<s_job_count;i++)if(!strcmp(s_jobs[i].id,command.request_id))s_jobs[i].state=1;}unlock();
@@ -1194,13 +1219,16 @@ void quota_portable_service_countdown_overlay_locked(quota_service_view_t *view)
 }
 void quota_portable_service_overlay(quota_service_view_t *view){quota_portable_service_countdown_overlay_locked(view);}
 static void sooner(uint64_t *deadline,uint64_t candidate){if(candidate&&candidate<*deadline)*deadline=candidate;}
+/* Under the lock: the latched open request exactly as tick can act on it, so a request it cannot consume never zeroes the wait. */
+static bool open_actionable(void){return s_open&&!s_view.setup_active&&!(s_operation.kind==OP_LOGIN&&s_operation.started&&s_operation.received);}
 uint64_t quota_portable_service_next_deadline_ms(bool sleeping)
 {
     if(!s_initialized)return UINT64_MAX;
     lock();
     uint64_t deadline=UINT64_MAX;
     bool pairing=usb_blocked();
-    if(s_close||s_cancel||(!pairing&&!storage_barrier()&&((!sleeping&&(s_open||s_reconnect))||s_local_settings_pending||s_count)))deadline=0;
+    if(s_close||s_cancel||(!pairing&&!storage_barrier()&&((!sleeping&&((open_actionable()&&millis()>=s_open_retry_at)||s_reconnect))||s_local_settings_pending||s_count)))deadline=0;
+    if(!sleeping&&!pairing&&!storage_barrier()&&open_actionable())sooner(&deadline,s_open_retry_at);
     if(s_view.setup_active)sooner(&deadline,s_setup_deadline);
     sooner(&deadline,s_close_at);
     sooner(&deadline,s_usb_close_at);
@@ -1219,9 +1247,9 @@ uint64_t quota_portable_service_next_deadline_ms(bool sleeping)
     }unlock();return deadline;
 }
 void quota_portable_service_disconnected(uint8_t reason){if(!s_initialized)return;lock();s_disconnect_reason=reason;unlock();}
-void quota_portable_service_open(void){if(!s_initialized)return;lock();s_open=true;unlock();wake();}
+void quota_portable_service_open(void){if(!s_initialized)return;lock();if(!s_view.setup_active){s_open=true;s_open_failures=0;s_open_retry_at=0;}unlock();wake();}
 void quota_portable_service_close(void){if(!s_initialized)return;lock();s_close=true;unlock();wake();}
-void quota_portable_service_renew(void){if(!s_initialized)return;lock();if(!s_view.setup_active)s_open=true;unlock();wake();}
+void quota_portable_service_renew(void){if(!s_initialized)return;lock();if(!s_view.setup_active){s_open=true;s_open_failures=0;s_open_retry_at=0;}unlock();wake();}
 void quota_portable_service_cancel_auth(void){if(!s_initialized)return;lock();s_cancel=true;unlock();wake();}
 void quota_portable_service_refresh(void){if(!s_initialized)return;lock();s_refresh=true;unlock();wake();}
 void quota_portable_service_reconnect(void){if(!s_initialized)return;lock();s_reconnect=true;unlock();wake();}

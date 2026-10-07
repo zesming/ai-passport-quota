@@ -16,13 +16,17 @@ static bool used[QUOTA_MAX_ACCOUNTS];
 static quota_snapshot_t saved_cache;
 static quota_direct_credential_t *acquired;
 static quota_portal_callbacks_t portal;
-static bool portal_active;
+static bool portal_active,portal_fail,sntp_fail;static unsigned portal_starts;static esp_sntp_config_t sntp_config;
 static void unlocked(void){assert(!common_locked);}
 static int fake_gettimeofday(struct timeval *out,void *zone){(void)zone;out->tv_sec=(time_t)wall;out->tv_usec=0;return 0;}
 static int fake_settimeofday(const struct timeval *in,const struct timezone *zone){(void)zone;wall=(uint64_t)in->tv_sec;return 0;}
+/* The public snapshot is shared with the UI: observation merges into it must hold the common lock. */
+static void checked_copy_observation(quota_snapshot_t *target,size_t target_index,const quota_snapshot_t *source,size_t source_index){if(target==&public_view.snapshot)assert(common_locked);quota_catalog_copy_observation(target,target_index,source,source_index);}
+#define quota_catalog_copy_observation checked_copy_observation
 #define gettimeofday fake_gettimeofday
 #define settimeofday fake_settimeofday
 #include "quota_portable_service.c"
+#undef quota_catalog_copy_observation
 #undef gettimeofday
 #undef settimeofday
 struct quota_direct{quota_direct_hooks_t hooks;quota_direct_credential_t *pending;bool active;};
@@ -44,10 +48,10 @@ esp_err_t esp_wifi_set_config(int iface,const wifi_config_t *value){unlocked();i
 esp_err_t esp_wifi_connect(void){unlocked();connected=network_ok;return ESP_OK;}
 esp_err_t esp_wifi_disconnect(void){unlocked();connected=false;return ESP_OK;}
 esp_err_t esp_wifi_sta_get_ap_info(wifi_ap_record_t *out){unlocked();if(!connected)return ESP_FAIL;memset(out,0,sizeof(*out));memcpy(out->ssid,wifi_config.sta.ssid,32);return ESP_OK;}
-esp_err_t esp_netif_sntp_init(const esp_sntp_config_t *config){(void)config;unlocked();return ESP_OK;}
-esp_err_t esp_netif_sntp_sync_wait(unsigned timeout){(void)timeout;unlocked();return ESP_OK;}
+esp_err_t esp_netif_sntp_init(const esp_sntp_config_t *config){unlocked();sntp_config=*config;return ESP_OK;}
+esp_err_t esp_netif_sntp_sync_wait(unsigned timeout){(void)timeout;unlocked();return sntp_fail?ESP_FAIL:ESP_OK;}
 void esp_netif_sntp_deinit(void){unlocked();}
-bool quota_portal_start(const char *secret,const quota_portal_callbacks_t *callbacks){unlocked();assert(strlen(secret)==43);portal=*callbacks;portal_active=true;return true;}
+bool quota_portal_start(const char *secret,const quota_portal_callbacks_t *callbacks){unlocked();portal_starts++;if(portal_fail)return false;assert(strlen(secret)==43);portal=*callbacks;portal_active=true;return true;}
 void quota_portal_stop(void){unlocked();portal_active=false;}
 bool quota_portal_running(void){return portal_active;}
 bool quota_store_init(void){unlocked();return true;}
@@ -217,6 +221,39 @@ else if(!strcmp(argv[1],"usb-collector-unknown-import")){
     now_ms+=500;tick(false);assert(s_discovery_count==1);
     quota_portable_command_t import={.op=QUOTA_PORTABLE_OP_EXTERNAL_IMPORT};strcpy(import.request_id,"22345678");strcpy(import.remote_account_id,collector_snapshot.accounts[0].id);
     assert(quota_portable_service_submit(&import,QUOTA_SETUP_USB)==QUOTA_PORTABLE_SUBMIT_ACCEPTED);tick(false);assert(durable_model.entry_count==3&&job(import.request_id)->state==2&&usb_window);
+}
+else if(!strcmp(argv[1],"open-while-active")){
+    /* A second open request is a no-op: it keeps the session, never spins, and never reopens a new hotspot after expiry. */
+    boot();phone();char ssid[40];strcpy(ssid,public_view.portable.setup_ssid);unsigned starts=portal_starts;
+    quota_portable_service_open();quota_portable_service_renew();assert(!s_open);assert(quota_portable_service_next_deadline_ms(false)>now_ms);
+    s_open=true; /* a request latched before the session opened must also be consumed, not spun on */
+    tick(false);assert(!s_open&&portal_starts==starts&&!strcmp(public_view.portable.setup_ssid,ssid)&&quota_portable_service_next_deadline_ms(false)>now_ms);
+    now_ms+=QUOTA_PORTABLE_SETUP_MS;tick(false);assert(!public_view.portable.setup_active&&!s_open);
+    now_ms+=500;tick(false);assert(!public_view.portable.setup_active&&portal_starts==starts&&quota_portable_service_next_deadline_ms(false)>now_ms);
+}
+else if(!strcmp(argv[1],"open-failure-backoff")){
+    /* A failing hotspot start waits between bounded attempts instead of looping with a zero deadline. */
+    boot();ready();portal_fail=true;quota_portable_service_open();tick(false);
+    assert(portal_starts==1&&s_open&&!public_view.portable.setup_active);
+    for(int i=0;i<1000;i++){if(quota_portable_service_next_deadline_ms(false)>now_ms)break;tick(false);}
+    assert(portal_starts==1&&s_open_retry_at==now_ms+OPEN_RETRY_MS&&quota_portable_service_next_deadline_ms(false)>now_ms&&quota_portable_service_next_deadline_ms(false)<=s_open_retry_at);
+    now_ms+=OPEN_RETRY_MS-1;tick(false);assert(portal_starts==1);
+    now_ms+=1;tick(false);assert(portal_starts==2&&s_open);
+    now_ms+=OPEN_RETRY_MS;tick(false);assert(portal_starts==3&&!s_open);
+    assert(quota_portable_service_next_deadline_ms(false)>now_ms);now_ms+=60000;tick(false);assert(portal_starts==3);
+    portal_fail=false;quota_portable_service_renew();tick(false);assert(portal_starts==4&&public_view.portable.setup_active&&!s_open);
+}
+else if(!strcmp(argv[1],"sntp-servers")){
+    boot();ready();assert(s_sntp&&sntp_config.start&&sntp_config.num_of_servers==3&&sntp_config.num_of_servers<=CONFIG_LWIP_SNTP_MAX_SERVERS);
+    assert(!strcmp(sntp_config.servers[0],"time.cloudflare.com")&&!strcmp(sntp_config.servers[1],"ntp.aliyun.com")&&!strcmp(sntp_config.servers[2],"pool.ntp.org"));
+}
+else if(!strcmp(argv[1],"usb-pauses-auto-refresh")){
+    boot();ready();s_model.auto_refresh=true;s_next_refresh=now_ms;usb_open();
+    unsigned calls=query_calls;tick(false);now_ms+=500;tick(false);assert(query_calls==calls&&!s_cycle);
+    quota_portable_service_refresh();tick(false);assert(query_calls>calls); /* an explicit refresh still runs */
+    for(int i=0;i<4&&s_cycle;i++){now_ms+=500;tick(false);}
+    calls=query_calls;s_next_refresh=now_ms;tick(false);assert(query_calls==calls);
+    usb_window=false;now_ms+=500;tick(false);assert(query_calls>calls); /* scheduled polling resumes once the window ends */
 }
 else assert(false);
 puts("whole controller runtime passed");return 0;

@@ -33,6 +33,7 @@ class UsbRuntime(unittest.TestCase):
                 extract_function(service, "usb_authorized"),
                 extract_function(service, "send_usb_result"),
                 extract_function(service, "send_usb_state"),
+                extract_function(service, "new_usb_session"),
                 extract_function(service, "handle_serial_frame"),
             )
         )
@@ -66,10 +67,11 @@ static char last_command_id[9], last_collector_id[9];
 static quota_portable_submit_result_t next_submit_result = QUOTA_PORTABLE_SUBMIT_ACCEPTED;
 static bool state_succeeds = true, expire_while_serializing;
 static size_t state_length = QUOTA_PORTABLE_STATE_BYTES;
-static uint64_t s_usb_partial_at;
+static uint64_t s_usb_partial_at, s_usb_opener_at;
 static void handle_serial_frame(const char *frame, size_t length);
 
 static uint64_t monotonic_ms(void) { return now_ms; }
+static unsigned esp_random(void) { static unsigned next = 5; next = next * 1103515245u + 12345u; return next >> 8; }
 static void post_event(const quota_app_event_t *event, int wait)
 {
     (void)wait; assert(event && event->kind == QUOTA_APP_EVENT_CONFIGURATION_RESULT); posted_events++;
@@ -315,6 +317,33 @@ static void test_session_state_and_expiry(void)
     puts("USB session pinning, state bounds and expiry checks passed");
 }
 
+static void test_opener_idle_takeover(void)
+{
+    active_session();
+    char frame[512]; char *response;
+    make_open(frame, "01020304"); response = dispatch(frame); assert_contains(response, "\"ok\":true"); free(response);
+    /* Authorized traffic keeps the opener alive; silence past the idle limit frees it for a reloaded page. */
+    now_ms += QUOTA_USB_OPENER_IDLE_MS - 1; make_state(frame, "10101010", s_usb_session); response = dispatch(frame); free(response);
+    now_ms += QUOTA_USB_OPENER_IDLE_MS - 1; make_open(frame, "05060708"); response = dispatch(frame);
+    assert_contains(response, "\"error_code\":\"session_busy\""); free(response);
+    char old_session[QUOTA_USB_SESSION_BYTES + 1]; memcpy(old_session, s_usb_session, sizeof(old_session));
+    now_ms += 1; make_open(frame, "05060708"); response = dispatch(frame);
+    assert_contains(response, "\"ok\":true"); assert(!strcmp(s_usb_opener, "05060708"));
+    /* The takeover rotates the session: the new page gets the new id, the old page is rejected. */
+    assert(strlen(s_usb_session) == QUOTA_USB_SESSION_BYTES && strcmp(s_usb_session, old_session) != 0);
+    assert_contains(response, s_usb_session); free(response);
+    make_state(frame, "20202020", old_session); response = dispatch(frame);
+    assert_contains(response, "\"error_code\":\"invalid_session\""); free(response);
+    make_state(frame, "30303030", s_usb_session); response = dispatch(frame);
+    assert_contains(response, "\"op\":\"state\""); free(response);
+    char new_session[QUOTA_USB_SESSION_BYTES + 1]; memcpy(new_session, s_usb_session, sizeof(new_session));
+    make_open(frame, "05060708"); response = dispatch(frame); /* The same opener re-opening keeps its session. */
+    assert_contains(response, new_session); free(response);
+    make_open(frame, "01020304"); response = dispatch(frame);
+    assert_contains(response, "\"error_code\":\"session_busy\""); free(response);
+    puts("USB opener idle takeover checks passed");
+}
+
 static void test_command_dedup_delegation_and_collector_validation(void)
 {
     active_session(); strcpy(s_usb_opener, "01020304");
@@ -356,6 +385,7 @@ int main(void)
     test_parser_bounds_and_shapes();
     active_session();
     test_session_state_and_expiry();
+    test_opener_idle_takeover();
     test_command_dedup_delegation_and_collector_validation();
     assert(legacy_calls == 0 && posted_events == 0);
     puts("USB runtime tests passed");

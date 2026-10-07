@@ -51,5 +51,8 @@ CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 CONFIG_MBEDTLS_SSL_KEEP_PEER_CERTIFICATE=n
 CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=n
 
+# Clock sync falls back through three NTP servers (Cloudflare, Aliyun, pool.ntp.org).
+CONFIG_LWIP_SNTP_MAX_SERVERS=3
+
 # Quota uses Wi-Fi and USB; no Bluetooth host is required.
 CONFIG_BT_ENABLED=n

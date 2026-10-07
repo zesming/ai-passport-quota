@@ -841,6 +841,8 @@ void quota_navigation_sync_settings(quota_navigation_t *navigation,
     }
 }
 
+static const uint16_t quota_refresh_intervals[] = {60, 300, 900, 1800};
+
 static uint8_t wrap_index(uint8_t current, int direction, uint8_t count)
 {
     if (count == 0) return 0;
@@ -915,6 +917,12 @@ quota_action_t quota_navigation_handle(quota_navigation_t *navigation,
             } else if (navigation->settings_focus == 1) {
                 navigation->screen = QUOTA_SCREEN_INTERVAL;
                 navigation->interval_focus = 0;
+                for (size_t i = 0; navigation->auto_refresh && i < 4; i++) {
+                    if (quota_refresh_intervals[i] == navigation->refresh_seconds) {
+                        navigation->interval_focus = (uint8_t)(i + 1);
+                        break;
+                    }
+                }
             } else if (navigation->settings_focus == 2) {
                 return QUOTA_ACTION_REFRESH;
             } else if (navigation->settings_focus == 3) {
@@ -944,11 +952,11 @@ quota_action_t quota_navigation_handle(quota_navigation_t *navigation,
             navigation->phone_step = 0;
             return QUOTA_ACTION_OPEN_PHONE;
         case QUOTA_SCREEN_INTERVAL: {
-            static const uint16_t intervals[] = {60, 300, 900, 1800};
             if (navigation->interval_focus == 0) {
                 navigation->auto_refresh = !navigation->auto_refresh;
             } else {
-                navigation->refresh_seconds = intervals[navigation->interval_focus - 1];
+                navigation->refresh_seconds = quota_refresh_intervals[navigation->interval_focus - 1];
+                navigation->auto_refresh = true;
             }
             navigation->screen = QUOTA_SCREEN_SETTINGS;
             return QUOTA_ACTION_APPLY_SETTINGS;
