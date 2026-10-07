@@ -170,13 +170,6 @@ async function openPort(port) {
   }
 }
 
-// Version-1 compatibility for the secondary collector configuration panel.
-export async function openDeviceSerial(port, requestId) {
-  if (!REQUEST_ID.test(requestId ?? '')) throw new DeviceSerialError('serial_invalid_request_id');
-  const session = await openPort(port);
-  return { send: (frameBytes, options) => session.send(frameBytes, requestId, options), close: session.close };
-}
-
 export function startDeviceSerial(port, requestId) {
   if (!REQUEST_ID.test(requestId ?? '')) throw new DeviceSerialError('serial_invalid_request_id');
   const session = startReader(port);
@@ -280,11 +273,9 @@ export class UsbDeviceSession {
     this.assertSessionNotExpired();
     if (this.pendingMutation) throw new DeviceSerialError('usb_mutation_unresolved');
     if (!REQUEST_ID.test(frame.request_id ?? '')) throw new DeviceSerialError('serial_invalid_request_id');
-    const bodyBytes = encoder.encode(JSON.stringify(frame.body ?? frame.endpoint)).byteLength;
+    const bodyBytes = encoder.encode(JSON.stringify(frame.body)).byteLength;
     if (bodyBytes > this.limits.max_command_bytes) throw new DeviceSerialError('usb_command_too_large');
-    const packet = { v: 2, op: frame.op, request_id: frame.request_id, session_id: this.sessionId };
-    if (frame.op === 'command') packet.body = frame.body;
-    else packet.endpoint = frame.endpoint;
+    const packet = { v: 2, op: frame.op, request_id: frame.request_id, session_id: this.sessionId, body: frame.body };
     const pending = { requestId: frame.request_id, sessionId: this.sessionId };
     this.pendingMutation = pending;
     const remainingMs = () => Math.max(0, this.sessionExpiresAt - this.now());
@@ -322,10 +313,6 @@ export class UsbDeviceSession {
     return this.mutation({ op: 'command', request_id: body.request_id, body });
   }
 
-  collectorConfigure(endpoint, requestId = this.requestId(), onTransmit) {
-    return this.mutation({ op: 'collector_configure', request_id: requestId, endpoint, onTransmit });
-  }
-
   async close() {
     if (this.closed) return;
     this.closed = true;
@@ -348,10 +335,6 @@ export function serialErrorMessage(error) {
   }
   if (['serial_read_error', 'serial_write_error', 'serial_closed'].includes(error?.code)) return 'USB 连接中断。请关闭占用设备的串口工具，重新插拔 USB 线后重试。';
   const rejected = {
-    pairing_closed: '小屏「USB 设置」窗口已关闭。请重新打开后重试。',
-    invalid_config: '设备收到配置，但信息无效。请检查 Wi‑Fi 名称和网络设置。',
-    storage_error: '设备收到配置，但保存失败。请重启小屏后再查看状态。',
-    mode_switch_failed: '电脑采集配置已保存，但采集器来源启用失败。请重新打开 USB 设置。',
     frame_too_long: '配置内容超过设备协议允许的大小。',
     unsupported_version: '网页与设备固件版本不匹配。请更新到配套版本。',
     session_busy: '设备刚刚由另一个 USB 设置页面连接。请关闭另一个页面，或等待数秒后重试。',

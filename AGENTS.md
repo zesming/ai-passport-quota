@@ -1,28 +1,25 @@
-[简体中文](AGENTS.zh_CN.md) · English
+# 仓库说明
 
-# Repository instructions
+本仓库包含 `main/` 的额度固件和 `components/bsp/` 的板级支持。Passport 自己联网刷新全部账户，没有电脑端服务。
 
-This repository contains the Quota firmware in `main/`, board support in `components/bsp/`, and the production local companion in `companion/`.
+- 保留已有改动。修改前阅读相关头文件和邻近实现，完成最小且完整的变更。
+- 可复用板卡驱动放 BSP；产品状态、UI、网络操作放 `main`；凭据存独立 portable NVS 分区，不进入仓库。不得提交凭证、设备标识或未脱敏日志。
+- 保留服务来源时间、缺失/到期窗口语义以及十进制金额字符串。额度轮询不得发送付费模型提示或伪造观察时间。
+- 设备拥有一份账户目录、网络列表和设置；单一网络/存储/USB 任务执行设置回调入队的有界命令。保持令牌整包原子保存和 refresh-inflight 标记；收到的新令牌不能因息屏丢弃，不重放结果不明的续期或一次性授权交换。缓存绑定目录身份与代数。
+- 保留 USB request ID 匹配和物理设置窗口。Wi-Fi 输入直接从浏览器内存传至 USB。
+- 保留来源刷新截止时间和息屏网络门控。保留现有 NVS 布局：删除的字段改为同样大小的保留字节，枚举取值不复用。
+- 非 LVGL 任务操作 UI 前须成功获取 BSP 锁。按键回调仅投递有界工作；网络和存储不能阻塞回调。删除 UI 对象前停止其生产者。
+- 硬件映射以 `components/bsp/include/bsp_pins.h` 和测量证据为准，不推断接线或充电状态。UI 文本变化须检查子集字体覆盖；编译不能证明显示正确。
+- 按改动运行适当检查；固件交付使用完整门禁。分开报告构建、主机测试、设备测试和未验证项。每个测试或构建目标只保留一个活动负责人和运行。
+- 刷写须获得针对确切设备、已验证产物和数据影响的授权。新构建产物需要其适用授权；之前的刷写授权不代表无限许可。不得把全片擦除作为常规前置步骤。
+- 文档只用简体中文。根 README 只写当前功能与使用。有日期的开发/验证历史写入变更日志。每条规则只写在一处。
 
-- Preserve existing changes. Read relevant headers and nearby code before editing; make the smallest complete change.
-- Keep reusable board drivers in the BSP, product state/UI/network work in `main`, and credentials outside the repository: direct credentials in the dedicated portable NVS partition, companion credentials in isolated private profiles. Never commit credentials, device identifiers or unsanitized logs.
-- Preserve authoritative provider timestamps, missing/expired-window semantics and decimal currency strings. Quota polling must not send paid model prompts or invent observations.
-- The device owns one account catalog, network list and settings. The single network/storage/USB owner runs bounded commands from setup handlers. Preserve atomic token-bundle commits and the persisted refresh-inflight marker. A received rotation must survive screen/source changes; never replay an ambiguous refresh or one-time exchange. Bind observations to catalog identity/source generations; preserve v1 records as migration input.
-- Preserve USB request-ID matching, the physical pairing window, pinned TLS and the separation between loopback settings and authenticated device endpoints. Wi-Fi input goes directly from browser memory to USB.
-- Preserve silent wake-cache reads, source-refresh deadlines and screen-off network gates. Preserve existing NVS layouts and compatibility defaults.
-- LVGL access outside its task requires a successful BSP lock. Button callbacks only enqueue bounded work; networking/storage must not block them. Stop producers before deleting UI objects.
-- Hardware mappings follow `components/bsp/include/bsp_pins.h` and measured evidence. Do not infer wiring or charging status. Check subset-font coverage when UI text changes; compilation does not prove rendering.
-- Run checks appropriate to the change; firmware delivery uses the complete gate. Report build, host tests, device tests and unverified checks separately. Keep one active owner/run per test or build target.
-- Flashing needs authorization for the exact device, verified artifact and data impact. A newly built artifact needs its own applicable authorization; prior flashing approval is not blanket consent. Never add chip erase as a routine prerequisite.
-- Root README contains current functionality and use only. Dated work/validation history belongs in paired changelogs. Keep maintained Markdown English by default, with an aligned `.zh_CN.md` peer and top language links.
+只阅读任务所需上下文：
 
-Read only the context the task needs:
-
-| Task | Entry |
+| 任务 | 入口 |
 | --- | --- |
-| Use and setup | [README](README.md) |
-| Architecture, checks and flashing | [Developer guide](docs/development/README.md) |
-| Provider, protocol and persistent data | [Application contracts](docs/applications/ai-quota-monitor.md) |
-| Pins, BSP and physical checks | [Hardware reference](docs/hardware-design/AI_HARDWARE_DEVELOPMENT_GUIDE.md) |
-| Companion change | [Companion instructions](companion/AGENTS.md) |
-| Assets and font generation | [Assets](assets/README.md) |
+| 使用与配置 | [README](README.md) |
+| 架构、校验与刷写 | [开发指南](docs/development/README.md) |
+| 服务来源、协议与持久化 | [应用契约](docs/applications/ai-quota-monitor.md) |
+| 引脚、BSP 与真机检查 | [硬件参考](docs/hardware-design/AI_HARDWARE_DEVELOPMENT_GUIDE.md) |
+| 资源与字体生成 | [资源](assets/README.md) |

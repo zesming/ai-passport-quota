@@ -25,8 +25,8 @@ run_static_checks() {
     "${actionlint_bin}" -color .github/workflows/*.yml
 
     test_dir="$(mktemp -d /tmp/ai-passport-host-tests.XXXXXX)"
-    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -pedantic -Imain -Itests/cjson \
-        tests/test_quota_logic.c main/quota_logic.c tests/cjson/cJSON.c -lm \
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -pedantic -Imain \
+        tests/test_quota_logic.c main/quota_logic.c \
         -o "${test_dir}/test_quota_logic"
     "${test_dir}/test_quota_logic"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Icomponents/bsp/src \
@@ -42,7 +42,7 @@ run_static_checks() {
         tests/test_bsp_lvgl_init.c components/bsp/src/bsp_display_rounding.c \
         -o "${test_dir}/test_bsp_lvgl_init"
     "${test_dir}/test_bsp_lvgl_init"
-    for suite in quota_fonts quota_ui_runtime quota_http_runtime quota_refresh_runtime quota_power_runtime quota_usb_runtime quota_storage_runtime quota_catalog_runtime quota_portable_runtime quota_direct_runtime quota_portable_service_runtime check_repo verify_firmware archive_firmware; do
+    for suite in quota_fonts quota_ui_runtime quota_refresh_runtime quota_power_runtime quota_usb_runtime quota_storage_runtime quota_catalog_runtime quota_portable_runtime quota_direct_runtime quota_portable_service_runtime check_repo verify_firmware archive_firmware; do
         PYTHONDONTWRITEBYTECODE=1 python3 "tests/test_${suite}.py"
     done
     rm -rf "${test_dir}"

@@ -47,6 +47,9 @@ esp_err_t nvs_set_blob(nvs_handle_t h,const char *key,const void *data,size_t by
     return ESP_OK; /* SDK persists set_blob before commit. */
 }
 esp_err_t nvs_commit(nvs_handle_t h) {(void)h;return commit_fails?ESP_FAIL:ESP_OK;}
+esp_err_t nvs_open(const char *s,int mode,nvs_handle_t *h) {(void)s;(void)mode;(void)h;return ESP_ERR_NVS_NOT_FOUND;}
+esp_err_t nvs_erase_all(nvs_handle_t h) {(void)h;return ESP_OK;}
+esp_err_t nvs_erase_key(nvs_handle_t h,const char *key) {(void)h;(void)key;return ESP_ERR_NVS_NOT_FOUND;}
 static quota_model_t model, candidate, restored;
 static quota_snapshot_t snapshot;
 static void add_native(unsigned index) {
@@ -61,6 +64,15 @@ static void add_native(unsigned index) {
 int main(void) {
     assert(quota_store_init());model.refresh_seconds=300;model.screen_timeout_seconds=120;
     add_native(0);assert(quota_catalog_valid(&model));uint64_t seq=9;
+    {   /* Only Codex and DeepSeek device rows exist; retired values and bytes are refused. */
+        quota_catalog_entry_t saved=model.entries[0];
+        model.entries[0].provider=(quota_provider_t)1;assert(!quota_catalog_valid(&model));model.entries[0]=saved;
+        model.entries[0].source=(quota_account_source_t)1;assert(!quota_catalog_valid(&model));model.entries[0]=saved;
+        model.entries[0].activity=(quota_account_activity_t)1;assert(!quota_catalog_valid(&model));model.entries[0]=saved;
+        model.reserved_pending_network[3]=1;assert(!quota_catalog_valid(&model));model.reserved_pending_network[3]=0;
+        model.reserved_legacy_endpoint[5]=1;assert(!quota_catalog_valid(&model));model.reserved_legacy_endpoint[5]=0;
+        assert(quota_catalog_valid(&model));
+    }
     assert(quota_store_load_model_result(&restored,&seq)==QUOTA_STORE_READ_MISSING&&seq==0);
     write_fails=true;
     assert(quota_store_save_model_verified(0,&model,1)==QUOTA_MODEL_NOT_APPLIED);
@@ -124,27 +136,24 @@ int main(void) {
     intent->previous_credential_generation=UINT32_MAX;assert(!quota_catalog_valid(&model));
     memset(intent,0,sizeof(*intent));
     for(unsigned i=1;i<8;i++)add_native(i);
-    assert(quota_catalog_valid(&model)&&quota_catalog_count(&model,QUOTA_ACCOUNT_ACTIVE)==8);
+    assert(quota_catalog_valid(&model)&&model.entry_count==8);
     intent->kind=QUOTA_INTENT_UPSERT_NATIVE;intent->provider=QUOTA_PROVIDER_CODEX;intent->slot=0;
     strcpy(intent->logical_id,"00000000000000000000000000000099");
     strcpy(intent->target_credential_id,intent->logical_id);intent->target_credential_generation=1;
     intent->new_row=true;intent->previous_missing=true;
     assert(!quota_catalog_valid(&model));
     memset(intent,0,sizeof(*intent));
-    for(unsigned i=0;i<8;i++){
-        model.entries[i].source=QUOTA_ACCOUNT_LEGACY;
-        memset(&model.entries[i].binding,0,sizeof(model.entries[i].binding));
-        model.entries[i].binding.legacy.endpoint_epoch=1;
-        strcpy(model.entries[i].binding.legacy.remote_id,model.entries[i].logical_id);
-    }
-    assert(quota_catalog_valid(&model));
+    /* A full catalog refuses a new row, but an existing row can still be upgraded. */
     intent->kind=QUOTA_INTENT_UPSERT_NATIVE;intent->provider=QUOTA_PROVIDER_CODEX;intent->slot=0;
     strcpy(intent->logical_id,"00000000000000000000000000000099");
     strcpy(intent->target_credential_id,intent->logical_id);intent->target_credential_generation=1;
     intent->new_row=true;intent->previous_missing=true;
-    assert(!quota_catalog_valid(&model)); /* Free native slot cannot bypass eight active rows. */
+    assert(!quota_catalog_valid(&model));
     strcpy(intent->logical_id,model.entries[0].logical_id);intent->new_row=false;
-    intent->expected_row_generation=1;assert(quota_catalog_valid(&model)); /* Upgrade works at capacity. */
+    intent->previous_missing=false;strcpy(intent->previous_credential_id,model.entries[0].binding.native.credential_id);
+    strcpy(intent->target_credential_id,intent->previous_credential_id);
+    intent->previous_credential_generation=1;intent->target_credential_generation=2;
+    intent->expected_row_generation=1;assert(quota_catalog_valid(&model));
     model.entries[0].row_generation=UINT32_MAX;intent->expected_row_generation=UINT32_MAX;
     assert(!quota_catalog_valid(&model));model.entries[0].row_generation=1;
     memset(intent,0,sizeof(*intent));
@@ -169,6 +178,9 @@ void nvs_close(nvs_handle_t);
 esp_err_t nvs_get_blob(nvs_handle_t,const char*,void*,size_t*);
 esp_err_t nvs_set_blob(nvs_handle_t,const char*,const void*,size_t);
 esp_err_t nvs_commit(nvs_handle_t);
+esp_err_t nvs_open(const char*,int,nvs_handle_t*);
+esp_err_t nvs_erase_all(nvs_handle_t);
+esp_err_t nvs_erase_key(nvs_handle_t,const char*);
 '''
         with tempfile.TemporaryDirectory(prefix="quota-catalog-") as directory:
             path = Path(directory)

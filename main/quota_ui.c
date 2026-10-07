@@ -65,7 +65,7 @@ typedef struct {
     lv_obj_t *network_title;
     lv_obj_t *network_info;
     lv_obj_t *network_hint;
-    lv_obj_t *network_saved[QUOTA_PORTABLE_NETWORKS + 1];
+    lv_obj_t *network_saved[QUOTA_PORTABLE_NETWORKS];
     lv_obj_t *device_rows[2];
     lv_obj_t *device_markers[2];
     lv_obj_t *qr;
@@ -239,7 +239,7 @@ static void create_home_page(void)
     s_ui.home_empty = create_label(s_page, 12, 119, 216, 22, &quota_font_16,
                                     UI_MUTED, LV_TEXT_ALIGN_LEFT, "等待额度数据");
     s_ui.home_status = create_label(s_page, 12, 262, 216, 18, &quota_font_12,
-                                    UI_MUTED, LV_TEXT_ALIGN_LEFT, "等待电脑数据");
+                                    UI_MUTED, LV_TEXT_ALIGN_LEFT, "等待额度数据");
     create_footer("UP/DOWN 切换  OK 刷新  长按设置");
 }
 
@@ -330,20 +330,17 @@ static void create_setup_page(void)
                  LV_TEXT_ALIGN_CENTER, "电脑管理账户与设置");
     create_label(s_page, 20, 74, 200, 22, &quota_font_16, UI_INK,
                  LV_TEXT_ALIGN_CENTER, "账户保存在 Passport");
-    create_logo(s_page, &quota_openai_logo, 30, 109, 36, 36);
-    create_logo(s_page, &quota_claude_logo, 102, 109, 36, 36);
-    create_logo(s_page, &quota_deepseek_logo, 174, 109, 36, 36);
-    create_label(s_page, 12, 149, 72, 22, &quota_font_12,
+    create_logo(s_page, &quota_openai_logo, 54, 109, 36, 36);
+    create_logo(s_page, &quota_deepseek_logo, 150, 109, 36, 36);
+    create_label(s_page, 36, 149, 72, 22, &quota_font_12,
                                          UI_INK, LV_TEXT_ALIGN_CENTER, "Codex");
-    create_label(s_page, 84, 149, 72, 22, &quota_font_12,
-                                         UI_INK, LV_TEXT_ALIGN_CENTER, "Claude");
-    create_label(s_page, 156, 149, 72, 22, &quota_font_12,
+    create_label(s_page, 132, 149, 72, 22, &quota_font_12,
                   UI_INK, LV_TEXT_ALIGN_CENTER, "DeepSeek");
     s_ui.setup_countdown = create_label(s_page, 15, 190, 210, 25, &quota_font_16,
                                         UI_MINT, LV_TEXT_ALIGN_CENTER, "配对窗口 02:00");
     s_ui.setup_hint = create_label(s_page, 16, 220, 208, 44, &quota_font_12,
                                    UI_MUTED, LV_TEXT_ALIGN_CENTER,
-                                   "请通过 USB 设置采集器\n账户凭证保留在电脑中");
+                                   "请用 USB 线连接电脑\n在设置页连接设备");
     create_footer("长按 OK 返回");
 }
 
@@ -356,7 +353,7 @@ static void create_network_page(void)
                                      UI_MUTED, LV_TEXT_ALIGN_LEFT, "");
     create_label(s_page, 12, 124, 216, 18, &quota_font_12,
                  UI_MUTED, LV_TEXT_ALIGN_LEFT, "已保存 Wi-Fi");
-    for (size_t i = 0; i < QUOTA_PORTABLE_NETWORKS + 1; i++) {
+    for (size_t i = 0; i < QUOTA_PORTABLE_NETWORKS; i++) {
         s_ui.network_saved[i] = create_label(s_page, 12, 146 + (int)i * 25,
             216, 22, &quota_font_16, UI_INK, LV_TEXT_ALIGN_LEFT, "");
     }
@@ -568,17 +565,14 @@ static void render_home(const quota_navigation_t *navigation,
     size_t selected = navigation->selected_account;
     if (selected >= service->snapshot.account_count) selected = 0;
     const quota_account_t *account = &service->snapshot.accounts[selected];
-    bool is_claude = account->provider == QUOTA_PROVIDER_CLAUDE;
     lv_obj_set_style_text_font(s_ui.home_provider, &lv_font_montserrat_20, 0);
-    lv_image_set_src(s_ui.home_logo, deepseek ? &quota_deepseek_logo
-                                            : is_claude ? &quota_claude_logo : &quota_openai_logo);
+    lv_image_set_src(s_ui.home_logo, deepseek ? &quota_deepseek_logo : &quota_openai_logo);
     lv_obj_clear_flag(s_ui.home_logo, LV_OBJ_FLAG_HIDDEN);
-    set_label_text(s_ui.home_provider, deepseek ? "DeepSeek" : is_claude ? "Claude" : "ChatGPT");
+    set_label_text(s_ui.home_provider, deepseek ? "DeepSeek" : "ChatGPT");
     char plan[QUOTA_PLAN_MAX_BYTES + 1];
     quota_copy_display_plan(account->plan, plan, sizeof(plan));
     char source_and_plan[QUOTA_PLAN_MAX_BYTES + 20];
-    snprintf(source_and_plan, sizeof(source_and_plan), "%s · %s",
-             is_claude ? "Claude Code" : "Codex", plan[0] == '\0' ? "" : plan);
+    snprintf(source_and_plan, sizeof(source_and_plan), "%s · %s", "Codex", plan[0] == '\0' ? "" : plan);
     set_label_text(s_ui.home_plan, source_and_plan);
     if (deepseek) set_label_text(s_ui.home_plan, "开放平台 · API");
     char email[QUOTA_EMAIL_MAX_BYTES + 1];
@@ -627,7 +621,7 @@ static void render_home(const quota_navigation_t *navigation,
         const quota_codex_extras_t *extras = &service->snapshot.codex_extras[selected];
         int extra_y = window_count == 2 ? 228 : window_count == 1 ? 199 : 151;
         unsigned extra_row = 0;
-        if (!is_claude && extras->has_banked_reset && extras->available_resets > 0) {
+        if (extras->has_banked_reset && extras->available_resets > 0) {
             char value[64];
             if (extras->has_next_reset_expiry && !service->clock_synchronized) {
                 snprintf(value, sizeof(value), "%llu次 · 时间待同步",
@@ -646,7 +640,7 @@ static void render_home(const quota_navigation_t *navigation,
             }
             render_extra(extra_row++, "可用重置", value, extra_y, stale);
         }
-        if (!is_claude && extras->has_credits) {
+        if (extras->has_credits) {
             char value[QUOTA_CREDITS_BALANCE_BYTES + 1];
             quota_copy_display_ascii(extras->credits_balance, value, sizeof(value));
             render_extra(extra_row, "剩余额度", extras->unlimited_credits ? "不限量" :
@@ -660,7 +654,6 @@ static void render_home(const quota_navigation_t *navigation,
 
     char status[96];
     const char *account_error = service->portable.account_errors[selected];
-    bool legacy = service->portable.account_sources[selected] == QUOTA_ACCOUNT_LEGACY;
     bool connected = service->portable.network_state == QUOTA_PORTABLE_NETWORK_READY ||
                      service->portable.network_state == QUOTA_PORTABLE_NETWORK_CONNECTED;
     if (service->portable.storage_error[0]) {
@@ -677,20 +670,16 @@ static void render_home(const quota_navigation_t *navigation,
         snprintf(status, sizeof(status), "正在刷新");
     } else if (!service->clock_synchronized) {
         snprintf(status, sizeof(status), "时间待同步 · 最近数据");
-    } else if (legacy && service->request_failed) {
-        snprintf(status, sizeof(status), "更新失败 · 保留缓存");
     } else if (account->status == QUOTA_STATUS_EXPIRED) {
         snprintf(status, sizeof(status), "登录过期 · 最近数据");
     } else if (account->status == QUOTA_STATUS_WAITING) {
-        snprintf(status, sizeof(status), legacy ? "等待电脑采集" : "待验证 · 结束设备设置");
+        snprintf(status, sizeof(status), "待验证 · 结束设备设置");
     } else if (account->status == QUOTA_STATUS_ERROR) {
         snprintf(status, sizeof(status), "数据源错误 · 保留缓存");
     } else if (account->status == QUOTA_STATUS_UNSUPPORTED) {
         snprintf(status, sizeof(status), "数据源暂不支持");
     } else if (deepseek && balance->present && !balance->is_available) {
         snprintf(status, sizeof(status), "余额不可用");
-    } else if (legacy) {
-        snprintf(status, sizeof(status), "需电脑更新 · 最近数据");
     } else if (account->has_observed_at) {
         char clock_text[16];
         format_clock(account->observed_at, clock_text, sizeof(clock_text));
@@ -700,7 +689,7 @@ static void render_home(const quota_navigation_t *navigation,
     }
     set_label_text(s_ui.home_status, status);
     lv_obj_set_style_text_color(s_ui.home_status,
-        color((service->portable.storage_error[0] || !connected || stale || (legacy && service->request_failed)) ? UI_AMBER : UI_MUTED), 0);
+        color((service->portable.storage_error[0] || !connected || stale) ? UI_AMBER : UI_MUTED), 0);
 }
 
 static void render_settings(const quota_navigation_t *navigation,
@@ -750,12 +739,11 @@ static void render_accounts(const quota_navigation_t *navigation,
             set_label_text(s_ui.account_secondary[i], "手机或电脑打开设备设置");
         } else {
             const quota_account_t *account = &service->snapshot.accounts[i];
-            bool claude = account->provider == QUOTA_PROVIDER_CLAUDE;
             char title[QUOTA_PLAN_MAX_BYTES + 20];
             char plan[QUOTA_PLAN_MAX_BYTES + 1];
             quota_copy_display_plan(account->plan, plan, sizeof(plan));
             bool deepseek = account->provider == QUOTA_PROVIDER_DEEPSEEK;
-            snprintf(title, sizeof(title), "%s · %s", deepseek ? "DeepSeek" : claude ? "Claude" : "ChatGPT", plan);
+            snprintf(title, sizeof(title), "%s · %s", deepseek ? "DeepSeek" : "ChatGPT", plan);
             char email[QUOTA_EMAIL_MAX_BYTES + 1];
             quota_copy_display_ascii(account->email, email, sizeof(email));
             if (deepseek) quota_copy_display_ascii(service->snapshot.balances[i].label, email, sizeof(email));
@@ -808,7 +796,7 @@ static void render_setup(const quota_service_view_t *service)
         snprintf(countdown, sizeof(countdown), "配对窗口 %02u:%02u",
                  (unsigned)(seconds / 60), (unsigned)(seconds % 60));
         lv_obj_set_style_text_color(s_ui.setup_countdown, color(UI_MINT), 0);
-        set_label_text(s_ui.setup_hint, "请通过 USB 设置采集器\n账户凭证保留在电脑中");
+        set_label_text(s_ui.setup_hint, "请用 USB 线连接电脑\n在设置页连接设备");
     } else {
         snprintf(countdown, sizeof(countdown), "配对窗口已关闭");
         lv_obj_set_style_text_color(s_ui.setup_countdown, color(UI_AMBER), 0);
@@ -857,7 +845,6 @@ static const char *portable_error_text(const char *code)
     if (strcmp(code, "tls_error") == 0) return "服务安全连接失败";
     if (strcmp(code, "response_too_large") == 0) return "服务响应过大 · 请稍后重试";
     if (strcmp(code, "configuration_changed") == 0) return "配置已变化 · 请重新设置";
-    if (strcmp(code, "source_changed") == 0) return "电脑来源已改变 · 请确认";
     if (strcmp(code, "recovery_conflict") == 0) return "存储冲突 · 请检查设备";
     if (strcmp(code, "storage_invalid") == 0) return "存储记录损坏 · 请检查";
     if (strcmp(code, "storage_io_error") == 0) return "存储暂不可读 · 请重试";
@@ -868,22 +855,17 @@ static const char *portable_error_text(const char *code)
     if (strcmp(code, "storage_failed") == 0) return "保存失败 · 请重试";
     if (strcmp(code, "storage_write_unknown") == 0) return "保存待确认 · 请稍候";
     if (strcmp(code, "storage_busy") == 0) return "存储处理中 · 请稍候";
-    if (strcmp(code, "source_unavailable") == 0) return "电脑账户暂不可用";
     return "操作未完成 · 请重试";
 }
 
 static void render_network(const quota_portable_view_t *portable)
 {
-    for (size_t i = 0; i < QUOTA_PORTABLE_NETWORKS + 1; i++) {
+    for (size_t i = 0; i < QUOTA_PORTABLE_NETWORKS; i++) {
         char line[QUOTA_SSID_MAX_BYTES + 24] = "";
         char saved[QUOTA_SSID_MAX_BYTES + 1];
         if (!portable->storage_error[0] && i < portable->saved_network_count) {
             quota_copy_display_ascii(portable->saved_network_ssids[i], saved, sizeof(saved));
             snprintf(line, sizeof(line), "%s%s", i == portable->selected_saved_network ? "* " : "  ", saved);
-        } else if (!portable->storage_error[0] && i == portable->saved_network_count &&
-                   portable->pending_saved_network_present) {
-            quota_copy_display_ascii(portable->pending_saved_network_ssid, saved, sizeof(saved));
-            snprintf(line, sizeof(line), "待启用 %s", saved);
         }
         set_label_text(s_ui.network_saved[i], line);
     }

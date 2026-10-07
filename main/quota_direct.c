@@ -345,14 +345,6 @@ void quota_direct_login_cancel(quota_direct_t *direct)
     /* Successful rotations awaiting persistence are NOT canceled by UI state. */
 }
 
-void quota_direct_destroy(quota_direct_t *direct)
-{
-    if (!direct) return;
-    /* Pending credentials belong to the network owner, including on destroy. */
-    quota_direct_login_cancel(direct);
-    quota_direct_secure_clear(direct, sizeof(*direct)); free(direct);
-}
-
 static void free_response(quota_direct_http_response_t *response)
 {
     if (response->body) { quota_direct_secure_clear(response->body, response->capacity + 1); free(response->body); }
@@ -723,11 +715,3 @@ quota_direct_result_t quota_direct_query(quota_direct_t *direct,
     return out;
 }
 
-const char *quota_direct_error_name(quota_direct_result_code_t code)
-{
-    static const char *const names[] = { "ok", "waiting", "deferred", "auth_required",
-        "login_disabled", "login_expired", "canceled", "rate_limited", "network_error",
-        "protocol_error", "time_required", "storage_error", "persist_pending", "no_memory", "unsupported",
-        "tls_error", "resource_error", "response_too_large" };
-    return (unsigned)code < sizeof(names) / sizeof(names[0]) ? names[code] : "unknown";
-}

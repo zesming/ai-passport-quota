@@ -1,14 +1,12 @@
-[简体中文](README.zh_CN.md) · English
+# 资源来源与生成
 
-# Asset sources and generation
+资源保留再分发声明，不得提交私有账号数据、凭证、设备标识或未脱敏截图。
 
-Keep redistribution notices with the assets. Do not commit private account data, credentials, device identifiers or unsanitized screenshots.
+## 字体
 
-## Fonts
+`fonts/quota_font_12.c` 和 `quota_font_16.c` 是适用于 LVGL 9.5.0 的 Noto Sans SC Regular 12/16 像素、4-bpp 子集。源字体为锁定 LVGL 组件的 `tests/src/test_files/fonts/noto/NotoSansSC-Regular.ttf`；SIL Open Font License 1.1 保留于 [NotoSansSC-OFL.txt](fonts/NotoSansSC-OFL.txt)。
 
-`fonts/quota_font_12.c` and `quota_font_16.c` are LVGL 9.5.0, 4-bpp subsets of Noto Sans SC Regular at 12/16 pixels. The source is the locked LVGL component's `tests/src/test_files/fonts/noto/NotoSansSC-Regular.ttf`; its SIL Open Font License 1.1 is retained in [NotoSansSC-OFL.txt](fonts/NotoSansSC-OFL.txt).
-
-Coverage is ASCII U+0020–U+007E plus `fonts/quota-font-glyphs.txt`; `quota-font-codepoints.txt` records non-ASCII coverage. Generated sources stay read-only in Flash. After changing fixed UI literals, update the lists and regenerate both sizes with `lv_font_conv@1.5.3` (shown for size 12):
+覆盖 ASCII U+0020–U+007E 和 `fonts/quota-font-glyphs.txt`，`quota-font-codepoints.txt` 记录非 ASCII 覆盖。生成源只读留在 Flash。固定 UI 文本变化后更新列表，并用 `lv_font_conv@1.5.3` 重新生成两种字号（以下为 12）：
 
 ```bash
 npx --yes lv_font_conv@1.5.3 \
@@ -19,16 +17,16 @@ npx --yes lv_font_conv@1.5.3 \
   --output assets/fonts/quota_font_12.c
 ```
 
-`tests/test_quota_fonts.py` checks generated cmap coverage against UI literals and ASCII. Widget font selection and board rendering still need verification; arbitrary non-ASCII account identity uses the application's `?` fallback.
+`tests/test_quota_fonts.py` 检查生成 cmap 对 UI 字面文本和 ASCII 的覆盖。控件字体选择与真机显示仍须验证；任意非 ASCII 账号身份采用应用的 `?` 回退。
 
-The 12-pixel font uses `lv_font_montserrat_12` as a fallback for its built-in refresh glyph (U+F021); add `--lv-fallback lv_font_montserrat_12` when regenerating that size. The 16-pixel font has no fallback.
+12 像素字体回退到 `lv_font_montserrat_12` 中的内置刷新图标（U+F021）；重新生成此字号时添加 `--lv-fallback lv_font_montserrat_12`。16 像素字体没有回退字体。
 
-## Provider marks
+## 服务标志
 
-Firmware SVG sources are `images/openai-quota.svg`, `claude-quota.svg` and `deepseek-quota.svg`. Desktop copies are `companion/public/assets/openai.svg`, `claude.svg` and `deepseek.svg`. Sources: Lobe Icons [OpenAI](https://github.com/lobehub/lobe-icons/blob/master/packages/static-svg/icons/openai.svg), [Claude](https://github.com/lobehub/lobe-icons/blob/master/packages/static-svg/icons/claude-color.svg) and [DeepSeek](https://github.com/lobehub/lobe-icons/blob/master/packages/static-svg/icons/deepseek-color.svg). The MIT notice is retained in [images/lobe-icons-LICENSE.txt](images/lobe-icons-LICENSE.txt) and the desktop asset directory. Provider trademarks remain with their owners; the marks identify providers without implying endorsement.
+固件 SVG 源为 `images/openai-quota.svg` 和 `deepseek-quota.svg`。来源为 Lobe Icons 的 [OpenAI](https://github.com/lobehub/lobe-icons/blob/master/packages/static-svg/icons/openai.svg) 和 [DeepSeek](https://github.com/lobehub/lobe-icons/blob/master/packages/static-svg/icons/deepseek-color.svg)。MIT 声明保留于 [images/lobe-icons-LICENSE.txt](images/lobe-icons-LICENSE.txt)。商标归各服务所有，标志用于识别，不代表背书。
 
-Firmware PNGs are 36 × 36 RGBA, rendered with `@resvg/resvg-js@2.6.2`; descriptors are in `main/quota_brand_assets.c`. OpenAI currentColor is replaced with `#EDF1F4`; others retain source colors. Transparent pixels composite against `#11181F` before little-endian RGB565 conversion. Preserve dimensions, alpha handling and background when regenerating.
+固件 PNG 为 36 × 36 RGBA，以 `@resvg/resvg-js@2.6.2` 渲染；描述符位于 `main/quota_brand_assets.c`。OpenAI currentColor 替换为 `#EDF1F4`，DeepSeek 保留原色。透明像素先与 `#11181F` 合成，再转为小端 RGB565。重新生成时保留尺寸、透明处理和背景。
 
-## Documentation captures
+## 文档截图
 
-`docs/screenshots/` contains web captures made with isolated synthetic accounts through `companion/scripts/readme-preview.mjs`. They are not board photographs or live account/telemetry evidence. Capture the changed UI with that fixture service and check for private data before sharing.
+文档截图（目前没有）使用隔离合成账号，不是真机照片或实时账号/遥测证据。可用 `node tools/preview_portable.mjs` 的示例设备截取设置页；公开前检查私有数据。

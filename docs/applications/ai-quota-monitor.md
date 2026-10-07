@@ -1,59 +1,88 @@
-[简体中文](ai-quota-monitor.zh_CN.md) · English
+# 服务来源、协议与数据契约
 
-# Provider, protocol and data contracts
+## 归属与来源
 
-## Ownership and sources
+Passport 拥有一份账户目录、Wi-Fi 列表、选择状态和刷新/息屏设置。最多八个账户，每行用逻辑 ID、服务与代数绑定一个设备凭据槽。满额时拒绝新增，不保留隐藏行。手机通过设备热点打开设置页；USB 传输使用同一页面，现阶段没有网页入口（见[README](../../README.md#usb-设置现状)）。
 
-Passport owns one account catalog, Wi-Fi list, selection and refresh/sleep settings. At most eight accounts are active; eight additional historical descriptors can remain pending. Each row binds a logical ID/provider/source generation to either a device credential slot or a collector endpoint epoch/remote ID. Activity changes preserve credentials; source replacement requires explicit authorization and never merges by email. Phone and computer use the same [device setup page](../development/portable-connectivity.md).
+| 服务 | 契约 |
+| --- | --- |
+| ChatGPT（统计 Codex 用量） | 实验性官方客户端设备码流程，HTTPS 查询额度及可选重置详情 |
+| DeepSeek | 官方 `GET https://api.deepseek.com/user/balance`，验证后替换密钥 |
 
-| Source | Provider | Contract |
-| --- | --- | --- |
-| Device | Codex | Experimental official-client device-code flow; verified HTTPS usage and optional reset details |
-| Device | DeepSeek | Documented `GET https://api.deepseek.com/user/balance`; key validation before replacement |
-| Optional collector | Codex | Official app-server login and `account/rateLimits/read` |
-| Optional collector | Claude | Isolated official subscription login/statusline callback during normal usage |
-| Optional collector | DeepSeek | Documented balance API using an isolated private key |
+刷新不发送模型提示。保留来源 `observed_at`；读取缓存、修订号变化不代表新观察。缺失 5h/周窗口隐藏，真实 0% 可见。重置时间已过则等待来源数据，不自动恢复 100%。倒计时为 `🔄 xd xh`，到期时间为 `xd xh 到期`；不足一小时的正数为 `<1h`。
 
-No refresh sends a model prompt. Preserve provider `observed_at`; a cache read/revision change is not a new observation. Missing 5h/7-day windows are hidden; real 0% is visible. A passed reset deadline waits for source data instead of restoring 100%. Display reset countdown as `🔄 xd xh`, reset expiry as `xd xh` plus the localized expiry label, and sub-hour positive durations as `<1h`.
+Codex 设备授权复现[官方客户端实现](https://github.com/openai/codex/blob/7f892275e31002f0422477c6219189284560e689/codex-rs/login/src/device_code_auth.rs)，使用可配置 `QUOTA_DIRECT_CODEX_CLIENT_ID` 及固定 `auth.openai.com`/`chatgpt.com` 来源。额度端点属于客户端实现细节，并非稳定第三方 API；本工程未注册 OAuth 集成。直连只映射恰好 18000/604800 秒的主窗口。剩余额度、可用重置次数来自 usage；可选详情失败只让到期未知，保留新额度。剩余额度保留来源字符串，不推测币种。仅在全部可用详情已知时展示最近到期；正数次数仍以来源为准。
 
-Codex device flow reproduces [official client code](https://github.com/openai/codex/blob/7f892275e31002f0422477c6219189284560e689/codex-rs/login/src/device_code_auth.rs), using configurable `QUOTA_DIRECT_CODEX_CLIENT_ID` and fixed `auth.openai.com`/`chatgpt.com` origins. Usage endpoints are client implementation details, not a stable public third-party API; this project is not a registered OAuth integration. Native windows map only exact 18000/604800-second durations. Credits/count come from usage; optional reset-detail failure leaves expiry unknown without discarding fresh usage. Display credits under the localized remaining-credits label, preserving the source string without inferred currency. The earliest banked-reset expiry is shown only when all available detail rows are known; positive reset counts remain authoritative. Claude supplies no equivalent extras.
+DeepSeek 展示原始十进制人民币 `total_balance`，包括赠送/充值但不展开、不换算、不回退美元。别名不是认证邮箱。API 不提供消费历史、请求总数或累计 Tokens。设备更换密钥先验证候选，失败保留旧密钥与带标记的余额。
 
-DeepSeek displays original decimal CNY `total_balance`, including grants/top-ups without expanding them or converting/falling back to USD. A local alias is not an authenticated email. The API supplies no spending history, request total or cumulative token total. Device key replacement validates a candidate before committing; failure retains the old key and labelled balance. Desktop keys stay in owner-only isolated profiles and never enter device provisioning/snapshots.
+主要参考：[Codex 授权](https://learn.chatgpt.com/codex/auth)、[app-server](https://learn.chatgpt.com/codex/app-server)、[DeepSeek 余额](https://api-docs.deepseek.com/api/get-user-balance/)。
 
-Primary references: [Codex auth](https://learn.chatgpt.com/codex/auth), [app-server](https://learn.chatgpt.com/codex/app-server), [Claude auth](https://code.claude.com/docs/en/authentication), [statusline](https://code.claude.com/docs/en/statusline), [DeepSeek balance](https://api-docs.deepseek.com/api/get-user-balance/).
+## 设置流程
 
-## Transport and commands
+实体操作**设备设置 → 热点**开放十分钟临时 WPA2 热点，每次生成新密码和独立的 43 字符设置密钥。请求打开或已打开设置时暂停新的服务 HTTPS，收到的凭据仍完成保存。
 
-The optional collector has loopback settings on **4317** and pinned private-address HTTPS on **4318**. Device requests use a pairing bearer token, hostname verification and no redirects. `GET /v1/snapshot` returns at most eight accounts/8192 bytes; `POST /v1/refresh` accepts coalesced source work. Collector settings are not authoritative for Passport. Incoming rows update only current catalog bindings; unknown rows require explicit import. Collector failure affects its rows only.
+| 设备步骤 | 手机或电脑操作 |
+| --- | --- |
+| 1. 热点 | 用 Wi-Fi QR 或显示的名称、完整密码连接；提示无互联网时仍保持连接。 |
+| 2. 网页 | 连上后扫描网页 QR，地址片段携带临时授权。 |
+| 3. 手动输入 | 在浏览器输入显示的地址及完整设置密钥，裸地址页面提供密钥输入框。 |
 
-USB configuration uses the existing physical 120-second pairing window and bounded `@AIQ:` newline frames. Version-1 `configure` includes request ID, Wi-Fi, endpoint/token/certificate/time; response IDs must match and never echo secrets. Modern firmware saves the complete collector endpoint and epoch in the unified model. Changing the endpoint marks old bindings `source_changed`; rebind requires verified remote ID/provider and explicit confirmation. A saved endpoint ACK does not prove candidate Wi-Fi validation. Wi-Fi travels from browser memory directly to USB, never through the computer API. USB has no permanent reader/task.
+上/下键轮换三页，短按 OK 下一页或重新打开过期窗口，长按 OK 关闭返回。QR 保留整数缩放及四模块静区。设置页含账户、网络、设置三个页签，输入字体 16 像素、控件至少 44 像素高，不依赖 CDN、云端、浏览器存储或网页蓝牙。密钥仅存内存，使用后清空字段与 URL。过期禁用修改，重新打开需实体操作和新密钥。
 
-USB v2 uses the same physical window and owner. `session_open` binds one opener request ID to a fresh 32-character hex `session_id`; only that opener can retry without extending the fixed window. `state_get` returns common sanitized state; `command` contains the flat v1 body with matching inner/outer request IDs. `collector_configure` accepts only a private pinned endpoint, using the same four-job receipts and verified model writes; it does not queue certificates or copy desktop provider credentials. Invalid/expired sessions never return the current session ID. Inbound frames remain 4096 bytes, commands 2048, state 16384 plus framing; the browser bounds received lines at 32768 bytes.
+**Wi-Fi。** 保存 Wi-Fi 代表接收候选，不代表联网。结束设置、重连、超时或启动 Codex 都先关闭 AP 再接入目标网络。USB 候选立即验证，热点候选在结束设置后验证。候选验证时限 25 秒，连接和已验证保存成功后才替换网络；失败保留旧设置。最多三个网络，满额拒绝新增，同名异密码需要明确替换位置。
 
-Idle USB preserves STA and native HTTP. Entry/partial-frame scratch gates new phases; scratch is wiped/freed before TLS. Partial frames expire after three seconds. The browser permits one unconfirmed mutation, retains exact bytes/ID/UTC for at most one identical retry in the same window, and never automatically replays across reopen/reboot. State reads cannot evict job receipts. A 90-second browser response budget accommodates multi-phase owner turns without claiming a hard DNS deadline. USB state exposes only login state, the fixed official verification URL/user-facing code and sanitized errors. AP state keeps its original disclosure boundary. Both transports serve the same external page modules with self-only scripts.
+**Codex。** 先排队，准备成功后开始：关闭 AP、接入已保存 Wi-Fi、显示官方授权 QR 和完整验证码，授权最多十五分钟。手机/电脑恢复互联网，在官方页面批准。无需回调或继续连 AP。设备区分连接、获取验证码、等待、交换、保存和终态。已有账户重新授权可复用自己的凭据槽，即使满槽。
 
-Device providers use certificate-bundle verification and fixed origins. Responses are bounded to 32 KiB, completed headers to 16 KiB. The asynchronous transport uses a 15-second progress budget and at most one-second waits; this is not a measured total deadline for all DNS/header behavior. Reserve a token POST response after TLS handshake and before sending headers; admission failure cannot send the grant. Release the sole-owned POST body when response starts, then parse JWT metadata sequentially after releasing the envelope/body. Metadata parsing is not independent JWT signature verification.
+**DeepSeek。** 要求别名和遮罩密钥，结束设置后验证；收到密钥不代表认证成功。关闭设置后候选验证最多六十秒。换密钥失败保留旧凭据/余额，空密钥只改别名。
 
-The AP setup API accepts only the AP interface/subnet, exact Host and session header `X-AIQ-Setup`. Mutations require exact same-origin Origin; any supplied GET Origin must also match. No CORS or cross-origin preflight. `GET /` contains no private state; `/api/state` returns sanitized accounts/history/discovery/network/settings/jobs; `/api/command` accepts flat v1 JSON with an eight-character lowercase-hex request ID and optional UTC time. Limit bodies to 2048 bytes, reject duplicate/unknown fields/types/embedded NULs, and deduplicate matching IDs. A 202 means queued, not completed.
+任务保持排队/运行直至完成，关闭命令预留响应时间后才停 AP。关网页不取消任务。可按 request ID 取消未发送的候选；收到的凭据不能丢弃，须完成保存。保存结果未确认时，网络和修改等待恢复。
 
-Commands cover network_save/network_activate, settings_save, codex_queue/codex_launch, deepseek_save, account_remove/account_deactivate/account_activate, external_import, setup_close, refresh/reconnect and operation_cancel. `account_activate` may atomically swap `replace_active_id`; stale collector rows require confirmed rebind. `mode_select` is obsolete and unsupported. Commands capture configuration generation internally. Public state/QR/logs never expose provider tokens, PKCE values, Wi-Fi passwords or private endpoint credentials. Only physical setup screens show the temporary AP/password/session key.
+## 传输与命令
 
-## Persistence and recovery
+USB 使用物理 120 秒设置窗口及有界 `@AIQ:` 换行帧，协议版本为 v2。`v:1` 帧一律返回 `unsupported_version`，固件不再接受旧的 `configure`。Wi-Fi 从浏览器内存直接传 USB。USB 无常驻读取任务。
 
-Preserve existing partitions and v1 record bytes. The portable NVS partition remains **0x7c0000 / 256 KiB**. `model_v2` is one CRC-checked blob containing unified configuration, at most sixteen compact descriptors, the complete legacy endpoint and one intent. A monotonic sequence and exact readback determine applied/not-applied/unknown; do not assume multi-key transactions from `nvs_commit`. Unknown writes retain their exact candidate and gate all network/mutations behind storage recovery. Typed reads distinguish missing, invalid, I/O, memory and busy; only genuine missing/valid tombstones are free slots.
+`session_open` 将首次请求编号绑定到新生成的 32 位十六进制 `session_id`；相同编号重试不延长窗口。`state_get` 返回统一的脱敏状态；`command` 包含扁平命令，内外请求编号必须一致。无效或过期会话不返回当前会话编号。入站帧仍为 4096 字节，命令 2048 字节，状态 16384 字节加封装；浏览器接收行上限为 32768 字节。
 
-Adding or replacing native authorization saves an intent before admission, then saves the unchanged v1 credential bundle, then commits the model binding/clears intent. Reboot either finishes an exact validated target tuple without HTTP, or clears an interrupted intent only when the exact prior state matches. Conflicts preserve ownership. Never replay a one-time exchange. Native removal removes the descriptor with a deletion intent, writes the exact next-generation tombstone, then clears intent. Generations never wrap. Existing native reauthorization reuses its slot even at full capacity.
+空闲 USB 窗口保留设备 Wi-Fi 和直接服务请求。进入准备、半帧暂存阻止新请求；暂存资料在 TLS 前清理释放，半帧三秒过期。网页只允许一个尚未确认的修改，最多在同一窗口内按原始内容、编号和时间重试一次，不跨重开窗口或重启自动重放。状态查询不淘汰任务回执。网页响应预算为九十秒，覆盖多阶段执行等待，不宣称 DNS 硬期限。USB 状态只额外返回授权状态、固定官方授权地址、用户验证码和脱敏错误；热点状态保持原有边界。
 
-Normal Codex renewal retains its binding generation: persist `refresh_inflight` before sending, then replace the entire bundle/clear marker after validation. Pre-admission cancellation can safely clear the marker; a complete 429 can clear it and back off. Ambiguous admitted timeout/redirect/error/malformed success requires reauthorization. Boot never replays a marked token. A received rotation keeps the same exclusive credential lease until storage-only retries succeed, regardless of display/setup/cancel requests.
+设备服务验证证书包及固定来源。响应最多 32 KiB，完整头部最多 16 KiB。异步传输使用 15 秒进展预算、单次等待最多一秒；不宣称所有 DNS/头部情况下的硬总时限。令牌 POST 在 TLS 握手后、发送头部前预留响应；准入失败不得发送授权。响应开始后释放唯一 POST body，释放外层响应再顺序解析 JWT 元信息，不宣称独立 JWT 签名验证。
 
-`observations_v2` stores at most eight active observations at a fifteen-minute cadence, including optional extras. It binds logical ID/provider/row generation and exact native or legacy tuple; it cannot supply identity, aliases, selection or settings. Load merges only observation fields into current rows. V1 caches remain read-only migration inputs. Migration preserves both account cohorts, ID collisions and the previously active selection. Four unique historical networks retain three core profiles plus one visible pending profile; explicit validated activation swaps a named network rather than dropping credentials.
+AP 设置 API 只接受 AP 接口/子网、精确 Host 和会话头 `X-AIQ-Setup`。修改须同源 Origin，GET 若带 Origin 也须匹配；无 CORS/跨域预检。`GET /` 不含私有状态；`/api/state` 返回脱敏账户/网络/设置/任务；`/api/command` 接收扁平 JSON、八位小写十六进制 request ID 和可选 UTC。最多 2048 字节，拒绝重复/未知字段、非法类型及内嵌 NUL，相同 ID 去重。202 仅代表入队。
 
-CRC/NVS checks do not provide confidentiality. Flash is unencrypted; no secure-boot, eFuse or physical extraction protection is claimed. Secrets stay outside Git; network/storage/USB have one owner and short-lived scratch. Common-view locks cover bounded copies only, never HTTP/NVS/LVGL/JSON allocation.
+命令包括 network_save、settings_save、codex_queue/codex_launch、deepseek_save、account_remove、setup_close、refresh/reconnect、operation_cancel。network_scan 和 mode_select 已不受支持。命令内部捕获配置代数。公开状态、QR、日志不含服务令牌、PKCE 或 Wi-Fi 密码；临时热点/密码/设置密钥只在实体设置屏显示。
 
-## Refresh, display and validation
+## 持久化与恢复
 
-Screen-off stops AP/Wi-Fi and new HTTP, while storage retries and operation deadlines continue. AP requests/open windows and USB entry/I/O scratch gate new phases immediately; idle USB windows allow device networking. Wake displays cache, reconnects and silently reads collector cache without postponing the shared provider deadline. Manual or due refresh runs one cycle, honors account backoff, and starts the next interval after completion. Collector cache reads cannot fabricate observation freshness. Stored time seeds the clock; native TLS still waits for current-boot setup time or SNTP synchronization. Display time is UTC+8.
+portable NVS 为 **0x7c0000 / 256 KiB**。model_v2 是一份 CRC blob，含统一配置、最多八个账户描述项（数组保留原有十六项大小，后八项恒为零）及一个 intent。已删除功能的字段（待启用网络、旧电脑端点）改为同样大小的保留字节，必须保持为零；`provider` 取值 0（Codex）和 2（DeepSeek），1 保留不复用，`source` 与 `activity` 只接受 0。单调序号与精确读回决定已应用/未应用/未知，不假设 nvs_commit 提供跨键事务。未知写入保留确切候选，网络与修改等待存储恢复。类型化读取区分缺失、损坏、I/O、内存、忙；仅真正缺失/有效墓碑为空槽。
 
-The entire first wake gesture is consumed. The panel enters Sleep In with backlight off; workers wait for events/deadlines. CPU DFS permits 40 MHz while asleep; MCU light/deep sleep is not enabled. LVGL tick/ADC-key polling remain. Battery SOC is cached for thirty seconds and does not infer charging. Fixed Chinese text uses subset fonts; arbitrary unsupported identity characters fall back to `?`.
+新增或替换设备授权先存 intent，再存凭据整包，最后提交 model 绑定并清 intent。重启只无网络完成精确有效目标，或在精确前态匹配时清理中断 intent；冲突保留归属，不重放一次性交换。删除设备账户先移除描述项并保存删除 intent，再写精确下一代墓碑、清 intent。代数不回绕。
 
-Use [acceptance checks](../development/README.md#acceptance-and-reporting) and report build, host/browser, real-device/provider and unverified evidence separately. Dated results belong in the [changelog](../CHANGELOG.md).
+普通 Codex 续期不改绑定代数：请求前持久化 refresh_inflight，验证后整包替换并清标记。准入前取消可清标记，完整 429 可清标记并退避；已准入的不明超时、重定向、错误、异常成功要求重授权。重启不重放带标记令牌。收到的轮换保留同一个独占凭据缓冲，直到纯存储重试成功，不因息屏/设置/取消丢弃。
+
+observations_v2 每十五分钟最多缓存八个账户观察值，包括可选扩展，绑定逻辑 ID、服务、行代数及精确设备凭据元组；不能提供身份、别名、选择或设置。加载只合并观察字段。
+
+### 升级清理
+
+读取 model_v2 时，通过 magic、版本、长度和 CRC 校验之后、`quota_catalog_valid` 之前，先执行 `quota_catalog_scrub_removed`：删除非 Codex/DeepSeek 服务的行、来自旧电脑来源的行和待启用行，清零待启用网络与旧电脑端点，压缩数组；`selected_account_id` 指向被删行时改为第一个剩余行，没有剩余行时置空；指向被删行的未完成 intent 一并清除。这样单个坏行不会让整个目录失效。
+
+内容有变化时，按以下顺序处理，任何一步失败都会返回存储错误并在下次读取时重试：
+
+1. 把被删行占用的凭据槽改为墓碑（保留代数，令牌清零）。
+2. 清零观察缓存中被删行及无效来源/服务的行并重写，只在确有变化时写入。
+3. 以 `sequence + 1` 原子提交清理后的目录。
+
+提交放在最后，因为它是唯一能让下次启动不再重复清理的写入；前两步幂等，中途断电后整个过程重新执行并得到相同结果。目录没有变化时不写 Flash。
+
+旧的默认 NVS 分区命名空间 `ai_quota` 和 portable 分区中的旧 `config`、`snapshot` 记录每次启动都会清除（不存在时不写入）。只有这些旧数据的设备按全新设备处理，没有账户和 Wi-Fi。没有账户目录时，所有凭据槽在建立新目录前先改为墓碑，旧密钥不会残留，也不占用账户容量。观察缓存里属于已删除服务或来源的行在加载时被忽略，不影响其余账户的缓存。
+
+CRC/NVS 不提供保密性。Flash 未加密，无 secure-boot、eFuse 或物理读取防护声明。秘密不进 Git；网络/存储/USB 单一负责人，临时工作区按需释放。公共视图锁只覆盖有界复制，不包围 HTTP/NVS/LVGL/JSON 分配。
+
+## 刷新、显示与验证
+
+息屏关闭 AP/Wi-Fi、停止新 HTTP，存储重试与操作时限继续。热点请求/开放窗口及 USB 进入准备、收发暂存立即阻止新阶段；空闲 USB 窗口允许设备联网。亮屏先显示缓存、恢复 Wi-Fi，不推迟统一来源刷新点。手动或到点执行一轮，遵守账户退避，结束后起算下轮。缓存读取不伪造新观察。保存时间仅初始化时钟，设备 TLS 等待本次启动设置校时或 SNTP；显示 UTC+8。
+
+首次完整唤醒操作只亮屏。面板 Sleep In、背光关闭，任务等待事件/截止时间。息屏 CPU DFS 可降至 40 MHz，未启用 MCU light/deep sleep；LVGL tick/ADC 按键轮询保留。电池 SOC 缓存三十秒，不推断充电。固定中文用子集字体，不支持的账户字符回退 `?`。
+
+主页上下切账户、短 OK 刷新全部、长 OK 设置；子页短 OK 确认、长 OK 返回。授权页短 OK 重新打开 USB 窗口且不取消授权；长 OK 关闭 USB 窗口并取消未发送操作，或从终态返回。统一刷新节奏为手动或 1/5/15/30 分钟；设置/授权只在有效窗口内保持亮屏，不修改从不/30/60/120/300/600 秒息屏设置。
+
+按[验收指南](../development/README.md#验收与报告)分别报告构建、主机/网页、真机/服务及未验证证据。有日期的结果写[变更日志](../CHANGELOG.md)。

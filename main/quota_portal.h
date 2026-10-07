@@ -14,7 +14,6 @@ typedef struct {
 /* AP driver/lifecycle remains service-owned. Start only after AP is ready. */
 bool quota_portal_start(const char *secret, const quota_portal_callbacks_t *callbacks);
 void quota_portal_stop(void);
-bool quota_portal_running(void);
 
 /* Pure validation seams used by host tests and the HTTP handlers. */
 bool quota_portal_host_is_valid(const char *host);

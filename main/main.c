@@ -238,13 +238,6 @@ static void process_event(const quota_app_event_t *event)
             s_navigation.auto_refresh = event->auto_refresh;
             s_navigation.screen_timeout_seconds = event->screen_timeout_seconds;
             break;
-        case QUOTA_APP_EVENT_CONFIGURATION_RESULT:
-            if (event->success) {
-                s_navigation.configured = true;
-                s_navigation.screen = QUOTA_SCREEN_HOME;
-                s_navigation.setup_return_screen = QUOTA_SCREEN_HOME;
-            }
-            break;
         case QUOTA_APP_EVENT_CONNECTION:
         case QUOTA_APP_EVENT_PAIRING_TICK:
         default:

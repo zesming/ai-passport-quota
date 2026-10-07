@@ -12,7 +12,6 @@ typedef enum {
     QUOTA_APP_EVENT_SNAPSHOT,
     QUOTA_APP_EVENT_CONNECTION,
     QUOTA_APP_EVENT_SETTINGS_RESULT,
-    QUOTA_APP_EVENT_CONFIGURATION_RESULT,
     QUOTA_APP_EVENT_PAIRING_TICK,
 } quota_app_event_kind_t;
 
@@ -20,7 +19,6 @@ typedef struct {
     quota_app_event_kind_t kind;
     bsp_btn_t button;
     bsp_btn_ev_t button_event;
-    bool success;
     uint16_t refresh_seconds;
     bool auto_refresh;
     uint16_t screen_timeout_seconds;

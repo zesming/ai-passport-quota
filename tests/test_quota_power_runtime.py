@@ -13,8 +13,8 @@ class PowerRuntime(unittest.TestCase):
 enum { BSP_BTN_DOWN, BSP_BTN_OK };
 enum { BSP_BTN_PRESS, BSP_BTN_CLICK };
 enum { QUOTA_APP_EVENT_BUTTON, QUOTA_APP_EVENT_SNAPSHOT, QUOTA_APP_EVENT_SETTINGS_RESULT,
-       QUOTA_APP_EVENT_CONFIGURATION_RESULT, QUOTA_APP_EVENT_CONNECTION, QUOTA_APP_EVENT_PAIRING_TICK };
-typedef struct { unsigned kind, button, button_event; bool success,auto_refresh;
+       QUOTA_APP_EVENT_CONNECTION, QUOTA_APP_EVENT_PAIRING_TICK };
+typedef struct { unsigned kind, button, button_event; bool auto_refresh;
     uint16_t refresh_seconds,screen_timeout_seconds; } quota_app_event_t;
 static quota_display_state_t s_display;
 static quota_navigation_t s_navigation;
@@ -294,7 +294,7 @@ typedef int esp_event_base_t;
 #define WIFI_RETRY_MAX_MS 30000
 #define QUOTA_APP_EVENT_CONNECTION 1
 #define ESP_LOGW(...) ((void)0)
-static bool s_wifi_started, s_handlers_registered, s_wifi_retry_pending, s_fetch_after_connect;
+static bool s_wifi_started, s_handlers_registered, s_wifi_retry_pending;
 static int s_wifi_handler, s_ip_handler;
 static int64_t s_wifi_retry_at_ms;
 static uint32_t s_wifi_retry_delay_ms = WIFI_RETRY_MIN_MS;
@@ -339,7 +339,7 @@ int main(void) {
     assert(registrations == 2 && settings == 2 && starts == 1 && s_wifi_retry_pending);
     associated = true;
     ip_event_handler(NULL, IP_EVENT, IP_EVENT_STA_GOT_IP, NULL);
-    assert(s_view.connected && s_fetch_after_connect && !s_wifi_retry_pending);
+    assert(s_view.connected && !s_wifi_retry_pending);
     sleeping = true;
     fail_stop = true; stop_wifi_for_sleep(); assert(s_wifi_started && s_view.connected);
     associated = false;
@@ -349,7 +349,7 @@ int main(void) {
     /* Failed stop plus asleep disconnect must retain reconnect work on wake. */
     sleeping = true;
     fail_stop = false; stop_wifi_for_sleep();
-    assert(!s_wifi_started && !s_view.connected && !s_fetch_after_connect && !s_wifi_retry_pending);
+    assert(!s_wifi_started && !s_view.connected && !s_wifi_retry_pending);
     unsigned before = events;
     ip_event_handler(NULL, IP_EVENT, IP_EVENT_STA_GOT_IP, NULL);
     wifi_event_handler(NULL, WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, NULL);
@@ -366,7 +366,7 @@ int main(void) {
     /* The late old IP event after restart cannot cancel the next connect. */
     associated = true;
     ip_event_handler(NULL, IP_EVENT, IP_EVENT_STA_GOT_IP, NULL);
-    assert(s_view.connected && s_fetch_after_connect);
+    assert(s_view.connected);
     wifi_event_handler(NULL, WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, NULL);
     assert(!s_view.connected && s_wifi_retry_pending && s_wifi_retry_at_ms == 72000);
     sleeping = true; stop_wifi_for_sleep();
@@ -393,11 +393,9 @@ int main(void) {
 #include <string.h>
 #include <unistd.h>
 enum { QUOTA_APP_EVENT_PAIRING_TICK };
-typedef struct { quota_mode_t mode; } portable_view_t;
 typedef struct {
     bool pairing_preparing, pairing_active;
     uint32_t pairing_seconds_left;
-    portable_view_t portable;
 } view_t;
 static view_t s_view;
 static atomic_bool s_pairing_requested;

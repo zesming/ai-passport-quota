@@ -1,7 +1,6 @@
 #include "quota_usb.h"
 #include "quota_portal.h"
 #include "cJSON.h"
-#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -62,10 +61,6 @@ bool quota_usb_parse(const char *frame, size_t length, quota_usb_request_t *requ
     while (end < frame + length && (*end == ' ' || *end == '\r' || *end == '\n' || *end == '\t')) end++;
     const cJSON *version = cJSON_GetObjectItemCaseSensitive(root, "v");
     bool valid = end == frame + length && cJSON_IsNumber(version);
-    if (valid && version->valuedouble == 1) {
-        quota_portal_clear_json(root); cJSON_Delete(root);
-        return quota_parse_provision_frame(frame, length, &request->body.legacy, request->request_id, error);
-    }
     char op[32] = {0};
     if (valid && text(root, "request_id", request->request_id, sizeof(request->request_id)) && hex(request->request_id, 8)) {
         if (version->valuedouble != 2) { if (error) *error = "unsupported_version"; valid = false; }
@@ -74,7 +69,6 @@ bool quota_usb_parse(const char *frame, size_t length, quota_usb_request_t *requ
     static const char *const open_keys[] = {"v", "op", "request_id", NULL};
     static const char *const state_keys[] = {"v", "op", "request_id", "session_id", NULL};
     static const char *const command_keys[] = {"v", "op", "request_id", "session_id", "body", NULL};
-    static const char *const collector_keys[] = {"v", "op", "request_id", "session_id", "endpoint", NULL};
     if (valid && !strcmp(op, "session_open")) { request->op = QUOTA_USB_OPEN; valid = keys(root, open_keys); }
     else if (valid) {
         valid = text(root, "session_id", request->session_id, sizeof(request->session_id)) && hex(request->session_id, QUOTA_USB_SESSION_BYTES);
@@ -83,20 +77,8 @@ bool quota_usb_parse(const char *frame, size_t length, quota_usb_request_t *requ
             request->op = QUOTA_USB_COMMAND; valid = valid && keys(root, command_keys);
             const cJSON *body = cJSON_GetObjectItemCaseSensitive(root, "body");
             char *serialized = valid && cJSON_IsObject(body) ? cJSON_PrintUnformatted(body) : NULL;
-            valid = serialized && quota_portal_parse_command(serialized, strlen(serialized), &request->body.command) && !strcmp(request->request_id, request->body.command.request_id);
+            valid = serialized && quota_portal_parse_command(serialized, strlen(serialized), &request->command) && !strcmp(request->request_id, request->command.request_id);
             if (serialized) { quota_portable_clear_secret(serialized, strlen(serialized)); cJSON_free(serialized); }
-        } else if (!strcmp(op, "collector_configure")) {
-            request->op = QUOTA_USB_COLLECTOR; valid = valid && keys(root, collector_keys);
-            const cJSON *endpoint = cJSON_GetObjectItemCaseSensitive(root, "endpoint");
-            static const char *const endpoint_keys[] = {"base_url", "pair_token", "server_cert_pem", "server_time", NULL};
-            quota_legacy_endpoint_t *out = &request->body.endpoint; char host[16];
-            const cJSON *time = cJSON_GetObjectItemCaseSensitive(endpoint, "server_time");
-            valid = valid && keys(endpoint, endpoint_keys) && text(endpoint, "base_url", out->base_url, sizeof(out->base_url)) &&
-                text(endpoint, "pair_token", out->pair_token, sizeof(out->pair_token)) && text(endpoint, "server_cert_pem", out->server_cert_pem, sizeof(out->server_cert_pem)) &&
-                quota_url_is_private_ipv4(out->base_url, host) && quota_pair_token_is_valid(out->pair_token) &&
-                !strncmp(out->server_cert_pem, "-----BEGIN CERTIFICATE-----", 27) && strstr(out->server_cert_pem, "-----END CERTIFICATE-----") &&
-                cJSON_IsNumber(time) && isfinite(time->valuedouble) && time->valuedouble >= 1 && time->valuedouble <= UINT32_MAX && floor(time->valuedouble) == time->valuedouble;
-            if (valid) { out->enabled = true; out->trusted_time = (uint64_t)time->valuedouble; }
         } else { valid = false; if (error) *error = "unsupported_operation"; }
     }
     quota_portal_clear_json(root); cJSON_Delete(root);

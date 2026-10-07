@@ -5,16 +5,12 @@
 #include <stdint.h>
 
 #define QUOTA_MAX_ACCOUNTS 8
-#define QUOTA_MAX_SNAPSHOT_BYTES 8192
 #define QUOTA_MAX_PROVISION_FRAME_BYTES 4096
 #define QUOTA_ACCOUNT_ID_BYTES 32
 #define QUOTA_EMAIL_MAX_BYTES 128
 #define QUOTA_PLAN_MAX_BYTES 32
 #define QUOTA_SSID_MAX_BYTES 32
 #define QUOTA_PASSWORD_MAX_BYTES 64
-#define QUOTA_BASE_URL_MAX_BYTES 128
-#define QUOTA_PAIR_TOKEN_BYTES 43
-#define QUOTA_CERT_MAX_BYTES 1536
 #define QUOTA_REFRESH_DEFAULT_SECONDS 300
 #define QUOTA_SCREEN_TIMEOUT_DEFAULT_SECONDS 120
 #define QUOTA_SCREEN_TIMEOUT_COUNT 6
@@ -25,11 +21,14 @@
 /* A USB session opener silent this long has lost its page and may be replaced by a new opener. */
 #define QUOTA_USB_OPENER_IDLE_MS 6000
 
+/* Persisted values: never reuse 1. */
 typedef enum {
     QUOTA_PROVIDER_CODEX = 0,
-    QUOTA_PROVIDER_CLAUDE,
-    QUOTA_PROVIDER_DEEPSEEK,
+    /* 1 reserved: removed provider */
+    QUOTA_PROVIDER_DEEPSEEK = 2,
 } quota_provider_t;
+_Static_assert(QUOTA_PROVIDER_CODEX == 0 && QUOTA_PROVIDER_DEEPSEEK == 2,
+               "provider values are persisted");
 
 typedef enum {
     QUOTA_STATUS_OK = 0,
@@ -65,7 +64,7 @@ typedef struct {
     char topped_up_balance[QUOTA_BALANCE_AMOUNT_BYTES + 1];
 } quota_currency_balance_t;
 
-/* Sidecar leaves the legacy account and NVS quota-cache layouts unchanged. */
+/* Sidecar leaves the account and NVS quota-cache layouts unchanged. */
 typedef struct {
     bool present;
     bool is_available;
@@ -74,7 +73,7 @@ typedef struct {
     quota_currency_balance_t balance_infos[QUOTA_BALANCE_CURRENCIES];
 } quota_balance_t;
 
-/* Optional Codex metadata stays in RAM; legacy NVS accounts are unchanged. */
+/* Optional Codex metadata stays in RAM; the NVS accounts are unchanged. */
 typedef struct {
     bool has_banked_reset;
     uint64_t available_resets;
@@ -104,19 +103,6 @@ typedef struct {
     bool has_screen_timeout_seconds;
     uint16_t screen_timeout_seconds;
 } quota_settings_t;
-
-typedef struct {
-    char request_id[9];
-    char ssid[QUOTA_SSID_MAX_BYTES + 1];
-    char password[QUOTA_PASSWORD_MAX_BYTES + 1];
-    char base_url[QUOTA_BASE_URL_MAX_BYTES + 1];
-    char pair_token[QUOTA_PAIR_TOKEN_BYTES + 1];
-    char server_cert_pem[QUOTA_CERT_MAX_BYTES + 1];
-    uint64_t server_time;
-    uint16_t refresh_seconds;
-    bool auto_refresh;
-    char selected_account_id[QUOTA_ACCOUNT_ID_BYTES + 1];
-} quota_device_config_t;
 
 typedef enum {
     QUOTA_METRIC_VALUE = 0,
@@ -202,8 +188,6 @@ typedef enum {
 
 bool quota_utf8_is_valid(const char *text, size_t length);
 bool quota_id_is_valid(const char *id);
-bool quota_url_is_private_ipv4(const char *url, char host_out[16]);
-bool quota_pair_token_is_valid(const char *token);
 void quota_copy_display_ascii(const char *source, char *destination, size_t capacity);
 void quota_copy_display_plan(const char *source, char *destination, size_t capacity);
 void quota_format_duration(uint64_t seconds, char *output, size_t capacity);
@@ -217,12 +201,6 @@ void quota_frame_decoder_init(quota_frame_decoder_t *decoder);
 quota_frame_result_t quota_frame_decoder_feed(quota_frame_decoder_t *decoder, char byte,
                                               const char **frame_out,
                                               size_t *frame_length_out);
-
-bool quota_parse_snapshot(const char *json, size_t json_length, quota_snapshot_t *snapshot);
-bool quota_parse_settings_ack(const char *json, size_t json_length, quota_settings_t *settings);
-bool quota_parse_provision_frame(const char *frame, size_t frame_length,
-                                 quota_device_config_t *config,
-                                 char request_id_out[9], const char **error_code_out);
 
 bool quota_data_is_stale(uint64_t now, bool has_observed_at, uint64_t observed_at,
                          uint16_t refresh_seconds);

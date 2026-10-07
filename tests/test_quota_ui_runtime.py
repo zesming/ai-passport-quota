@@ -62,7 +62,7 @@ static void bind(void) {
         BIND(metric_reset[i]); BIND(metric_value[i]); BIND(metric_bar[i]);
         BIND(extra_name[i]); BIND(extra_value[i]);
     }
-    for (unsigned i=0;i<QUOTA_PORTABLE_NETWORKS+1;i++) BIND(network_saved[i]);
+    for (unsigned i=0;i<QUOTA_PORTABLE_NETWORKS;i++) BIND(network_saved[i]);
     BIND(network_title); BIND(network_info); BIND(network_hint);
     BIND(qr); BIND(qr_title); BIND(qr_hint); BIND(qr_countdown);
     BIND(manual_address); BIND(manual_caption); BIND(manual_secret); BIND(footer);
@@ -105,16 +105,13 @@ int main(void) {
     service.portable.saved_network_count=3; service.portable.selected_saved_network=1;
     for (unsigned i=0;i<3;i++) snprintf(service.portable.saved_network_ssids[i],
         sizeof(service.portable.saved_network_ssids[i]),"Saved-%u",i);
-    service.portable.pending_saved_network_present=true;
-    snprintf(service.portable.pending_saved_network_ssid,
-        sizeof(service.portable.pending_saved_network_ssid),"Historical");
     render_network(&service.portable);
     assert(!strcmp(s_ui.network_saved[0]->text,"  Saved-0"));
     assert(!strcmp(s_ui.network_saved[1]->text,"* Saved-1"));
-    assert(!strcmp(s_ui.network_saved[3]->text,"待启用 Historical"));
-    service.portable.saved_network_count=1; service.portable.pending_saved_network_present=false;
+    assert(!strcmp(s_ui.network_saved[2]->text,"  Saved-2"));
+    service.portable.saved_network_count=1;
     render_network(&service.portable);
-    assert(s_ui.network_saved[1]->text[0]==0 && s_ui.network_saved[3]->text[0]==0);
+    assert(s_ui.network_saved[1]->text[0]==0 && s_ui.network_saved[2]->text[0]==0);
     snprintf(service.portable.storage_error,sizeof(service.portable.storage_error),"storage_invalid");
     render_network(&service.portable); assert(s_ui.network_saved[0]->text[0]==0);
     service.portable.storage_error[0]=0;

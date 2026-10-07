@@ -5,6 +5,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The context is one heap block plus an optional login authorization, both released by cancel. */
+static void release_direct(quota_direct_t *direct)
+{
+    if (!direct) return;
+    quota_direct_login_cancel(direct);
+    free(direct);
+}
+
 #define LOCAL_ID "0123456789abcdef0123456789abcdef"
 #define NOW 1700000000ULL
 
@@ -380,7 +388,7 @@ static void test_rotation(void)
     assert(quota_direct_refresh(direct, &value, NOW).code == QUOTA_DIRECT_OK);
     assert(fake.requests == 1 && fake.stores == 2 && !fake.stored.refresh_inflight);
     assert(!fake.awake && !strcmp(fake.stored.refresh_token, "rotated-refresh"));
-    quota_direct_destroy(direct);
+    release_direct(direct);
 
     for (unsigned scenario = 0; scenario < 3; scenario++) {
         memset(&fake, 0, sizeof(fake)); direct = create(&fake); value = credential(); fake.stored = value;
@@ -390,7 +398,7 @@ static void test_rotation(void)
         assert(quota_direct_refresh(direct, &value, NOW).code == QUOTA_DIRECT_AUTH_REQUIRED);
         assert(fake.stored.refresh_inflight && value.refresh_inflight && fake.requests == 1);
         assert(quota_direct_refresh(direct, &value, NOW).code == QUOTA_DIRECT_AUTH_REQUIRED && fake.requests == 1);
-        quota_direct_destroy(direct);
+        release_direct(direct);
     }
 
     memset(&fake, 0, sizeof(fake)); direct = create(&fake); value = credential(); fake.stored = value;
@@ -399,14 +407,14 @@ static void test_rotation(void)
     assert(limited.code == QUOTA_DIRECT_RATE_LIMITED && limited.http_status == 429 && limited.retry_after_seconds == 120);
     assert(!value.refresh_inflight && !fake.stored.refresh_inflight && !strcmp(fake.stored.refresh_token, "old-refresh"));
     assert(fake.requests == 1 && fake.stores == 2);
-    quota_direct_destroy(direct);
+    release_direct(direct);
 
     memset(&fake, 0, sizeof(fake)); direct = create(&fake); value = credential(); fake.stored = value;
     fake.overflow = true;
     assert(quota_direct_refresh(direct, &value, NOW).code == QUOTA_DIRECT_AUTH_REQUIRED);
     assert(fake.stored.refresh_inflight && fake.requests == 1);
     assert(quota_direct_refresh(direct, &value, NOW).code == QUOTA_DIRECT_AUTH_REQUIRED && fake.requests == 1);
-    quota_direct_destroy(direct);
+    release_direct(direct);
 
     memset(&fake, 0, sizeof(fake)); direct = create(&fake); value = credential(); fake.stored = value;
     fake.fail_store = 2;
@@ -420,20 +428,20 @@ static void test_rotation(void)
     assert(!fake.stored.refresh_inflight && !strcmp(fake.stored.refresh_token, "rotated-refresh"));
     assert(fake.requests == 1 && !quota_direct_has_pending_persist(direct));
     assert(fake.persisted_pointer == &value && !strcmp(value.refresh_token, "rotated-refresh"));
-    quota_direct_destroy(direct);
+    release_direct(direct);
 
     memset(&fake, 0, sizeof(fake)); direct = create(&fake); value = credential(); fake.stored = value;
     fake.transport_failure = true;
     assert(quota_direct_refresh(direct, &value, NOW).code == QUOTA_DIRECT_AUTH_REQUIRED);
     assert(fake.stored.refresh_inflight && value.refresh_inflight);
     assert(quota_direct_refresh(direct, &value, NOW).code == QUOTA_DIRECT_AUTH_REQUIRED && fake.requests == 1);
-    quota_direct_destroy(direct);
+    release_direct(direct);
 
     memset(&fake, 0, sizeof(fake)); direct = create(&fake); value = credential(); fake.stored = value;
     fake.sleep_on_marker = true;
     assert(quota_direct_refresh(direct, &value, NOW).code == QUOTA_DIRECT_DEFERRED);
     assert(fake.requests == 0 && fake.stores == 2 && !fake.stored.refresh_inflight);
-    quota_direct_destroy(direct);
+    release_direct(direct);
 
     memset(&fake, 0, sizeof(fake)); direct = create(&fake); value = credential(); fake.stored = value;
     fake.authorization_failure = true;
@@ -441,7 +449,7 @@ static void test_rotation(void)
     assert(quota_direct_refresh(direct, &value, NOW).code == QUOTA_DIRECT_AUTH_REQUIRED);
     assert(fake.stored.refresh_inflight);
     assert(!memcmp(&value, &unchanged, sizeof(value)));
-    quota_direct_destroy(direct);
+    release_direct(direct);
 }
 
 static void test_borrowed_pending(void)
@@ -467,7 +475,7 @@ static void test_borrowed_pending(void)
             assert(!strcmp(value.refresh_token, "old-refresh"));
         }
         assert(fake.requests == requests);
-        quota_direct_destroy(direct);
+        release_direct(direct);
         assert(!memcmp(&value, &received, sizeof(value)));
     }
     fake_t fake = {0}; quota_direct_t *direct = create(&fake);
@@ -484,7 +492,7 @@ static void test_borrowed_pending(void)
     assert(quota_direct_retry_persist(direct).code == QUOTA_DIRECT_OK);
     assert(fake.requests == requests && fake.persisted_pointer == &value);
     assert(!strcmp(value.refresh_token, "rotated-refresh"));
-    quota_direct_destroy(direct);
+    release_direct(direct);
     assert(!strcmp(value.refresh_token, "rotated-refresh"));
 }
 
@@ -514,9 +522,9 @@ static void test_login_and_reads(void)
     assert(quota_direct_query(direct, &value, NOW).code == QUOTA_DIRECT_DEFERRED && fake.requests == requests);
     fake.awake = true;
     assert(quota_direct_query(direct, &value, 0).code == QUOTA_DIRECT_TIME_REQUIRED && fake.requests == requests);
-    value.provider = QUOTA_PROVIDER_CLAUDE;
+    value.provider = (quota_provider_t)1; /* Reserved provider value. */
     assert(quota_direct_query(direct, &value, NOW).code == QUOTA_DIRECT_UNSUPPORTED && fake.requests == requests);
-    quota_direct_destroy(direct);
+    release_direct(direct);
 
     memset(&fake, 0, sizeof(fake)); direct = create(&fake); value = credential();
     assert(quota_direct_login_begin(direct, &value, 0, NOW).code == QUOTA_DIRECT_WAITING);
@@ -526,7 +534,7 @@ static void test_login_and_reads(void)
     assert(quota_direct_login_step(direct, &value, 10000, NOW).code == QUOTA_DIRECT_NETWORK_ERROR);
     requests = fake.requests;
     assert(quota_direct_login_step(direct, &value, 10001, NOW).code == QUOTA_DIRECT_CANCELED && fake.requests == requests);
-    quota_direct_destroy(direct);
+    release_direct(direct);
 }
 
 int main(void)

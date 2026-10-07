@@ -13,7 +13,8 @@ from urllib.parse import unquote
 ROOT = Path(__file__).resolve().parent.parent
 FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
-CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
+HEADING_RE = re.compile(r"^ {0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", re.M)
+LANGUAGE_LINK_RE = re.compile(r"\]\([^)]*\.(?:zh_CN|en_US)\.md|href=\"[^\"]*\.(?:zh_CN|en_US)\.md|\[English\]|\[简体中文\]", re.I)
 SECRET_PATTERNS = {
     "GitHub token": re.compile(r"(?:ghp_|github_pat_)[A-Za-z0-9_]{20,}"),
     "AWS access key": re.compile(r"AKIA[0-9A-Z]{16}"),
@@ -55,6 +56,18 @@ def check_required_files(errors: list[str]) -> None:
         errors.append("dependencies.lock must be tracked, not ignored")
 
 
+def heading_anchors(text: str) -> set[str]:
+    """GitHub-style heading slugs, including the numeric suffix of repeated headings."""
+    anchors: set[str] = set()
+    seen: dict[str, int] = {}
+    for heading in HEADING_RE.findall(re.sub(r"```.*?```", "", text, flags=re.S)):
+        slug = re.sub(r"[^\w\- ]", "", re.sub(r"[`*_]", "", heading).strip().lower()).replace(" ", "-")
+        count = seen.get(slug, 0)
+        seen[slug] = count + 1
+        anchors.add(slug if count == 0 else f"{slug}-{count}")
+    return anchors
+
+
 def check_markdown_links(files: list[Path], errors: list[str]) -> None:
     for path in files:
         if path.suffix.lower() != ".md":
@@ -62,57 +75,30 @@ def check_markdown_links(files: list[Path], errors: list[str]) -> None:
         text = path.read_text(encoding="utf-8")
         for raw_target in MARKDOWN_LINK_RE.findall(text):
             target = raw_target.strip().split(maxsplit=1)[0].strip("<>")
-            if not target or target.startswith(("#", "http://", "https://", "mailto:")):
+            if not target or target.startswith(("http://", "https://", "mailto:")):
                 continue
-            local = unquote(target.split("#", 1)[0])
-            resolved = (ROOT / local.lstrip("/")) if local.startswith("/") else (path.parent / local)
-            if local and not resolved.resolve().exists():
+            local, _, fragment = unquote(target).partition("#")
+            if local:
+                resolved = (ROOT / local.lstrip("/")) if local.startswith("/") else (path.parent / local)
+            else:
+                resolved = path
+            if not resolved.resolve().exists():
                 errors.append(f"{path.relative_to(ROOT)}: missing link target {target}")
+            elif fragment and resolved.suffix.lower() == ".md":
+                if fragment.lower() not in heading_anchors(resolved.read_text(encoding="utf-8")):
+                    errors.append(f"{path.relative_to(ROOT)}: missing anchor {target}")
 
 
-def check_document_languages(files: list[Path], errors: list[str]) -> None:
-    """Require an English default and a linked Simplified Chinese peer."""
-    markdown = {
-        path for path in files
-        if path.suffix.lower() == ".md"
-    }
-
-    for path in sorted(markdown):
-        name = path.name
-        text = path.read_text(encoding="utf-8")
-        opening = "\n".join(text.splitlines()[:8])
-
-        if name.endswith(".zh_CN.md"):
-            default_name = f"{name[:-len('.zh_CN.md')]}.md"
-            default_path = path.with_name(default_name)
-            if default_path not in markdown:
-                errors.append(
-                    f"{path.relative_to(ROOT)}: missing English default {default_name}"
-                )
-            elif default_name not in opening:
-                errors.append(
-                    f"{path.relative_to(ROOT)}: missing top language link to {default_name}"
-                )
+def check_chinese_only_documents(files: list[Path], errors: list[str]) -> None:
+    """Documentation is Simplified Chinese only: no language peers, no language links."""
+    for path in sorted(files):
+        if path.suffix.lower() != ".md":
             continue
-
-        chinese_name = f"{path.stem}.zh_CN.md"
-        chinese_path = path.with_name(chinese_name)
-        if chinese_path not in markdown:
-            errors.append(
-                f"{path.relative_to(ROOT)}: missing Simplified Chinese peer {chinese_name}"
-            )
-        elif chinese_name not in opening:
-            errors.append(
-                f"{path.relative_to(ROOT)}: missing top language link to {chinese_name}"
-            )
-
-        english_prose = text.replace("简体中文", "")
-        match = CJK_RE.search(english_prose)
-        if match:
-            line = english_prose.count("\n", 0, match.start()) + 1
-            errors.append(
-                f"{path.relative_to(ROOT)}:{line}: default Markdown must use English prose"
-            )
+        if path.name.endswith((".zh_CN.md", ".en_US.md")):
+            errors.append(f"{path.relative_to(ROOT)}: language-specific Markdown files are not allowed")
+        opening = "\n".join(path.read_text(encoding="utf-8").splitlines()[:8])
+        if LANGUAGE_LINK_RE.search(opening):
+            errors.append(f"{path.relative_to(ROOT)}: remove the top language link")
 
 
 def check_action_pins(errors: list[str]) -> None:
@@ -153,7 +139,7 @@ def main() -> int:
     files = text_files()
     check_required_files(errors)
     check_markdown_links(files, errors)
-    check_document_languages(files, errors)
+    check_chinese_only_documents(files, errors)
     check_action_pins(errors)
     check_sensitive_content(files, errors)
     check_conflict_markers(files, errors)

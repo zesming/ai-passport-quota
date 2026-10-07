@@ -54,16 +54,14 @@ class UsbRuntime(unittest.TestCase):
 #include <string.h>
 #include <unistd.h>
 
-enum { QUOTA_APP_EVENT_CONFIGURATION_RESULT };
-typedef struct { unsigned kind; bool success; } quota_app_event_t;
 static atomic_bool s_pairing_requested;
 static atomic_uint_fast64_t s_usb_deadline;
 static quota_frame_decoder_t *s_usb_decoder;
 static uint64_t now_ms = 1000;
 static char s_usb_session[QUOTA_USB_SESSION_BYTES + 1];
 static char s_usb_opener[9];
-static unsigned state_calls, command_calls, collector_calls, legacy_calls, posted_events;
-static char last_command_id[9], last_collector_id[9];
+static unsigned state_calls, command_calls;
+static char last_command_id[9];
 static quota_portable_submit_result_t next_submit_result = QUOTA_PORTABLE_SUBMIT_ACCEPTED;
 static bool state_succeeds = true, expire_while_serializing;
 static size_t state_length = QUOTA_PORTABLE_STATE_BYTES;
@@ -72,18 +70,6 @@ static void handle_serial_frame(const char *frame, size_t length);
 
 static uint64_t monotonic_ms(void) { return now_ms; }
 static unsigned esp_random(void) { static unsigned next = 5; next = next * 1103515245u + 12345u; return next >> 8; }
-static void post_event(const quota_app_event_t *event, int wait)
-{
-    (void)wait; assert(event && event->kind == QUOTA_APP_EVENT_CONFIGURATION_RESULT); posted_events++;
-}
-static void send_pairing_result(const char *id, bool ok, const char *error)
-{ (void)id; (void)ok; (void)error; assert(false); }
-static void set_system_time_if_newer(uint64_t time) { (void)time; }
-static void quota_service_close_pairing_window(void)
-{
-    atomic_store(&s_pairing_requested, false);
-    atomic_store(&s_usb_deadline, 0);
-}
 static quota_portable_submit_result_t quota_portable_service_submit(
     const quota_portable_command_t *command, quota_setup_transport_t transport)
 {
@@ -92,17 +78,6 @@ static quota_portable_submit_result_t quota_portable_service_submit(
     memcpy(last_command_id, command->request_id, sizeof(last_command_id));
     return next_submit_result;
 }
-static quota_portable_submit_result_t quota_portable_service_submit_collector(
-    const quota_legacy_endpoint_t *endpoint, const char request_id[9])
-{
-    assert(endpoint && endpoint->enabled);
-    collector_calls++;
-    memcpy(last_collector_id, request_id, sizeof(last_collector_id));
-    return next_submit_result;
-}
-static bool quota_portable_service_configure_legacy(
-    const quota_device_config_t *config, const char **error)
-{ (void)config; (void)error; legacy_calls++; return true; }
 static bool quota_portable_service_state_json(char *buffer, size_t capacity,
                                                size_t *length, quota_setup_transport_t transport)
 {
@@ -204,19 +179,17 @@ static void test_parser_bounds_and_shapes(void)
     assert(parse("{\"v\":2,\"op\":\"state_get\",\"request_id\":\"a1b2c3d4\",\"session_id\":\"0123456789abcdef0123456789abcdef\"}", &request, &error));
     assert(request.op == QUOTA_USB_STATE);
     assert(parse("{\"v\":2,\"op\":\"command\",\"request_id\":\"a1b2c3d4\",\"session_id\":\"0123456789abcdef0123456789abcdef\",\"body\":{\"v\":1,\"op\":\"refresh\",\"request_id\":\"a1b2c3d4\"}}", &request, &error));
-    assert(request.op == QUOTA_USB_COMMAND && request.body.command.op == QUOTA_PORTABLE_OP_REFRESH);
-    static const char legacy_token[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq";
-    char legacy_frame[1024];
-    int legacy_length = snprintf(legacy_frame, sizeof(legacy_frame),
+    assert(request.op == QUOTA_USB_COMMAND && request.command.op == QUOTA_PORTABLE_OP_REFRESH);
+    /* The version 1 frame and the operations of removed features are refused. */
+    char old_frame[1024];
+    int old_length = snprintf(old_frame, sizeof(old_frame),
         "@AIQ:{\"v\":1,\"op\":\"configure\",\"request_id\":\"a1b2c3d4\","
-        "\"ssid\":\"Office\",\"password\":\"p\\\"ass\\\\word\","
-        "\"base_url\":\"https://192.168.1.20:4318\",\"pair_token\":\"%s\","
-        "\"server_cert_pem\":\"-----BEGIN CERTIFICATE-----\\nabc\\n-----END CERTIFICATE-----\\n\","
-        "\"server_time\":1790899200}", legacy_token);
-    assert(legacy_length > 0 && (size_t)legacy_length < sizeof(legacy_frame));
-    assert(quota_usb_parse(legacy_frame, (size_t)legacy_length, &request, &error));
-    assert(request.op == QUOTA_USB_LEGACY && !strcmp(request.request_id, "a1b2c3d4"));
-    assert(!strcmp(request.body.legacy.password, "p\"ass\\word"));
+        "\"ssid\":\"Office\",\"password\":\"password\",\"server_time\":1790899200}");
+    assert(old_length > 0 && (size_t)old_length < sizeof(old_frame));
+    assert(!quota_usb_parse(old_frame, (size_t)old_length, &request, &error));
+    assert(!strcmp(error, "unsupported_version") && !strcmp(request.request_id, "a1b2c3d4"));
+    assert(!parse("{\"v\":2,\"op\":\"removed_operation\",\"request_id\":\"a1b2c3d4\",\"session_id\":\"0123456789abcdef0123456789abcdef\",\"endpoint\":{}}", &request, &error));
+    assert(!strcmp(error, "unsupported_operation"));
     quota_portable_clear_secret(&request, sizeof(request));
 
     const char *invalid[] = {
@@ -247,15 +220,6 @@ static void test_parser_bounds_and_shapes(void)
     memset(too_long, 'x', sizeof(too_long)); memcpy(too_long, "@AIQ:", 5);
     assert(!quota_usb_parse(too_long, sizeof(too_long), &request, &error));
 
-    char private_endpoint[1024];
-    char valid_token[QUOTA_PAIR_TOKEN_BYTES + 1];
-    memset(valid_token, 'A', QUOTA_PAIR_TOKEN_BYTES); valid_token[QUOTA_PAIR_TOKEN_BYTES] = '\0';
-    snprintf(private_endpoint, sizeof(private_endpoint),
-        "{\"v\":2,\"op\":\"collector_configure\",\"request_id\":\"a1b2c3d4\",\"session_id\":\"0123456789abcdef0123456789abcdef\",\"endpoint\":{\"base_url\":\"https://192.168.4.2:4318\",\"pair_token\":\"%s\",\"server_cert_pem\":\"-----BEGIN CERTIFICATE-----\\nabc\\n-----END CERTIFICATE-----\",\"server_time\":1800000000}}",
-        valid_token);
-    assert(parse(private_endpoint, &request, &error) && request.op == QUOTA_USB_COLLECTOR);
-    char *host = strstr(private_endpoint, "192.168.4.2"); assert(host); memcpy(host, "203.0.113.2", 11);
-    assert(!parse(private_endpoint, &request, &error));
     puts("USB v2 parser bounds and operation checks passed");
 }
 
@@ -287,8 +251,6 @@ static void test_session_state_and_expiry(void)
     assert(strchr(response, '\n') == response + response_length - 1); /* Exactly one state frame. */
     assert_contains(response, "\"op\":\"state\"");
     assert(response[response_length - 2] == '}' && response[response_length - 3] == '}');
-    assert(!strstr(response, "-----BEGIN CERTIFICATE-----"));
-    assert(!strstr(response, "pair_token"));
     const char *json_end = NULL;
     cJSON *whole_state_frame = cJSON_ParseWithLengthOpts(response + 5, response_length - 6,
                                                           &json_end, false);
@@ -344,7 +306,7 @@ static void test_opener_idle_takeover(void)
     puts("USB opener idle takeover checks passed");
 }
 
-static void test_command_dedup_delegation_and_collector_validation(void)
+static void test_command_dedup_delegation_and_version_gate(void)
 {
     active_session(); strcpy(s_usb_opener, "01020304");
     char frame[512]; char *response;
@@ -362,22 +324,15 @@ static void test_command_dedup_delegation_and_collector_validation(void)
     assert(command_calls == 3 && !strcmp(last_command_id, "aabbccdd"));
 
     next_submit_result = QUOTA_PORTABLE_SUBMIT_ACCEPTED;
-    char endpoint[1024];
-    snprintf(endpoint, sizeof(endpoint),
-        "@AIQ:{\"v\":2,\"op\":\"collector_configure\",\"request_id\":\"ccddeeff\",\"session_id\":\"%s\",\"endpoint\":{\"base_url\":\"https://192.168.4.2:4318\",\"pair_token\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"server_cert_pem\":\"-----BEGIN CERTIFICATE-----\\nsecret-cert\\n-----END CERTIFICATE-----\",\"server_time\":1800000000}}",
-        s_usb_session);
-    response = dispatch(endpoint);
-    assert_contains(response, "\"accepted\":true");
-    assert(collector_calls == 1 && !strcmp(last_collector_id, "ccddeeff")); free(response);
-
-    char *public_url = strstr(endpoint, "192.168.4.2"); assert(public_url);
-    memcpy(public_url, "203.0.113.2", 11);
-    response = dispatch(endpoint);
-    assert_contains(response, "\"error_code\":\"invalid_frame\"");
-    assert(collector_calls == 1);
-    assert(!strstr(response, "AAAAAAAAAAAAAAAA"));
-    assert(!strstr(response, "secret-cert")); free(response);
-    puts("USB command handoff, request receipt delegation and endpoint checks passed");
+    /* A version 1 frame from an old settings page gets an explicit version error. */
+    char old_frame[512];
+    snprintf(old_frame, sizeof(old_frame),
+        "@AIQ:{\"v\":1,\"op\":\"configure\",\"request_id\":\"ccddeeff\",\"ssid\":\"Office\",\"password\":\"secret-password\"}");
+    response = dispatch(old_frame);
+    assert_contains(response, "\"request_id\":\"ccddeeff\"");
+    assert_contains(response, "\"error_code\":\"unsupported_version\"");
+    assert(!strstr(response, "secret-password") && command_calls == 3); free(response);
+    puts("USB command handoff, request receipt delegation and version checks passed");
 }
 
 int main(void)
@@ -386,8 +341,7 @@ int main(void)
     active_session();
     test_session_state_and_expiry();
     test_opener_idle_takeover();
-    test_command_dedup_delegation_and_collector_validation();
-    assert(legacy_calls == 0 && posted_events == 0);
+    test_command_dedup_delegation_and_version_gate();
     puts("USB runtime tests passed");
 }
 '''

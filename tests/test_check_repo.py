@@ -26,32 +26,41 @@ class RepositoryChecks(unittest.TestCase):
         path.write_text(content)
         return path
 
-    def test_paired_documents_and_local_assets(self):
-        files = [self.write('guide.md', '[简体中文](guide.zh_CN.md)\n[Image](image.svg)\n'),
-                 self.write('guide.zh_CN.md', '[English](guide.md)\n# 指南\n')]
+    def test_local_assets_and_anchors(self):
+        files = [self.write('guide.md', '# 指南\n[图](image.svg) [章节](other.md#刷新显示与验证) [重复](other.md#重复-1) [本页](#指南)\n'),
+                 self.write('other.md', '# 其他\n## 刷新、显示与验证\n## 重复\n## 重复\n[回](guide.md#指南)\n')]
         self.write('image.svg', '<svg/>')
         errors = []
-        CHECKS.check_document_languages(files, errors)
         CHECKS.check_markdown_links(files, errors)
         self.assertEqual(errors, [])
 
-    def test_missing_peer_and_link(self):
-        page = self.write('guide.md', '[Image](missing.svg)\n')
+    def test_missing_link_target_and_anchor(self):
+        page = self.write('guide.md', '[图](missing.svg)\n[章节](other.md#没有)\n')
+        self.write('other.md', '# 其他\n')
         errors = []
-        CHECKS.check_document_languages([page], errors)
         CHECKS.check_markdown_links([page], errors)
         self.assertEqual(len(errors), 2)
-        self.assertIn('missing Simplified Chinese peer', errors[0])
-        self.assertIn('missing link target', errors[1])
+        self.assertIn('missing link target', errors[0])
+        self.assertIn('missing anchor', errors[1])
 
-    def test_language_links_and_default_prose(self):
-        files = [self.write('guide.md', '# English\n中文\n'),
-                 self.write('guide.zh_CN.md', '# 指南\n')]
+    def test_language_peers_and_links_are_rejected(self):
+        files = [self.write('guide.md', '[简体中文](guide.zh_CN.md) · English\n# 指南\n'),
+                 self.write('guide.zh_CN.md', '[English](guide.md)\n# 指南\n'),
+                 self.write('html.md', '<p><a href="html.zh_CN.md">x</a></p>\n'),
+                 self.write('clean.md', '# 指南\n正文提到 guide.zh_CN.md 的历史。\n' * 1)]
         errors = []
-        CHECKS.check_document_languages(files, errors)
-        self.assertEqual(len(errors), 3)
-        self.assertTrue(any('English prose' in item for item in errors))
-        self.assertEqual(sum('top language link' in item for item in errors), 2)
+        CHECKS.check_chinese_only_documents(files, errors)
+        self.assertEqual(sorted(errors), [
+            'guide.md: remove the top language link',
+            'guide.zh_CN.md: language-specific Markdown files are not allowed',
+            'guide.zh_CN.md: remove the top language link',
+            'html.md: remove the top language link'])
+
+    def test_chinese_only_documents_pass(self):
+        files = [self.write('guide.md', '# 指南\n只有中文。\n')]
+        errors = []
+        CHECKS.check_chinese_only_documents(files, errors)
+        self.assertEqual(errors, [])
 
     def test_sensitive_content_and_conflicts(self):
         samples = ['ghp_' + 'x' * 24, 'AKIA' + '0' * 16,

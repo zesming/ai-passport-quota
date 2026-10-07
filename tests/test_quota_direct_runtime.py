@@ -211,7 +211,7 @@ int main(void){
         else if(mode==21)assert(out.code==QUOTA_DIRECT_TLS_ERROR&&out.tls_error==1&&!headers_sent);
         if(mode==18)assert(now>=15000000&&performed<=15);
         if(post&&mode!=15&&mode!=16&&mode!=10&&mode!=8&&mode!=9)assert(response_allocations==1);
-        quota_direct_destroy(d);
+        quota_direct_login_cancel(d);free(d);
     }
     puts("ESP transport reservation and ownership: PASS");return 0;
 }

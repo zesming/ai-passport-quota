@@ -16,13 +16,11 @@
 #define QUOTA_PORTABLE_COMMAND_BYTES 2048
 #define QUOTA_PORTABLE_STATE_BYTES 16384
 
-typedef enum { QUOTA_ACCOUNT_DEVICE, QUOTA_ACCOUNT_LEGACY } quota_account_source_t;
-
-/* v1 storage compatibility only; no product-wide mode switching. */
+/* Persisted values: never reuse 1. */
 typedef enum {
-    QUOTA_MODE_COMPANION = 0,
-    QUOTA_MODE_DIRECT = 1,
-} quota_mode_t;
+    QUOTA_ACCOUNT_DEVICE = 0,
+    /* 1 reserved: removed source */
+} quota_account_source_t;
 
 typedef enum {
     QUOTA_PORTABLE_NETWORK_OFF = 0,
@@ -56,7 +54,6 @@ typedef enum {
 
 /* Ephemeral AP secrets are for the physical device QR only, never public JSON. */
 typedef struct {
-    quota_mode_t mode;
     bool setup_active;
     bool setup_ready;
     uint32_t setup_seconds_left;
@@ -79,31 +76,16 @@ typedef struct {
     /* Indexed like the active snapshot; transport errors are not Wi-Fi state. */
     char account_errors[QUOTA_MAX_ACCOUNTS][QUOTA_PORTABLE_ERROR_BYTES + 1];
     uint64_t account_retry_at[QUOTA_MAX_ACCOUNTS];
-    quota_account_source_t account_sources[QUOTA_MAX_ACCOUNTS];
     /* Password-free snapshot of the committed saved network inventory. */
     uint8_t saved_network_count;
     uint8_t selected_saved_network;
     char saved_network_ssids[QUOTA_PORTABLE_NETWORKS][QUOTA_SSID_MAX_BYTES + 1];
-    bool pending_saved_network_present;
-    char pending_saved_network_ssid[QUOTA_SSID_MAX_BYTES + 1];
 } quota_portable_view_t;
 
 typedef struct {
     char ssid[QUOTA_SSID_MAX_BYTES + 1];
     char password[QUOTA_PASSWORD_MAX_BYTES + 1];
 } quota_portable_network_t;
-
-typedef struct {
-    quota_mode_t mode;
-    uint8_t network_count;
-    uint8_t selected_network;
-    quota_portable_network_t networks[QUOTA_PORTABLE_NETWORKS];
-    uint16_t refresh_seconds;
-    bool auto_refresh;
-    uint16_t screen_timeout_seconds;
-    char selected_account_id[QUOTA_ACCOUNT_ID_BYTES + 1];
-    uint64_t last_known_time;
-} quota_portable_config_t;
 
 /* Allocate/load one at a time; never keep an array of eight token bundles. */
 typedef struct {
@@ -127,12 +109,6 @@ typedef struct {
 
 typedef quota_portable_credential_t quota_direct_credential_t;
 
-typedef struct {
-    char id[QUOTA_ACCOUNT_ID_BYTES + 1];
-    quota_provider_t provider;
-    uint32_t generation;
-} quota_portable_account_ref_t;
-
 typedef enum {
     QUOTA_PORTABLE_OP_INVALID = 0,
     QUOTA_PORTABLE_OP_NETWORK_SAVE,
@@ -147,11 +123,6 @@ typedef enum {
     QUOTA_PORTABLE_OP_REFRESH,
     QUOTA_PORTABLE_OP_RECONNECT,
     QUOTA_PORTABLE_OP_OPERATION_CANCEL,
-    QUOTA_PORTABLE_OP_ACCOUNT_ACTIVATE,
-    QUOTA_PORTABLE_OP_ACCOUNT_DEACTIVATE,
-    QUOTA_PORTABLE_OP_EXTERNAL_IMPORT,
-    QUOTA_PORTABLE_OP_NETWORK_ACTIVATE,
-    QUOTA_PORTABLE_OP_COLLECTOR_CONFIGURE, /* Owner-only USB endpoint operation. */
 } quota_portable_op_t;
 
 typedef enum { QUOTA_SETUP_AP = 0, QUOTA_SETUP_USB } quota_setup_transport_t;
@@ -171,13 +142,8 @@ typedef struct {
     uint16_t refresh_seconds;
     bool auto_refresh;
     uint16_t screen_timeout_seconds;
-    quota_mode_t mode;
     char target_request_id[9];
-    char replace_active_id[QUOTA_ACCOUNT_ID_BYTES + 1];
-    char remote_account_id[QUOTA_ACCOUNT_ID_BYTES + 1];
-    uint8_t replace_index;
     /* Captured by the service, never accepted from a phone request. */
-    quota_mode_t accepted_mode;
     uint32_t accepted_config_generation;
     quota_setup_transport_t accepted_transport;
     uint64_t accepted_usb_deadline;

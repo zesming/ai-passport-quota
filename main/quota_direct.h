@@ -102,15 +102,14 @@ typedef struct {
 
 quota_direct_t *quota_direct_create(const quota_direct_hooks_t *hooks,
     quota_direct_transport_t transport, void *transport_context);
-void quota_direct_destroy(quota_direct_t *direct);
 /* Each operation is synchronous and bounded, called by the ONE network owner.
  * Login steps perform at most one HTTP phase; no fifteen-minute blocking loop.
  * Credentials are caller-owned. A successful token response updates them only
  * after complete validation. PERSIST_PENDING borrows that SAME credential
- * pointer: retain it, unmodified, until has_pending_persist becomes false or
- * the context is destroyed. No other operation may reuse its backing storage
- * while pending. The provider never frees or wipes caller-owned credentials,
- * including on retry completion, account cancellation, and context destroy. */
+ * pointer: retain it, unmodified, until has_pending_persist becomes false.
+ * No other operation may reuse its backing storage while pending. The
+ * provider never frees or wipes caller-owned credentials, including on retry
+ * completion and account cancellation. */
 quota_direct_result_t quota_direct_login_begin(quota_direct_t *direct,
     const quota_direct_credential_t *credential, uint64_t monotonic_ms, uint64_t valid_utc);
 quota_direct_result_t quota_direct_login_step(quota_direct_t *direct,
@@ -127,4 +126,3 @@ quota_direct_result_t quota_direct_refresh(quota_direct_t *direct,
  * by account deletion. Mode/display changes are not account deletion. */
 quota_direct_result_t quota_direct_retry_persist(quota_direct_t *direct);
 bool quota_direct_has_pending_persist(const quota_direct_t *direct);
-const char *quota_direct_error_name(quota_direct_result_code_t code);
