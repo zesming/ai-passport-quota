@@ -106,5 +106,5 @@ if(usbMode){
  message('先连接 USB，再在设备选择「设备设置 → USB 设置」打开限时窗口。');
 }else if(/^[A-Za-z0-9_-]{43}$/.test(setupSecret))poll();else{setupSecret='';message('手机或电脑连接设备热点后，输入第三步的完整密钥，或扫描第二步二维码。');}
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll();});
-document.addEventListener('pagehide',()=>{setupSecret='';clearSecretInputs();if(usbPortSession)void usbPortSession.close();usbPortSession=null;usbSessionReady=false;});
+globalThis.addEventListener('pagehide',()=>{const connection=usbPortSession;usbPortSession=null;clearSession();if(connection)void connection.close();});
 setInterval(()=>{if(!document.hidden)poll();},2000);

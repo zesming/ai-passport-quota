@@ -12,14 +12,14 @@ assert(!/mode_select|id="mode"|switch-direct/.test(html),'shared setup has no gl
 assert(html.includes('src="./portable_setup.mjs"'),'embedded page loads the shared external module');
 assert(!/<script>/.test(html),'shared setup has no inline script');
 function harness({usb=false,usbSession=null}={}){
- const nodes=new Map();
+ const nodes=new Map(),windowEvents=new Map();
  const node=id=>{if(!nodes.has(id))nodes.set(id,{id,value:'',innerHTML:'',textContent:'',className:'',hidden:false,disabled:false,checked:false,dataset:{},classList:{toggle(){}},setAttribute(){},querySelectorAll(){return [];},querySelector(){return node(id+'-button');}});return nodes.get(id);};
  for(const match of html.matchAll(/id="([^"]+)"/g))node(match[1]);
  const tabs=['accounts','network','settings'].map(tab=>({dataset:{tab},classList:{toggle(){}},setAttribute(){}}));
  const document={hidden:false,getElementById:node,querySelectorAll:selector=>selector==='[data-tab]'?tabs:selector==='button,input,select'?[...nodes.values()]:[],addEventListener(){}};
- const context={document,location:{hash:'',search:usb?'?transport=usb':'',pathname:'/',hostname:'localhost'},history:{replaceState(_a,_b,path){context.cleaned=path;}},URL,URLSearchParams,TextEncoder,Date,crypto:webcrypto,navigator:{serial:{requestPort:async()=>({})}},DeviceSerialError:class extends Error{constructor(code){super(code);this.code=code;}},serialErrorMessage:error=>error?.code||null,makeUsbRequestId:()=>'1234abcd',openUsbDeviceSession:async()=>usbSession,setInterval(){},setTimeout:callback=>callback(),fetch:async()=>{throw Error('unexpected fetch');}};
+ const context={document,addEventListener:(name,handler)=>windowEvents.set(name,handler),location:{hash:'',search:usb?'?transport=usb':'',pathname:'/',hostname:'localhost'},history:{replaceState(_a,_b,path){context.cleaned=path;}},URL,URLSearchParams,TextEncoder,Date,crypto:webcrypto,navigator:{serial:{requestPort:async()=>({})}},DeviceSerialError:class extends Error{constructor(code){super(code);this.code=code;}},serialErrorMessage:error=>error?.code||null,makeUsbRequestId:()=>'1234abcd',openUsbDeviceSession:async()=>usbSession,setInterval(){},setTimeout:callback=>callback(),fetch:async()=>{throw Error('unexpected fetch');}};
  vm.createContext(context);vm.runInContext(source+`\nglobalThis.test={render,jobText,accountStatus,command,poll,launchCodex,startSession,connectUsbPort,connectUsbSession,configureCollector,setup(stateValue){state=stateValue;stopped=false;busy=false;launchBusy=false;setupSecret='${secret}';},select(id){selectedId=id;confirmation=null;removingId='';},getSecret(){return setupSecret;},hasSession};`,context);
- return {context,node,test:context.test};
+ return {context,node,test:context.test,emitWindow:name=>windowEvents.get(name)?.()};
 }
 const account=(id='synthetic-account',provider='deepseek',extra={})=>({id,provider,label:'Synthetic '+id,source:'device',status:'ok',balance:{balance_infos:[{currency:'CNY',total_balance:'123.456700'}]},...extra});
 const state=()=>({session:{remaining_seconds:590},network:{connected:true,state:'connected',ssid:'Synthetic Wi-Fi',saved_networks:[{index:0,ssid:'Synthetic Wi-Fi',selected:true},{index:1,ssid:'Other synthetic Wi-Fi',selected:false}]},clock:{synchronized:true,epoch:1800000000},settings:{auto_refresh:true,refresh_seconds:300,screen_timeout_seconds:120},accounts:[account()],pending_accounts:[],collector:{configured:true,connected:false,epoch:1,discovery:[]},jobs:[],operation:{kind:'none'}});
@@ -103,5 +103,17 @@ for(const reject of [false,true]){
  await test.connectUsbSession();assert.equal(resets,1,'a retry after a state timeout reuses the confirmed opener and session');assert.equal(reads,3);assert.equal(sent.length,1,'the new window is read before another mutation is allowed');assert.equal(test.hasSession(),true);assert.equal(closes,0);
  await node('reconnect').onclick();assert.equal(sent.at(-1).op,'reconnect');assert.equal(test.hasSession(),true,'USB reconnect keeps the settings window and port open');assert.equal(closes,0);
  await node('close-setup').onclick();assert.equal(sent.at(-1).op,'setup_close');assert.equal(closes,1,'explicit setup_close closes the USB port');
+}
+for(const usbMode of [false,true]){
+ let closes=0;const s=state();
+ const usb={async openSession(){},async stateGet(){return s;},async close(){closes++;}};
+ const {context,node,test,emitWindow}=harness({usb:usbMode,usbSession:usb});
+ context.fetch=async()=>response(usbMode?{csrf_token:'synthetic-csrf',interfaces:[],device:{}}:s);
+ if(usbMode){await test.connectUsbPort();await test.connectUsbSession();}else await test.startSession(secret);
+ for(const id of ['session-secret','wifi-password','deepseek-key','replace-key'])node(id).value='synthetic-secret';
+ emitWindow('pagehide');
+ assert.equal(test.hasSession(),false);assert.equal(test.getSecret(),'');assert.equal(node('session-content').hidden,true);
+ for(const id of ['session-secret','wifi-password','deepseek-key','replace-key'])assert.equal(node(id).value,'');
+ assert.equal(closes,usbMode?1:0,'the window pagehide event releases USB without another request');
 }
 console.log('Shared device page: AP regression and USB-native settings, secret routing, fixed Codex URL, collector pairing and explicit import PASS');
