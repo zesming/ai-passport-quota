@@ -30,7 +30,8 @@ function job(body,status='queued',error_code=''){state.jobs.push({request_id:bod
 const server=http.createServer(async(request,response)=>{
  const url=new URL(request.url,'http://127.0.0.1:'+port);
  if(url.pathname.startsWith('/__preview/')){scenario=url.pathname.slice(11);reset();idempotent.clear();response.writeHead(302,{Location:scenario==='manual'?'/':'/#s='+secret});response.end();return;}
- if(url.pathname==='/'){response.writeHead(200,{'Content-Type':'text/html;charset=utf-8','Cache-Control':'no-store','Referrer-Policy':'no-referrer','Content-Security-Policy':"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"});response.end(fs.readFileSync(htmlPath));return;}
+ if(url.pathname==='/'){response.writeHead(200,{'Content-Type':'text/html;charset=utf-8','Cache-Control':'no-store','Referrer-Policy':'no-referrer','Content-Security-Policy':"default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"});response.end(fs.readFileSync(htmlPath));return;}
+ if(['/portable_setup.mjs','/portable_serial.mjs'].includes(url.pathname)&&request.method==='GET'){response.writeHead(200,{'Content-Type':'text/javascript;charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});response.end(fs.readFileSync(path.join(root,'main',url.pathname.slice(1))));return;}
  if(request.headers['x-aiq-setup']!==secret)return send(response,401,{ok:false,error_code:'unauthorized'});
  if(!state.session.active)return send(response,401,{ok:false,error_code:'session_expired'});
  if(url.pathname==='/api/state'&&request.method==='GET')return send(response,200,state);

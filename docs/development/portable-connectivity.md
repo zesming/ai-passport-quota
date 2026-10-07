@@ -16,13 +16,21 @@ A physical **Device settings → Hotspot** action opens a temporary WPA2 hotspot
 
 Up/Down cycles the three screens; short OK advances or reopens an expired window; long OK closes and returns. QRs retain integer module scaling and a four-module quiet zone. The local page has Accounts, Network and Settings tabs, 16-pixel inputs and controls at least 44 pixels high. No CDN, hosted backend, browser storage or Web Bluetooth is required. The setup key stays in memory; fields/URL are cleared after use. Expiry disables changes, and reopening requires a physical action/fresh key.
 
+## Computer USB setup
+
+Manually start the computer page, open `http://127.0.0.1:4317/` in desktop Chrome/Edge, and choose USB device settings. Connect the port and wait for boot first, then select **Device settings → USB** on Passport and connect the settings window. Keep the same port open; reopening can reset the device.
+
+The physical window is fixed at two minutes and the browser cannot extend/reopen it. Accounts, Network and Settings share the hotspot page's controls; USB keeps device Wi-Fi running. The computer can show the Codex code/official link; key/network candidates validate immediately. Finish setup closes access after allowing its receipt to leave; reconnect keeps USB open. The fifteen-minute authorization can continue after USB expiry; reopen explicitly and read status first. Closing the page does not cancel accepted work.
+
+Explicitly pair this computer collector, then import Claude from verified discovery. Desktop provider credentials are not copied. Passwords/keys stay in page memory and go directly over USB, never through the computer API or browser storage.
+
 ## Accounts and network
 
 Device-sourced Codex/DeepSeek and collector-sourced accounts share one list. Each row distinguishes source, readiness, error/backoff and observation age. Native controls do not depend on collector availability. Claude states that a manually running collector is required and offers no native authorization. Removing a collector row removes it from Passport, not the provider/computer. Source replacement and rebind require explicit inline confirmation; email is not an identity match.
 
 At most eight accounts are active. Historical pending rows retain credentials and can be activated, deactivated or swapped with a named active row without deletion. Verified collector discovery requires explicit import; unknown rows never join automatically. Full descriptor/native-slot capacity reports a clear error. Existing native accounts can reauthorize using their own slot even when all slots are occupied.
 
-Saving Wi-Fi accepts a candidate, not verified connectivity. End setup, reconnect, timeout or Codex launch closes the AP before station connection. The candidate has a 25-second validation deadline; only connection and verified storage success replace the saved profile. Failure keeps the prior settings. Three saved networks are supported; an exact historical fourth profile remains pending and can explicitly swap with a named saved profile. Ambiguous same-SSID/different-password profiles require an explicit replacement index.
+Saving Wi-Fi accepts a candidate, not verified connectivity. End setup, reconnect, timeout or Codex launch closes the AP before station connection. USB candidates validate immediately; hotspot candidates validate after closing. The candidate has a 25-second validation deadline; only connection and verified storage success replace the saved profile. Failure keeps the prior settings. Three saved networks are supported; an exact historical fourth profile remains pending and can explicitly swap with a named saved profile. Ambiguous same-SSID/different-password profiles require an explicit replacement index.
 
 Codex uses queue then launch: wait for confirmed preparation, close the AP, connect to saved Wi-Fi, show the official authorization QR/full code, and run a bounded fifteen-minute device-code flow. Restore Internet access on the phone/computer and approve on the official site. No browser callback or continued AP connection is required. Device states distinguish connecting, requesting code, waiting, exchanging, saving and terminal result. This experimental client-compatible integration needs real provider/device acceptance.
 
@@ -32,7 +40,7 @@ Jobs remain queued/running until actual completion; a closing-command ACK allows
 
 ## Device controls and refresh
 
-Keep the 240 × 320 dark display and 216 × 8 quota tracks. HOME Up/Down switches accounts, short OK refreshes all and long OK opens settings. Submenus use short OK to confirm and long OK to return. AUTH long OK cancels unsent work or returns from terminal state. Long Down sleeps; the first complete wake gesture only wakes. Network information is a passive saved-Wi-Fi/status page. Device settings offers Hotspot and USB; entering the chooser opens neither transport. USB remains a physical 120-second collector-pairing action, with no permanent reader or autostart.
+Keep the 240 × 320 dark display and 216 × 8 quota tracks. HOME Up/Down switches accounts, short OK refreshes all and long OK opens settings. Submenus use short OK to confirm and long OK to return. AUTH short OK opens a new USB window without canceling authorization; long OK revokes USB access and cancels unsent work or returns from terminal state. Long Down sleeps; the first complete wake gesture only wakes. Network information is a passive saved-Wi-Fi/status page. Device settings offers Hotspot and USB; entering the chooser opens neither transport. USB is a physical 120-second device-settings window, with no permanent reader or autostart.
 
 One device cadence controls manual or 1/5/15/30-minute refresh. Screen-off closes AP/Wi-Fi and admits no new HTTP; current bounded requests may settle. Authorization pauses but its deadline continues. Received-token persistence and deadlines continue without network. Wake presents cache, reconnects and resumes due/manual work. Collector cache reads are silent and do not move the provider deadline. Setup/login holds the display awake only within its window, preserving the saved never/30/60/120/300/600-second sleep setting.
 

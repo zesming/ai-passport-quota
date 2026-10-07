@@ -16,6 +16,10 @@ static char s_secret[QUOTA_PORTABLE_SESSION_BYTES + 1];
 
 extern const unsigned char setup_html_start[] __asm__("_binary_portable_setup_html_start");
 extern const unsigned char setup_html_end[] __asm__("_binary_portable_setup_html_end");
+extern const unsigned char setup_js_start[] __asm__("_binary_portable_setup_mjs_start");
+extern const unsigned char setup_js_end[] __asm__("_binary_portable_setup_mjs_end");
+extern const unsigned char serial_js_start[] __asm__("_binary_portable_serial_mjs_start");
+extern const unsigned char serial_js_end[] __asm__("_binary_portable_serial_mjs_end");
 
 bool quota_portal_host_is_valid(const char *host)
 {
@@ -48,6 +52,14 @@ static bool unique_keys(const cJSON *object)
             if (b->string != NULL && strcmp(a->string, b->string) == 0) return false;
     }
     return true;
+}
+void quota_portal_clear_json(cJSON *json)
+{
+    for(cJSON *item=json;item;item=item->next){
+        if(item->child)quota_portal_clear_json(item->child);
+        if(item->valuestring)quota_portable_clear_secret(item->valuestring,strlen(item->valuestring));
+        if(item->string)quota_portable_clear_secret(item->string,strlen(item->string));
+    }
 }
 
 static bool embedded_nul(const char *json, size_t length)
@@ -83,14 +95,6 @@ static bool structure_bounded(const char *json, size_t length)
     return !quoted && depth == 0;
 }
 
-static void clear_json_strings(cJSON *object)
-{
-    for (cJSON *item = object; item != NULL; item = item->next) {
-        if (item->valuestring != NULL)
-            quota_portable_clear_secret(item->valuestring, strlen(item->valuestring));
-        if (item->child != NULL) clear_json_strings(item->child);
-    }
-}
 
 static bool copy_text(const cJSON *object, const char *name, char *output,
                        size_t capacity, bool required, bool empty)
@@ -282,8 +286,7 @@ bool quota_portal_parse_command(const char *json, size_t length, quota_portable_
     else ok = false;
     if (ok) ok = keys_allowed(root, allowed);
     /* cJSON also owns copies of API keys/passwords. Clear its string values. */
-    clear_json_strings(root);
-    cJSON_Delete(root);
+    quota_portal_clear_json(root);cJSON_Delete(root);
     if (!ok) quota_portable_clear_secret(command, sizeof(*command));
     return ok;
 }
@@ -365,10 +368,22 @@ static esp_err_t page_handler(httpd_req_t *request)
     httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff");
     httpd_resp_set_hdr(request, "Referrer-Policy", "no-referrer");
     httpd_resp_set_hdr(request, "Content-Security-Policy",
-                       "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
+                       "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
     size_t length = (size_t)(setup_html_end - setup_html_start);
     if (length != 0 && setup_html_start[length - 1] == 0) length--;
     return httpd_resp_send(request, (const char *)setup_html_start, length);
+}
+static esp_err_t module_handler(httpd_req_t *request)
+{
+    const char *denial;
+    if(!authorize(request,false,false,&denial))return reply_error(request,"403 Forbidden",denial);
+    const unsigned char *start=request->user_ctx?serial_js_start:setup_js_start;
+    const unsigned char *end=request->user_ctx?serial_js_end:setup_js_end;
+    size_t length=(size_t)(end-start);if(length&&start[length-1]==0)length--;
+    httpd_resp_set_type(request,"text/javascript; charset=utf-8");
+    httpd_resp_set_hdr(request,"Cache-Control","no-store");
+    httpd_resp_set_hdr(request,"X-Content-Type-Options","nosniff");
+    return httpd_resp_send(request,(const char *)start,length);
 }
 
 static esp_err_t state_handler(httpd_req_t *request)
@@ -459,13 +474,15 @@ bool quota_portal_start(const char *secret, const quota_portal_callbacks_t *call
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.stack_size = 8192;
     config.max_open_sockets = 2;
-    config.max_uri_handlers = 3;
+    config.max_uri_handlers = 5;
     config.lru_purge_enable = true;
     config.recv_wait_timeout = 3;
     config.send_wait_timeout = 3;
     if (httpd_start(&s_server, &config) != ESP_OK) { quota_portal_stop(); return false; }
     const httpd_uri_t routes[] = {
         {.uri = "/", .method = HTTP_GET, .handler = page_handler},
+        {.uri = "/portable_setup.mjs", .method = HTTP_GET, .handler = module_handler},
+        {.uri = "/portable_serial.mjs", .method = HTTP_GET, .handler = module_handler, .user_ctx = (void *)1},
         {.uri = "/api/state", .method = HTTP_GET, .handler = state_handler},
         {.uri = "/api/command", .method = HTTP_POST, .handler = command_handler},
     };

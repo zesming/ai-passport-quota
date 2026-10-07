@@ -13,7 +13,10 @@ class HttpRuntime(unittest.TestCase):
             match = re.search(r"typedef " + kind + r" \{[^{}]*\} " + name + r";", source)
             self.assertIsNotNone(match, name)
             definitions.append(match[0])
-        functions = "\n".join(extract_function(source, name) for name in (
+        functions = extract_function(source, "pairing_requested") + "\n"
+        functions += "\n".join(line for line in source.splitlines() if line.startswith((
+            "static uint64_t usb_deadline_ms(", "static bool usb_blocked("))) + "\n"
+        functions += "\n".join(extract_function(source, name) for name in (
             "display_generation_is_current", "network_operation_is_current", "http_request"))
         harness = r'''
 #include "quota_portable.h"
@@ -46,9 +49,10 @@ static http_body_t *response_body;
 static display_scheduler_t s_display_scheduler;
 static unsigned s_config_generation;
 static atomic_bool s_pairing_requested;
+static atomic_bool s_usb_io_busy;
+static atomic_uint_fast64_t s_usb_deadline;
 static struct { bool connected, configured; } s_view;
 static int s_display_state_mux;
-static bool pairing_requested(void);
 static unsigned critical_depth, mutex_depth, inits, performs, cleanups, content_types, fields;
 static bool init_fails, header_fails, body_overflow, body_redirect;
 static esp_err_t perform_error;
@@ -133,12 +137,12 @@ static void sleep_then_wake(void) { s_display_scheduler.generation += 2; s_displ
 static void disconnect_now(void) { s_view.connected = false; }
 static void reconnect_now(void) { s_view.connected = true; }
 static void change_config(void) { s_config_generation++; }
-static bool pairing_requested(void) { return atomic_load(&s_pairing_requested); }
 static void request_pairing(void) { atomic_store(&s_pairing_requested, true); }
 static void reset(void) {
     s_display_scheduler = (display_scheduler_t){.generation = 1};
     s_config_generation = 1; s_view.configured = true; s_view.connected = true;
     atomic_store(&s_pairing_requested, false);
+    atomic_store(&s_usb_io_busy, false); atomic_store(&s_usb_deadline, 0);
     config = (quota_device_config_t){0};
     strcpy(config.base_url, "https://127.0.0.1:4318");
     strcpy(config.server_cert_pem, "synthetic certificate");
@@ -173,6 +177,10 @@ int main(void) {
     reset(); change_config(); assert(!request(HTTP_METHOD_GET, NULL)); expect_deferred(false);
     reset(); s_view.configured = false; assert(!request(HTTP_METHOD_GET, NULL)); expect_deferred(false);
     reset(); atomic_store(&s_pairing_requested, true);
+    assert(!request(HTTP_METHOD_GET, NULL)); expect_deferred(false);
+    reset(); atomic_store(&s_pairing_requested, true); atomic_store(&s_usb_deadline, 120000);
+    assert(request(HTTP_METHOD_GET, NULL));
+    reset(); atomic_store(&s_usb_io_busy, true);
     assert(!request(HTTP_METHOD_GET, NULL)); expect_deferred(false);
     /* The display changes while the preflight waits for the configuration mutex. */
     reset(); on_mutex = sleep_now; assert(!request(HTTP_METHOD_GET, NULL)); expect_deferred(false);

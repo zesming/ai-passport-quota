@@ -640,6 +640,21 @@ static bool json_request_id(const cJSON *root, char request_id_out[9])
     return true;
 }
 
+static void clear_provision_bytes(void *buffer, size_t length)
+{
+    volatile unsigned char *bytes = buffer;
+    while (length--) *bytes++ = 0;
+}
+
+static void clear_provision_json(cJSON *json)
+{
+    for (cJSON *item = json; item; item = item->next) {
+        if (item->child) clear_provision_json(item->child);
+        if (item->valuestring) clear_provision_bytes(item->valuestring, strlen(item->valuestring));
+        if (item->string) clear_provision_bytes(item->string, strlen(item->string));
+    }
+}
+
 bool quota_parse_provision_frame(const char *frame, size_t frame_length,
                                  quota_device_config_t *config,
                                  char request_id_out[9], const char **error_code_out)
@@ -660,6 +675,7 @@ bool quota_parse_provision_frame(const char *frame, size_t frame_length,
     const char *parse_end = NULL;
     cJSON *root = cJSON_ParseWithLengthOpts((char *)json, json_length, &parse_end, false);
     if (root == NULL || parse_end == NULL) {
+        clear_provision_json(root);
         cJSON_Delete(root);
         set_error(error_code_out, "invalid_json");
         return false;
@@ -668,6 +684,7 @@ bool quota_parse_provision_frame(const char *frame, size_t frame_length,
     while (parse_end < end && (*parse_end == ' ' || *parse_end == '\t' ||
                                *parse_end == '\r' || *parse_end == '\n')) parse_end++;
     if (parse_end != end || !object_has_unique_keys(root)) {
+        clear_provision_json(root);
         cJSON_Delete(root);
         set_error(error_code_out, "invalid_json");
         return false;
@@ -722,12 +739,16 @@ bool quota_parse_provision_frame(const char *frame, size_t frame_length,
             parsed.refresh_seconds = QUOTA_REFRESH_DEFAULT_SECONDS;
             parsed.auto_refresh = true;
             *config = parsed;
+            clear_provision_bytes(&parsed, sizeof(parsed));
             set_error(error_code_out, NULL);
+            clear_provision_json(root);
             cJSON_Delete(root);
             return true;
         }
+        clear_provision_bytes(&parsed, sizeof(parsed));
     }
 
+    clear_provision_json(root);
     cJSON_Delete(root);
     return false;
 }
@@ -949,6 +970,8 @@ quota_action_t quota_navigation_handle(quota_navigation_t *navigation,
             navigation->phone_step = wrap_index(navigation->phone_step, 1, 3);
             return QUOTA_ACTION_RENEW_PHONE;
         case QUOTA_SCREEN_AUTH:
+            navigation->setup_return_screen = QUOTA_SCREEN_AUTH;
+            navigation->screen = QUOTA_SCREEN_SETUP;
             return QUOTA_ACTION_NONE;
         case QUOTA_SCREEN_SLEEP:
             if (navigation->sleep_focus >= QUOTA_SCREEN_TIMEOUT_COUNT) return QUOTA_ACTION_NONE;

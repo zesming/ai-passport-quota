@@ -8,8 +8,9 @@
 | --- | --- |
 | Firmware input and display lifecycle | `main/main.c` |
 | Pure state, parsing and timing | `main/quota_logic.c`, `main/quota_logic.h` |
-| Network worker and legacy USB/companion | `main/quota_service.c` |
-| Account catalog, controller, auth/query, storage and setup page | `main/quota_catalog.c`, `main/quota_portable_service.c`, `main/quota_direct*.c`, `main/quota_store.c`, `main/quota_portal.c`, `main/portable_setup.html` |
+| Network/USB owner and frame parsing | `main/quota_service.c`, `main/quota_usb.c` |
+| Account catalog, controller, auth/query and storage | `main/quota_catalog.c`, `main/quota_portable_service.c`, `main/quota_direct*.c`, `main/quota_store.c` |
+| Shared hotspot/USB setup page | `main/quota_portal.c`, `main/portable_setup.html`, `main/portable_setup.mjs`, `main/portable_serial.mjs` |
 | Dashboard and display assets | `main/quota_ui.c`, `main/quota_brand_assets.c`, `assets/` |
 | Board drivers | `components/bsp/include/`, `components/bsp/src/` |
 | Desktop UI and USB | `companion/src/` |

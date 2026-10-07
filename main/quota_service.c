@@ -1,6 +1,7 @@
 #include "quota_service.h"
 #include "quota_portable_service.h"
 #include "quota_store.h"
+#include "quota_usb.h"
 
 #include "cJSON.h"
 #include "driver/usb_serial_jtag_vfs.h"
@@ -9,6 +10,7 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
+#include "esp_random.h"
 #include "esp_wifi.h"
 #include "esp_wifi_default.h"
 #include "nvs.h"
@@ -148,6 +150,10 @@ typedef union {
 
 static companion_workspace_t *s_companion_work;
 static quota_frame_decoder_t *s_usb_decoder;
+static atomic_uint_fast64_t s_usb_deadline;
+static atomic_bool s_usb_io_busy;
+static uint64_t s_usb_partial_at;
+static char s_usb_session[QUOTA_USB_SESSION_BYTES+1],s_usb_opener[9];
 static bool s_balance_cache_present;
 
 static companion_workspace_t *companion_work(void)
@@ -182,6 +188,10 @@ static bool pairing_requested(void)
 {
     return atomic_load(&s_pairing_requested);
 }
+static uint64_t monotonic_ms(void);
+static uint64_t usb_deadline_ms(void) { return atomic_load(&s_usb_deadline); }
+static bool usb_active(void) { return pairing_requested() && monotonic_ms()<usb_deadline_ms(); }
+static bool usb_blocked(void) { return atomic_load(&s_usb_io_busy) || (pairing_requested() && !usb_deadline_ms()); }
 
 static void mutex_lock(void)
 {
@@ -426,14 +436,6 @@ static bool pairing_active_locked(uint64_t now_ms)
 {
     return quota_pairing_window_active(s_pairing_screen_open, now_ms,
                                        (uint64_t)s_pairing_opened_at_ms);
-}
-
-static bool pairing_active(void)
-{
-    mutex_lock();
-    bool active = pairing_active_locked(monotonic_ms());
-    mutex_unlock();
-    return active;
 }
 
 static bool prepare_network_stack(void)
@@ -746,7 +748,7 @@ static bool operation_is_current(uint32_t config_generation,uint32_t display_gen
 }
 static bool network_operation_is_current(uint32_t config_generation,uint32_t display_generation)
 {
-    if(pairing_requested())return false;
+    if(usb_blocked())return false;
 #ifdef ESP_PLATFORM
     if(!quota_portable_service_http_allowed())return false;
 #endif
@@ -815,7 +817,7 @@ static void network_task(void *arg)
         display_state_t waiting=display_state_snapshot();
         (void)ulTaskNotifyTake(pdTRUE,network_wait(waiting.sleeping));
         display_state_t display=display_state_snapshot();
-        if(!pairing_requested())service_pairing_tick(display.sleeping);
+        service_pairing_tick(display.sleeping);
 #ifdef ESP_PLATFORM
         quota_portable_service_tick(display.sleeping,display.generation);
 #endif
@@ -860,61 +862,121 @@ static void send_pairing_result(const char request_id[9], bool ok, const char *e
     (void)fflush(stdout);
 }
 
+static void release_usb_decoder(void)
+{
+    if(s_usb_decoder){quota_portable_clear_secret(s_usb_decoder,sizeof(*s_usb_decoder));free(s_usb_decoder);s_usb_decoder=NULL;}
+    s_usb_partial_at=0;
+}
+static bool usb_authorized(const char *session)
+{
+    if(!usb_active()||!s_usb_opener[0]||!session||strlen(session)!=QUOTA_USB_SESSION_BYTES)return false;
+    unsigned difference=0;for(unsigned i=0;i<QUOTA_USB_SESSION_BYTES;i++)difference|=(unsigned char)session[i]^(unsigned char)s_usb_session[i];
+    return difference==0;
+}
+static void send_usb_result(const char *id,const char *session,const char *error,bool accepted)
+{
+    if(!error&&(!usb_active()||(session&&!usb_authorized(session))))error="session_expired";
+    char response[320];
+    int length=error?snprintf(response,sizeof(response),"@AIQ:{\"v\":2,\"op\":\"result\",\"request_id\":\"%.8s\",\"ok\":false,\"error_code\":\"%s\"}\n",id?id:"00000000",error):
+        snprintf(response,sizeof(response),"@AIQ:{\"v\":2,\"op\":\"result\",\"request_id\":\"%.8s\",\"ok\":true,\"session_id\":\"%.32s\",\"accepted\":%s}\n",id?id:"00000000",session?session:"",accepted?"true":"false");
+    if(length>0&&(size_t)length<sizeof(response))(void)fwrite(response,1,(size_t)length,stdout);
+    (void)fflush(stdout);
+}
+static void send_usb_state(const char *id,const char *session)
+{
+    char *response=malloc(QUOTA_USB_RESPONSE_BYTES);
+    if(!response){send_usb_result(id,session,"no_memory",false);return;}
+    int prefix=snprintf(response,QUOTA_USB_RESPONSE_BYTES,"@AIQ:{\"v\":2,\"op\":\"state\",\"request_id\":\"%.8s\",\"session_id\":\"%.32s\",\"ok\":true,\"state\":",id,session);
+    size_t length=0;bool ok=prefix>0&&(size_t)prefix+QUOTA_PORTABLE_STATE_BYTES+3<=QUOTA_USB_RESPONSE_BYTES;
+#ifdef ESP_PLATFORM
+    if(ok)ok=quota_portable_service_state_json(response+prefix,QUOTA_PORTABLE_STATE_BYTES+1,&length,QUOTA_SETUP_USB)&&length&&length<=QUOTA_PORTABLE_STATE_BYTES;
+#else
+    ok=false;
+#endif
+    if(ok&&usb_authorized(session)){response[prefix+length]='}';response[prefix+length+1]='\n';(void)fwrite(response,1,(size_t)prefix+length+2,stdout);(void)fflush(stdout);}
+    else send_usb_result(id,NULL,usb_authorized(session)?"state_unavailable":"session_expired",false);
+    quota_portable_clear_secret(response,QUOTA_USB_RESPONSE_BYTES);free(response);
+}
 static void handle_serial_frame(const char *frame,size_t length)
 {
-    if(!frame||length<5||memcmp(frame,"@AIQ:",5)||!s_companion_work)return;
-    memset(&s_provision_config,0,sizeof(s_provision_config));char request_id[9]="00000000";const char *error=NULL;
-    bool valid=quota_parse_provision_frame(frame,length,&s_provision_config,request_id,&error);
-    if(!pairing_active())error="pairing_closed";
-    bool saved=false;
+    quota_usb_request_t *request=calloc(1,sizeof(*request));const char *error=NULL;
+    bool valid=request&&quota_usb_parse(frame,length,request,&error);
+    /* No borrowed frame survives processing or a state/HTTP allocation. */
+    release_usb_decoder();
+    if(!request){send_usb_result(NULL,NULL,"no_memory",false);return;}
+    if(!valid){send_usb_result(request->request_id,NULL,error?error:"invalid_frame",false);goto done;}
+    if(request->op==QUOTA_USB_LEGACY){
+        bool saved=false;if(!usb_active())error="pairing_closed";
 #ifdef ESP_PLATFORM
-    if(valid&&!error)saved=quota_portable_service_configure_legacy(&s_provision_config,&error);
+        if(!error)saved=quota_portable_service_configure_legacy(&request->body.legacy,&error);
 #endif
-    if(valid&&!error&&!saved)error="storage_error";
-    uint64_t server_time=s_provision_config.server_time;quota_portable_clear_secret(&s_provision_config,sizeof(s_provision_config));
-    send_pairing_result(request_id,saved,saved?NULL:error);
-    quota_app_event_t event={.kind=QUOTA_APP_EVENT_CONFIGURATION_RESULT,.success=saved};post_event(&event,0);
-    if(saved){set_system_time_if_newer(server_time);quota_service_close_pairing_window();}
+        uint64_t time=request->body.legacy.server_time;
+        send_pairing_result(request->request_id,saved,saved?NULL:error?error:"storage_error");
+        quota_app_event_t event={.kind=QUOTA_APP_EVENT_CONFIGURATION_RESULT,.success=saved};post_event(&event,0);
+        if(saved){set_system_time_if_newer(time);quota_service_close_pairing_window();}
+    }else if(request->op==QUOTA_USB_OPEN){
+        if(!usb_active())send_usb_result(request->request_id,NULL,"session_expired",false);
+        else if(s_usb_opener[0]&&strcmp(s_usb_opener,request->request_id))send_usb_result(request->request_id,NULL,"session_busy",false);
+        else{
+            memcpy(s_usb_opener,request->request_id,9);
+            char response[320];uint64_t left=(usb_deadline_ms()-monotonic_ms()+999)/1000;
+            int bytes=snprintf(response,sizeof(response),"@AIQ:{\"v\":2,\"op\":\"result\",\"request_id\":\"%.8s\",\"ok\":true,\"session_id\":\"%.32s\",\"remaining_seconds\":%u,\"max_command_bytes\":2048,\"max_frame_bytes\":4096,\"max_state_bytes\":16384}\n",request->request_id,s_usb_session,(unsigned)left);
+            if(usb_active()&&bytes>0&&(size_t)bytes<sizeof(response))(void)fwrite(response,1,(size_t)bytes,stdout);
+            (void)fflush(stdout);
+        }
+    }else if(!usb_authorized(request->session_id))send_usb_result(request->request_id,NULL,usb_active()?"invalid_session":"session_expired",false);
+    else if(request->op==QUOTA_USB_STATE){
+        char id[9],session[QUOTA_USB_SESSION_BYTES+1];memcpy(id,request->request_id,sizeof(id));memcpy(session,request->session_id,sizeof(session));
+        quota_portable_clear_secret(request,sizeof(*request));free(request);request=NULL;
+        send_usb_state(id,session);quota_portable_clear_secret(session,sizeof(session));
+    }else{
+        quota_portable_submit_result_t result=QUOTA_PORTABLE_SUBMIT_INVALID;
+#ifdef ESP_PLATFORM
+        if(request->op==QUOTA_USB_COMMAND)result=quota_portable_service_submit(&request->body.command,QUOTA_SETUP_USB);
+        else if(request->op==QUOTA_USB_COLLECTOR)result=quota_portable_service_submit_collector(&request->body.endpoint,request->request_id);
+#endif
+        static const char *errors[]={NULL,"busy","session_expired","invalid_command","request_conflict"};
+        send_usb_result(request->request_id,request->session_id,(unsigned)result<sizeof(errors)/sizeof(errors[0])?errors[result]:"invalid_command",result==QUOTA_PORTABLE_SUBMIT_ACCEPTED);
+    }
+done:
+    if(request){quota_portable_clear_secret(request,sizeof(*request));free(request);}
 }
 
-/* One owner reads USB only after its physical pairing window is ready. */
+/* Only this owner reads USB; idle sessions retain no decoder or TLS scratch. */
 static void service_pairing_tick(bool sleeping)
 {
-    if (sleeping && pairing_requested()) quota_service_close_pairing_window();
-    if (!pairing_requested()) {
-        if (s_usb_decoder) { quota_portable_clear_secret(s_usb_decoder, sizeof(*s_usb_decoder)); free(s_usb_decoder); s_usb_decoder = NULL; }
-        if (s_companion_work) release_companion_work();
-        return;
+    if(sleeping&&pairing_requested())quota_service_close_pairing_window();
+    if(!pairing_requested()){
+        release_usb_decoder();atomic_store(&s_usb_io_busy,false);atomic_store(&s_usb_deadline,0);
+        quota_portable_clear_secret(s_usb_session,sizeof(s_usb_session));s_usb_opener[0]=0;return;
     }
-    if (!s_usb_decoder) {
+    if(!usb_deadline_ms()){
+        release_usb_decoder();atomic_store(&s_usb_io_busy,false);
 #ifdef ESP_PLATFORM
-        if (!quota_portable_service_prepare_pairing()) return;
+        if(!quota_portable_service_prepare_usb())return;
 #endif
-        stop_wifi_for_sleep();
-        if (!acquire_companion_work()) return;
-        s_usb_decoder = calloc(1, sizeof(*s_usb_decoder));
-        if (!s_usb_decoder) return;
-        quota_frame_decoder_init(s_usb_decoder);
-        unsigned char ignored[64];
-        while (read(STDIN_FILENO, ignored, sizeof(ignored)) > 0) {}
-        mutex_lock();
-        s_pairing_screen_open = true;
-        s_pairing_opened_at_ms = (int64_t)monotonic_ms();
-        s_view.pairing_preparing = false; s_view.pairing_active = true;
-        s_view.pairing_seconds_left = QUOTA_PAIRING_WINDOW_MS / 1000;
-        mutex_unlock();
+        unsigned char ignored[64];unsigned drained=0;while(drained<4096){ssize_t count=read(STDIN_FILENO,ignored,sizeof(ignored));if(count<=0)break;drained+=(unsigned)count;}
+        for(unsigned i=0;i<QUOTA_USB_SESSION_BYTES;i++)s_usb_session[i]="0123456789abcdef"[esp_random()&15];
+        s_usb_session[QUOTA_USB_SESSION_BYTES]=0;s_usb_opener[0]=0;
+        mutex_lock();s_pairing_screen_open=true;s_pairing_opened_at_ms=(int64_t)monotonic_ms();
+        atomic_store(&s_usb_deadline,(uint64_t)s_pairing_opened_at_ms+QUOTA_PAIRING_WINDOW_MS);
+        s_view.pairing_preparing=false;s_view.pairing_active=true;s_view.pairing_seconds_left=QUOTA_PAIRING_WINDOW_MS/1000;mutex_unlock();
         post_simple_event(QUOTA_APP_EVENT_PAIRING_TICK);
     }
-    if (!pairing_active()) { quota_service_close_pairing_window(); return; }
-    for (unsigned i = 0; i < 512 && pairing_requested(); i++) {
-        unsigned char input;
-        if (read(STDIN_FILENO, &input, 1) != 1) break;
-        if (!pairing_active()) { quota_service_close_pairing_window(); break; }
-        const char *frame = NULL; size_t length = 0;
-        quota_frame_result_t result = quota_frame_decoder_feed(s_usb_decoder, (char)input, &frame, &length);
-        if (result == QUOTA_FRAME_COMPLETE) handle_serial_frame(frame, length);
-        else if (result == QUOTA_FRAME_TOO_LONG) send_pairing_result(NULL, false, "frame_too_long");
+    if(!usb_active()){quota_service_close_pairing_window();release_usb_decoder();atomic_store(&s_usb_io_busy,false);return;}
+    if(s_usb_decoder&&monotonic_ms()-s_usb_partial_at>=3000){release_usb_decoder();atomic_store(&s_usb_io_busy,false);}
+    for(unsigned i=0;i<512&&pairing_requested();i++){
+        unsigned char input;if(read(STDIN_FILENO,&input,1)!=1)break;
+        if(!usb_active()){quota_service_close_pairing_window();release_usb_decoder();atomic_store(&s_usb_io_busy,false);break;}
+        if(!s_usb_decoder){s_usb_decoder=calloc(1,sizeof(*s_usb_decoder));if(!s_usb_decoder)break;quota_frame_decoder_init(s_usb_decoder);s_usb_partial_at=monotonic_ms();}
+        atomic_store(&s_usb_io_busy,true);
+        const char *frame=NULL;size_t length=0;
+        quota_frame_result_t result=quota_frame_decoder_feed(s_usb_decoder,(char)input,&frame,&length);
+        if(result==QUOTA_FRAME_COMPLETE){handle_serial_frame(frame,length);atomic_store(&s_usb_io_busy,false);}
+        else if(result==QUOTA_FRAME_TOO_LONG){release_usb_decoder();atomic_store(&s_usb_io_busy,false);send_usb_result(NULL,NULL,"frame_too_long",false);}
+        else if(input=='\n'){release_usb_decoder();atomic_store(&s_usb_io_busy,false);}
     }
+    if(!pairing_requested()){release_usb_decoder();atomic_store(&s_usb_io_busy,false);}
 }
 
 bool quota_service_init(void)
@@ -932,7 +994,7 @@ bool quota_service_init(void)
 #ifdef ESP_PLATFORM
     quota_portable_service_hooks_t hooks={.view=&s_view,.lock=mutex_lock,.unlock=mutex_unlock,.try_lock=portable_try_lock,
         .config_generation_locked=portable_config_generation_locked,.config_changed_locked=portable_config_changed_locked,
-        .pairing_requested=pairing_requested,.wifi_ready=init_wifi,.wifi_stop=portable_wifi_stop,
+        .pairing_requested=pairing_requested,.usb_blocked=usb_blocked,.usb_active=usb_active,.usb_deadline_ms=usb_deadline_ms,.usb_close=quota_service_close_pairing_window,.wifi_ready=init_wifi,.wifi_stop=portable_wifi_stop,
         .notify=portable_notify,.wake=portable_wake,.display_current=display_generation_is_current,
         .legacy_inventory=legacy_inventory,.legacy_snapshot=legacy_snapshot,
         .legacy_config=legacy_config};
@@ -986,6 +1048,7 @@ void quota_service_set_display_sleeping(bool sleeping)
     }
     portEXIT_CRITICAL(&s_display_state_mux);
     if (!changed) return;
+    if (sleeping) quota_service_close_pairing_window();
 
     if (sleeping && s_mutex != NULL && xSemaphoreTake(s_mutex, 0) == pdTRUE) {
         s_view.refreshing = false;
@@ -1037,6 +1100,7 @@ void quota_service_select_account(const char *account_id) { quota_portable_servi
 
 void quota_service_open_pairing_window(void)
 {
+    atomic_store(&s_usb_deadline, 0);
     atomic_store(&s_pairing_requested, true);
     mutex_lock();
     s_pairing_screen_open = false;
@@ -1050,6 +1114,7 @@ void quota_service_open_pairing_window(void)
 void quota_service_close_pairing_window(void)
 {
     atomic_store(&s_pairing_requested, false);
+    atomic_store(&s_usb_deadline, 0);
     mutex_lock();
     s_pairing_screen_open = false;
     s_view.pairing_preparing = s_view.pairing_active = false;

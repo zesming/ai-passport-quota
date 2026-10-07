@@ -81,6 +81,14 @@ static bool common_try(void){if(common_locked)return false;common_lock();return 
 static uint32_t generation_locked(void){assert(common_locked);return config_generation;}
 static void changed_locked(void){assert(common_locked);config_generation++;}
 static bool pairing_requested(void){return pairing;}
+static bool usb_enabled,usb_window,usb_scratch;
+static uint64_t usb_deadline;
+static unsigned usb_closes;
+static bool hook_usb_blocked(void){return usb_enabled?usb_scratch:pairing;}
+static bool hook_usb_active(void){return usb_enabled&&usb_window&&now_ms<usb_deadline;}
+static uint64_t hook_usb_deadline(void){return usb_deadline;}
+static void hook_usb_close(void){usb_window=false;usb_closes++;}
+static void usb_open(void){usb_enabled=true;usb_window=true;usb_deadline=now_ms+120000;assert(quota_portable_service_prepare_usb());}
 static bool wifi_ready(void){unlocked();return true;}
 static bool wifi_stop(void){unlocked();connected=false;return true;}
 static void notify(void){unlocked();}
@@ -107,7 +115,7 @@ static uint16_t legacy_timeout=120;
 static unsigned legacy_primary_calls;
 static quota_store_read_result_t legacy_config(quota_device_config_t *out,uint16_t *timeout){unlocked();legacy_primary_calls++;if(legacy_primary_error!=QUOTA_STORE_READ_OK)return legacy_primary_error;if(!legacy_input)return QUOTA_STORE_READ_MISSING;*out=*legacy_input;*timeout=legacy_timeout;return QUOTA_STORE_READ_OK;}
 static void initialize(void){saved_config.mode=QUOTA_MODE_DIRECT;saved_config.refresh_seconds=300;saved_config.auto_refresh=true;saved_config.screen_timeout_seconds=120;saved_config.network_count=1;strcpy(saved_config.networks[0].ssid,"old-hotspot");strcpy(saved_config.networks[0].password,"password");for(unsigned i=0;i<2;i++){used[i]=true;credentials[i].slot=i;credentials[i].generation=1;credentials[i].provider=i?QUOTA_PROVIDER_DEEPSEEK:QUOTA_PROVIDER_CODEX;credentials[i].auth_state=QUOTA_PORTABLE_AUTH_READY;snprintf(credentials[i].id,sizeof(credentials[i].id),"%032x",i+1);strcpy(credentials[i].server_account_id,"fake-server");strcpy(credentials[i].access_token,"old-access");strcpy(credentials[i].refresh_token,"old-refresh");strcpy(credentials[i].api_key,"old-key");credentials[i].expires_at=wall+3600;}saved_cache.account_count=1;saved_cache.refresh_seconds=300;saved_cache.accounts[0].provider=QUOTA_PROVIDER_CODEX;strcpy(saved_cache.accounts[0].id,credentials[0].id);saved_cache.accounts[0].has_observed_at=true;saved_cache.accounts[0].observed_at=wall;saved_cache.accounts[0].five_hour.present=true;saved_cache.accounts[0].five_hour.remaining_percent=17;}
-static void boot_legacy(const quota_device_config_t *legacy){legacy_input=legacy;quota_portable_service_hooks_t hooks={.view=&public_view,.lock=common_lock,.unlock=common_unlock,.try_lock=common_try,.config_generation_locked=generation_locked,.config_changed_locked=changed_locked,.pairing_requested=pairing_requested,.wifi_ready=wifi_ready,.wifi_stop=wifi_stop,.notify=notify,.wake=hook_wake,.display_current=display_current,.legacy_inventory=legacy_inventory,.legacy_snapshot=legacy_snapshot,.legacy_config=legacy_config};assert(quota_portable_service_init(legacy,&hooks));}
+static void boot_legacy(const quota_device_config_t *legacy){legacy_input=legacy;quota_portable_service_hooks_t hooks={.view=&public_view,.lock=common_lock,.unlock=common_unlock,.try_lock=common_try,.config_generation_locked=generation_locked,.config_changed_locked=changed_locked,.pairing_requested=pairing_requested,.usb_blocked=hook_usb_blocked,.usb_active=hook_usb_active,.usb_deadline_ms=hook_usb_deadline,.usb_close=hook_usb_close,.wifi_ready=wifi_ready,.wifi_stop=wifi_stop,.notify=notify,.wake=hook_wake,.display_current=display_current,.legacy_inventory=legacy_inventory,.legacy_snapshot=legacy_snapshot,.legacy_config=legacy_config};assert(quota_portable_service_init(legacy,&hooks));}
 static void boot(void){boot_legacy(NULL);}
 static void tick(bool sleeping){quota_portable_service_tick(sleeping,1);assert(!common_locked);}
 static void ready(void){tick(false);now_ms+=500;tick(false);assert(public_view.portable.network_state==QUOTA_PORTABLE_NETWORK_READY);}
@@ -163,6 +171,53 @@ else if(!strcmp(argv[1],"legacy-config-retry")){quota_device_config_t legacy;leg
 else if(!strcmp(argv[1],"v2-reauth-cache")){seed_model();credentials[0].refresh_inflight=true;boot();assert(public_view.snapshot.accounts[0].five_hour.remaining_percent==17&&public_view.snapshot.accounts[0].status==QUOTA_STATUS_EXPIRED&&!strcmp(public_view.portable.account_errors[0],"auth_required"));assert(!query_calls&&!refresh_calls);}
 else if(!strcmp(argv[1],"v2-ignores-legacy-io")){seed_model();legacy_primary_error=QUOTA_STORE_READ_IO_ERROR;boot();assert(public_view.snapshot.account_count==2&&legacy_primary_calls==0&&!s_storage_error[0]);}
 else if(!strcmp(argv[1],"unknown-valid-prior")){boot();phone();model_unknown=true;quota_portable_command_t cmd={.op=QUOTA_PORTABLE_OP_SETTINGS_SAVE,.refresh_seconds=900,.screen_timeout_seconds=120};strcpy(cmd.request_id,"12345678");submit_command(&cmd);quota_model_t *held=s_dirty_model;now_ms+=1000;tick(true);assert(s_dirty_model==held&&!s_recovery_blocked&&public_view.refresh_seconds==300);model_unknown=false;now_ms+=5000;tick(true);assert(!s_dirty_model&&public_view.refresh_seconds==900);}
+
+else if(!strcmp(argv[1],"usb-key-network")){
+    boot();ready();usb_open();assert(!portal_active&&quota_portable_service_http_allowed());
+    quota_portable_command_t key={.op=QUOTA_PORTABLE_OP_DEEPSEEK_SAVE,.phone_utc=1800000000};
+    strcpy(key.request_id,"12345678");strcpy(key.account_id,credentials[1].id);strcpy(key.api_key,"usb-new-key");strcpy(key.label,"USB account");
+    assert(quota_portable_service_submit(&key,QUOTA_SETUP_USB)==QUOTA_PORTABLE_SUBMIT_ACCEPTED);
+    assert(quota_portable_service_submit(&key,QUOTA_SETUP_USB)==QUOTA_PORTABLE_SUBMIT_ACCEPTED&&s_count==1);
+    strcpy(key.api_key,"conflicting-key");assert(quota_portable_service_submit(&key,QUOTA_SETUP_USB)==QUOTA_PORTABLE_SUBMIT_CONFLICT);
+    tick(false);assert(!acquired&&!strcmp(credentials[1].api_key,"usb-new-key")&&job(key.request_id)->state==2&&usb_window&&!s_queue);
+    quota_portable_command_t net={.op=QUOTA_PORTABLE_OP_NETWORK_SAVE,.network_index=0};strcpy(net.request_id,"22345678");strcpy(net.ssid,"USB network");strcpy(net.password,"password");
+    assert(quota_portable_service_submit(&net,QUOTA_SETUP_USB)==QUOTA_PORTABLE_SUBMIT_ACCEPTED);tick(false);
+    assert(s_candidate_pending&&s_candidate_deadline==now_ms+25000);now_ms+=500;tick(false);
+    assert(!s_candidate_pending&&!strcmp(durable_model.networks[0].ssid,"USB network")&&usb_window);
+    usb_scratch=true;assert(!quota_portable_service_http_allowed());unsigned calls=query_calls;tick(false);assert(query_calls==calls);usb_scratch=false;
+    quota_portable_command_t close={.op=QUOTA_PORTABLE_OP_SETUP_CLOSE};strcpy(close.request_id,"32345678");
+    assert(quota_portable_service_submit(&close,QUOTA_SETUP_USB)==QUOTA_PORTABLE_SUBMIT_ACCEPTED);tick(false);
+    usb_window=false;now_ms++;usb_open();now_ms+=500;tick(false);assert(usb_window&&usb_closes==0); /* Old close cannot revoke a new window. */
+    usb_window=false;assert(quota_portable_service_submit(&key,QUOTA_SETUP_USB)==QUOTA_PORTABLE_SUBMIT_CLOSED);
+}
+else if(!strcmp(argv[1],"usb-login-reopen-save")){
+    boot();phone();quota_portable_command_t queue={.op=QUOTA_PORTABLE_OP_CODEX_QUEUE};strcpy(queue.request_id,"12345678");submit_command(&queue);quota_direct_credential_t *held=acquired;
+    usb_open();assert(!portal_active&&s_operation.kind==OP_LOGIN&&acquired==held&&s_view.login_state==QUOTA_PORTABLE_LOGIN_QUEUED&&job(queue.request_id)->state==2);
+    quota_portable_command_t launch={.op=QUOTA_PORTABLE_OP_CODEX_LAUNCH};strcpy(launch.request_id,"22345678");
+    assert(quota_portable_service_submit(&launch,QUOTA_SETUP_USB)==QUOTA_PORTABLE_SUBMIT_ACCEPTED);tick(false);ready();assert(s_operation.started&&usb_window&&s_operation.deadline==s_login_deadline);
+    strcpy(s_view.login_user_code,"TEST-CODE");s_view.login_state=QUOTA_PORTABLE_LOGIN_WAITING;char json[QUOTA_PORTABLE_STATE_BYTES+1];size_t length=0;
+    assert(quota_portable_service_state_json(json,sizeof(json),&length,QUOTA_SETUP_USB));assert(strstr(json,"TEST-CODE")&&strstr(json,QUOTA_DIRECT_VERIFICATION_URL)&&!strstr(json,"old-refresh"));
+    assert(quota_portable_service_state_json(json,sizeof(json),&length,QUOTA_SETUP_AP));assert(!strstr(json,"TEST-CODE")&&!strstr(json,"verification_url"));
+    usb_window=false;usb_open();assert(s_operation.started&&acquired==held);
+    quota_portable_command_t close={.op=QUOTA_PORTABLE_OP_SETUP_CLOSE};strcpy(close.request_id,"32345678");assert(quota_portable_service_submit(&close,QUOTA_SETUP_USB)==QUOTA_PORTABLE_SUBMIT_ACCEPTED);tick(false);now_ms+=500;tick(false);
+    assert(!usb_window&&usb_closes==1&&s_operation.started&&acquired==held);
+    uint8_t login_slot=held->slot;usb_open();login_code=QUOTA_DIRECT_PERSIST_PENDING;store_fail=true;tick(false);assert(provider.pending==held&&s_operation.kind==OP_SAVE);
+    usb_window=false;assert(!quota_portable_service_prepare_usb()&&provider.pending==held);
+    store_fail=false;now_ms=s_operation.retry_at;tick(true);assert(!provider.pending&&!acquired&&!strcmp(credentials[login_slot].access_token,"received-login-token"));
+    usb_open();assert(job(launch.request_id)->state==2&&s_operation.kind==OP_NONE);
+}
+else if(!strcmp(argv[1],"usb-collector-unknown-import")){
+    quota_device_config_t legacy;legacy_configuration(&legacy);boot();ready();usb_open();
+    quota_legacy_endpoint_t endpoint={.enabled=true,.trusted_time=wall};strcpy(endpoint.base_url,legacy.base_url);strcpy(endpoint.pair_token,legacy.pair_token);strcpy(endpoint.server_cert_pem,legacy.server_cert_pem);
+    model_unknown=true;model_apply_unknown=true;
+    assert(quota_portable_service_submit_collector(&endpoint,"12345678")==QUOTA_PORTABLE_SUBMIT_ACCEPTED);assert(s_dirty_model&&job("12345678")->state==1);
+    assert(quota_portable_service_submit_collector(&endpoint,"12345678")==QUOTA_PORTABLE_SUBMIT_ACCEPTED);
+    endpoint.trusted_time++;assert(quota_portable_service_submit_collector(&endpoint,"12345678")==QUOTA_PORTABLE_SUBMIT_CONFLICT);endpoint.trusted_time--;
+    model_unknown=false;now_ms+=1000;tick(false);assert(!s_dirty_model&&job("12345678")->state==2&&s_model.legacy.enabled&&usb_window);
+    now_ms+=500;tick(false);assert(s_discovery_count==1);
+    quota_portable_command_t import={.op=QUOTA_PORTABLE_OP_EXTERNAL_IMPORT};strcpy(import.request_id,"22345678");strcpy(import.remote_account_id,collector_snapshot.accounts[0].id);
+    assert(quota_portable_service_submit(&import,QUOTA_SETUP_USB)==QUOTA_PORTABLE_SUBMIT_ACCEPTED);tick(false);assert(durable_model.entry_count==3&&job(import.request_id)->state==2&&usb_window);
+}
 else assert(false);
 puts("whole controller runtime passed");return 0;
 }

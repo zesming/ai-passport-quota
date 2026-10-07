@@ -111,7 +111,7 @@ export async function createApplication({ directory = process.env.AIQ_STATE_DIR 
       if (!filename.startsWith(`${frontend}${path.sep}`)) { json(response, 403, { error: 'invalid_path' }); return; }
       let content; try { content = await readFile(filename); } catch { json(response, 404, { error: 'not_found' }); return; }
       const extension = path.extname(filename);
-      const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
+      const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
       response.writeHead(200, { 'Content-Type': types[extension] ?? 'application/octet-stream', 'Content-Length': content.length, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'", 'Permissions-Policy': 'serial=(self)' }); response.end(request.method === 'HEAD' ? undefined : content);
     } catch (error) { json(response, errorStatus(error), { error: Object.hasOwn(errorStatuses, error.message) ? error.message : 'local_service_error' }); }
   });

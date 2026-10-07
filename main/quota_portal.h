@@ -22,3 +22,6 @@ bool quota_portal_origin_is_valid(const char *origin);
 bool quota_portal_secret_matches(const char *expected, const char *supplied);
 bool quota_portal_parse_command(const char *json, size_t length,
                                 quota_portable_command_t *command);
+struct cJSON;
+/* Wipe private parsed strings before releasing their allocations. */
+void quota_portal_clear_json(struct cJSON *json);

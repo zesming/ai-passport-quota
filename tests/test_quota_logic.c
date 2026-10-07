@@ -421,7 +421,10 @@ static void test_portable_navigation(void)
     assert(navigation.screen == QUOTA_SCREEN_SETTINGS);
 
     navigation.screen = QUOTA_SCREEN_AUTH;
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_NONE);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 0) == QUOTA_ACTION_NONE);
+    assert(navigation.screen == QUOTA_SCREEN_SETUP && navigation.setup_return_screen == QUOTA_SCREEN_AUTH);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 0) == QUOTA_ACTION_NONE);
+    assert(navigation.screen == QUOTA_SCREEN_AUTH);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 2) == QUOTA_ACTION_CANCEL_AUTH);
     assert(navigation.screen == QUOTA_SCREEN_ACCOUNTS);
     /* Appended screens/actions must not renumber the legacy USB state contract. */

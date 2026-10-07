@@ -8,8 +8,9 @@
 | --- | --- |
 | 固件输入与显示生命周期 | `main/main.c` |
 | 纯状态、解析与时序 | `main/quota_logic.c`、`main/quota_logic.h` |
-| 网络任务与旧 USB/电脑同步 | `main/quota_service.c` |
-| 账户目录、控制器、授权/查询、存储与设置页 | `main/quota_catalog.c`、`main/quota_portable_service.c`、`main/quota_direct*.c`、`main/quota_store.c`、`main/quota_portal.c`、`main/portable_setup.html` |
+| 网络/USB 执行者与帧解析 | `main/quota_service.c`、`main/quota_usb.c` |
+| 账户目录、控制器、授权/查询与存储 | `main/quota_catalog.c`、`main/quota_portable_service.c`、`main/quota_direct*.c`、`main/quota_store.c` |
+| 热点/USB 共用设置页 | `main/quota_portal.c`、`main/portable_setup.html`、`main/portable_setup.mjs`、`main/portable_serial.mjs` |
 | 看板与显示资源 | `main/quota_ui.c`、`main/quota_brand_assets.c`、`assets/` |
 | 板卡驱动 | `components/bsp/include/`、`components/bsp/src/` |
 | 电脑 UI 与 USB | `companion/src/` |

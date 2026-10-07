@@ -877,7 +877,7 @@ export function App() {
                   <div className="device-settings" style={{ paddingTop: 34 }}>
                     {[
                       ['热点', '手机和电脑管理账户'],
-                      ['USB', '配对可选电脑采集器'],
+                      ['USB', '电脑管理账户与设置'],
                     ].map(([label, value], index) => <button key={label} type="button" className={deviceSettingsFocus === index ? 'focused' : ''} onClick={() => { setDeviceSettingsFocus(index); setPreviewScreen(index === 0 ? 'hotspot-setup' : 'usb-pairing'); setHotspotStep(0); }} style={{ height: 60, display: 'block', textAlign: 'left' }}><strong>{label}</strong><span style={{ display: 'block', textAlign: 'left' }}>{value}</span></button>)}
                   </div>
                   <div className="device-footer"><span>热点为默认选项</span><span>长按返回</span></div>
@@ -895,10 +895,10 @@ export function App() {
                 </>}
 
                 {previewScreen === 'usb-pairing' && <>
-                  <DeviceHeader title="USB 配对" info="" nowSeconds={nowSeconds} />
-                  <div className="pairing-intro">可选电脑采集器<br />仅用于电脑账户更新</div>
+                  <DeviceHeader title="USB 设置" info="" nowSeconds={nowSeconds} />
+                  <div className="pairing-intro">电脑管理账户与设置<br />账户保存在 Passport</div>
                   <div className="device-providers"><div><Logo provider="codex" size={34} /><span>Codex</span></div><div><Logo provider="claude" size={34} /><span>Claude</span></div><div><Logo provider="deepseek" size={34} /><span>DeepSeek</span></div></div>
-                  <div className="device-explanation">请通过 USB 配对采集器<br />账户凭证保留在电脑中</div>
+                  <div className="device-explanation">请在电脑设置页连接 USB<br />账户保存在 Passport</div>
                   <div className="device-footer"><span>配对窗口由设备控制</span><span>长按返回</span></div>
                 </>}
 
@@ -947,7 +947,9 @@ export function App() {
           </nav>
 
           {panel === 'device' && <div className="setup-panel">
-            <div className="setup-title"><div><h3>打开同一个设备设置页</h3><p>手机和电脑都在 Passport 的本地页面管理账户、Wi‑Fi、刷新与显示。</p></div></div>
+            <div className="setup-title"><div><h3>通过 USB 管理 Passport</h3><p>账户、Wi‑Fi、刷新与显示保存在设备；电脑保留原有网络连接。</p></div></div>
+            <a className="primary wide" href="/device-settings.html?transport=usb">打开 USB 设备设置</a>
+            <p className="source-note">先在网页连接 USB 并等待启动，再在小屏选择「设备设置 → USB」，最后连接设置窗口。Codex 在官方页面完成新的设备授权；DeepSeek 密钥直接发送给 Passport。</p>
             <div className="setup-gate"><strong>在设备上选择「设备设置 → 热点」</strong><span>先连接屏幕第一步的设备热点，再打开第二步的二维码。电脑也可手动输入第三步的地址与完整设置密钥。</span></div>
             <a className="primary login-link" href="http://192.168.4.1" target="_blank" rel="noreferrer">打开设备设置页 ↗</a>
             <p className="source-note">打开前请先连接设备热点。此地址在手机和电脑上相同；设置密钥只在设备屏幕显示，并只在当前网页内存中使用。</p>
@@ -1009,7 +1011,7 @@ export function App() {
           {apiState && panel === 'setup' && <div className="setup-panel">
             <div className="setup-title"><div><h3>配对可选电脑采集器</h3><p>通过 USB 配对当前手动运行的采集器。</p></div><span className={`device-state ${apiState.device?.enabled ? 'good' : ''}`}><i />{apiState.device?.enabled ? '电脑采集服务已启用' : '尚未连接设备'}</span></div>
             <div className="setup-gate"><strong>{serialConnected ? '2. 在小屏选择「设备设置 → USB」，打开「USB 配对」后发送配置' : '1. 先连接 USB，等待小屏启动'}</strong><span>USB 连接可能使设备重启。先连接并等待启动，再打开小屏配对窗口；配对窗口限时 120 秒。</span></div>
-            <p className="source-note">USB 仅配置可选电脑采集器连接，不传输 Passport 原生账户凭证；设备账户请通过「设备设置 → 热点」的二维码页面管理。</p>
+            <p className="source-note">此页兼容旧版采集器配对。新版请打开 <a href="/device-settings.html?transport=usb">USB 设备设置</a>，管理设备账户、网络和可选采集器来源。</p>
             {serialConnected
               ? <button type="button" className="secondary wide" onClick={() => void disconnectDevice()} disabled={serialBusy}>取消 USB 连接</button>
               : <button type="button" className="secondary wide" onClick={connectDevice} disabled={serialBusy || Boolean(busyAction)}>{serialBusy ? '正在连接 USB…' : '连接 USB'}</button>}

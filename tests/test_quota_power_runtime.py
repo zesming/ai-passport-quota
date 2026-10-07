@@ -382,7 +382,9 @@ int main(void) {
     def test_network_owner_pairing_window_sleep_and_partial_frames(self):
         source = (ROOT / "main/quota_service.c").read_text()
         harness = r'''
+#define ESP_PLATFORM 1
 #include "quota_portable.h"
+#include "quota_usb.h"
 #include <assert.h>
 #include <fcntl.h>
 #include <stdatomic.h>
@@ -399,30 +401,32 @@ typedef struct {
 } view_t;
 static view_t s_view;
 static atomic_bool s_pairing_requested;
+static atomic_bool s_usb_io_busy;
+static atomic_uint_fast64_t s_usb_deadline;
 static bool s_pairing_screen_open;
 static int64_t s_pairing_opened_at_ms;
 static quota_frame_decoder_t *s_usb_decoder;
-static void *s_companion_work, *s_network_task = (void *)1;
+static char s_usb_session[QUOTA_USB_SESSION_BYTES + 1], s_usb_opener[9];
+static uint64_t s_usb_partial_at;
+static void *s_network_task = (void *)1;
 static uint64_t now_ms = 1000;
-static unsigned frames, notifications, events, wifi_stops, workspace_releases;
-static bool s_workspace_available = true;
+static unsigned frames, notifications, events, prepare_calls, long_frames, random_value;
+static bool wifi_started = true;
 static uint64_t monotonic_ms(void) { return now_ms; }
 static void mutex_lock(void) {}
 static void mutex_unlock(void) {}
 static void xTaskNotifyGive(void *task) { assert(task == s_network_task); notifications++; }
 static void post_simple_event(int kind) { assert(kind == QUOTA_APP_EVENT_PAIRING_TICK); events++; }
-static bool acquire_companion_work(void) {
-    if (!s_workspace_available) return false;
-    s_companion_work = (void *)1;
-    return true;
-}
-static void release_companion_work(void) { s_companion_work = NULL; workspace_releases++; }
-static void stop_wifi_for_sleep(void) { wifi_stops++; }
+static bool quota_portable_service_prepare_usb(void) { prepare_calls++; return true; }
+static unsigned esp_random(void) { unsigned value = random_value++; return value + value / 16; }
+static void release_usb_decoder(void);
 static void handle_serial_frame(const char *frame, size_t size) {
     assert(size == 11 && memcmp(frame, "whole-frame", size) == 0); frames++;
+    release_usb_decoder();
 }
-static void send_pairing_result(const char *id, bool success, const char *error) {
-    (void)id; (void)success; (void)error; assert(false);
+static void send_usb_result(const char *id, const char *session, const char *error, bool accepted) {
+    (void)id; (void)session; (void)accepted;
+    assert(error && strcmp(error, "frame_too_long") == 0); long_frames++;
 }
 void quota_service_close_pairing_window(void);
 static int input_fd = -1;
@@ -437,50 +441,97 @@ static void set_input(const char *bytes) {
     if (bytes && bytes[0]) assert(write(input_fd, bytes, strlen(bytes)) == (ssize_t)strlen(bytes));
 }
 '''
-        functions = "\n".join(extract_function(source, name) for name in (
-            "pairing_requested", "pairing_active_locked", "pairing_active",
-            "service_pairing_tick"))
+        functions = "\n".join((
+            extract_function(source, "pairing_requested"),
+            next(line for line in source.splitlines() if line.startswith("static uint64_t usb_deadline_ms(")),
+            next(line for line in source.splitlines() if line.startswith("static bool usb_active(")),
+            next(line for line in source.splitlines() if line.startswith("static bool usb_blocked(")),
+            extract_function(source, "release_usb_decoder"),
+            extract_function(source, "service_pairing_tick"),
+        ))
         functions += "\n" + extract_function(source, "quota_service_open_pairing_window", "void")
         functions += "\n" + extract_function(source, "quota_service_close_pairing_window", "void")
         harness += functions
         harness += r'''
 int main(void) {
     set_input(NULL);
-    s_view.portable.mode = QUOTA_MODE_DIRECT;
+    assert(wifi_started); /* USB ownership leaves the saved STA connection available. */
+    set_input("stale input\n"); /* Bytes received before the physical window are discarded. */
     quota_service_open_pairing_window();
     assert(atomic_load(&s_pairing_requested) && s_view.pairing_preparing && !s_view.pairing_active);
+    assert(!s_usb_decoder && usb_blocked());
     service_pairing_tick(false);
     assert(s_view.pairing_active && !s_view.pairing_preparing);
     assert(s_view.pairing_seconds_left == QUOTA_PAIRING_WINDOW_MS / 1000);
-    assert(s_usb_decoder && s_companion_work && wifi_stops == 1);
+    assert(!s_usb_decoder && !usb_blocked() && prepare_calls == 1);
+    assert(wifi_started && s_usb_session[0] && frames == 0); /* stale bytes were drained on entry */
+    char first_session[QUOTA_USB_SESSION_BYTES + 1];
+    memcpy(first_session, s_usb_session, sizeof(first_session));
 
     set_input("whole-"); service_pairing_tick(false);
     assert(s_usb_decoder->length == strlen("whole-") && frames == 0);
-    set_input("frame\r\n"); service_pairing_tick(false);
-    assert(frames == 1 && s_usb_decoder->length == 0);
+    assert(atomic_load(&s_usb_io_busy) && usb_blocked());
+    now_ms += 2999; service_pairing_tick(false);
+    assert(s_usb_decoder && usb_blocked());
+    now_ms += 1; service_pairing_tick(false);
+    assert(!s_usb_decoder && !atomic_load(&s_usb_io_busy) && !usb_blocked());
+
+    set_input("whole-frame\r\n"); service_pairing_tick(false);
+    assert(frames == 1 && !s_usb_decoder && !usb_blocked());
+
+    char *overlong = malloc(QUOTA_MAX_PROVISION_FRAME_BYTES + 2);
+    assert(overlong);
+    memset(overlong, 'x', QUOTA_MAX_PROVISION_FRAME_BYTES + 1);
+    overlong[QUOTA_MAX_PROVISION_FRAME_BYTES + 1] = '\n';
+    assert(write(input_fd, overlong, QUOTA_MAX_PROVISION_FRAME_BYTES + 2) ==
+           QUOTA_MAX_PROVISION_FRAME_BYTES + 2);
+    free(overlong);
+    for (unsigned i = 0; i < 10 && long_frames == 0; ++i) service_pairing_tick(false);
+    assert(long_frames == 1);
+    assert(!s_usb_decoder && !atomic_load(&s_usb_io_busy) && !usb_blocked());
+    set_input("whole-frame\n"); service_pairing_tick(false);
+    assert(frames == 2 && !usb_blocked()); /* A rejected line does not poison the next frame. */
 
     set_input("stale-"); service_pairing_tick(false);
-    assert(s_usb_decoder->length == strlen("stale-") && frames == 1);
-    service_pairing_tick(true); /* Sleep closes the window and discards its partial line. */
+    assert(s_usb_decoder->length == strlen("stale-") && frames == 2 && usb_blocked());
+    service_pairing_tick(true); /* Sleep immediately closes and clears the partial USB session. */
     assert(!atomic_load(&s_pairing_requested) && !s_view.pairing_active && !s_view.pairing_preparing);
-    assert(!s_usb_decoder && !s_companion_work && workspace_releases == 1);
+    assert(!s_usb_decoder && !s_usb_session[0] && !atomic_load(&s_usb_io_busy));
 
     now_ms += 1000;
     quota_service_open_pairing_window(); service_pairing_tick(false);
-    assert(s_usb_decoder && s_view.pairing_active);
-    set_input("\n"); service_pairing_tick(false);
-    assert(frames == 1 && s_usb_decoder->length == 0); /* No stale prefix crossed sleep. */
+    assert(!s_usb_decoder && s_view.pairing_active);
+    assert(strcmp(first_session, s_usb_session) != 0); /* Each physical reentry receives a new nonce. */
+    service_pairing_tick(false);
+    assert(!s_usb_decoder && !usb_blocked()); /* No stale prefix crossed sleep. */
     set_input("whole-frame\n"); service_pairing_tick(false);
-    assert(frames == 2);
+    assert(frames == 3);
 
+    set_input("expiry-"); service_pairing_tick(false);
+    assert(s_usb_decoder && usb_blocked());
     now_ms = (uint64_t)s_pairing_opened_at_ms + QUOTA_PAIRING_WINDOW_MS;
     service_pairing_tick(false);
     assert(!atomic_load(&s_pairing_requested) && !s_view.pairing_active);
-    service_pairing_tick(false); /* The next owner tick frees the now-closed reader workspace. */
-    assert(!s_usb_decoder && !s_companion_work && workspace_releases == 2);
-    assert(notifications == 4 && events >= 2);
+    assert(!s_usb_decoder && !atomic_load(&s_usb_io_busy) && !usb_blocked());
+    service_pairing_tick(false);
+    assert(!s_usb_decoder && !s_usb_session[0] && !usb_blocked());
+
+    quota_service_open_pairing_window(); service_pairing_tick(false);
+    assert(s_view.pairing_active && !s_usb_decoder);
+    set_input("manual-"); service_pairing_tick(false);
+    assert(s_usb_decoder && usb_blocked());
+    quota_service_close_pairing_window();
+    assert(usb_blocked()); /* External close keeps HTTP gated until the owner releases partial bytes. */
+    service_pairing_tick(false); /* Manual exit revokes the session and clears the decoder. */
+    assert(!s_usb_session[0] && !s_view.pairing_active && !usb_blocked());
+
+    quota_service_open_pairing_window(); service_pairing_tick(false);
+    assert(s_view.pairing_active);
+    service_pairing_tick(true); /* Sleeping also closes an idle physical window immediately. */
+    assert(!s_usb_session[0] && !s_view.pairing_active && !usb_blocked());
+    assert(wifi_started && prepare_calls == 4 && notifications >= 6 && events >= 4);
     close(input_fd);
-    puts("network-owned pairing window tests passed");
+    puts("USB session lifecycle, partial/overlong frames and STA retention passed");
 }
 '''
         compile_and_run(harness, "ai-quota-pairing-power-", (

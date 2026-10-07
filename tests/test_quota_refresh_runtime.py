@@ -25,7 +25,6 @@ static unsigned owner_ticks,pairing_ticks,stops,phase;
 static display_state_t display_state_snapshot(void){return (display_state_t){.sleeping=sleeping,.generation=7};}
 static unsigned network_wait(bool value){return value?999:500;}
 static void ulTaskNotifyTake(int clear,unsigned wait){assert(clear==1);assert(wait==(sleeping?999U:500U));if(owner_ticks==3)longjmp(done,1);phase=0;}
-static bool pairing_requested(void){return pairing;}
 static uint64_t monotonic_ms(void){return 1000;}
 static bool pairing_active_locked(uint64_t now){(void)now;return false;}
 static void mutex_lock(void){}
@@ -36,7 +35,7 @@ static void quota_portable_service_tick(bool value,uint32_t generation){assert(g
 '''
         harness += function
         harness += r'''
-int main(void){if(!setjmp(done))network_task(NULL);assert(owner_ticks==3&&pairing_ticks==5&&stops==2);puts("one common owner sleep/pairing order passed");}
+int main(void){if(!setjmp(done))network_task(NULL);assert(owner_ticks==3&&pairing_ticks==6&&stops==2);puts("one common owner sleep/pairing order passed");}
 '''
         compile_and_run(harness, "ai-quota-common-owner-")
 

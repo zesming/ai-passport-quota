@@ -13,6 +13,10 @@ typedef struct {
     uint32_t (*config_generation_locked)(void);
     void (*config_changed_locked)(void);
     bool (*pairing_requested)(void);
+    bool (*usb_blocked)(void);
+    bool (*usb_active)(void);
+    uint64_t (*usb_deadline_ms)(void);
+    void (*usb_close)(void);
     bool (*wifi_ready)(void);
     bool (*wifi_stop)(void);
     void (*notify)(void);
@@ -38,6 +42,14 @@ void quota_portable_service_countdown_overlay_locked(quota_service_view_t *view)
 void quota_portable_service_overlay(quota_service_view_t *view);
 uint64_t quota_portable_service_next_deadline_ms(bool sleeping);
 bool quota_portable_service_prepare_pairing(void);
+bool quota_portable_service_prepare_usb(void);
+quota_portable_submit_result_t quota_portable_service_submit(
+    const quota_portable_command_t *command, quota_setup_transport_t transport);
+bool quota_portable_service_state_json(char *buffer, size_t capacity, size_t *length,
+                                      quota_setup_transport_t transport);
+/* Network-owner-only; certificate scratch never enters the generic queue. */
+quota_portable_submit_result_t quota_portable_service_submit_collector(
+    const quota_legacy_endpoint_t *endpoint, const char request_id[9]);
 /* The modern v1 USB frame updates this model, never the historical v1 config key. */
 bool quota_portable_service_configure_legacy(const quota_device_config_t *configuration,
                                             const char **error);

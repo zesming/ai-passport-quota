@@ -325,11 +325,11 @@ static void create_interval_page(void)
 
 static void create_setup_page(void)
 {
-    create_header("USB 配对", "");
+    create_header("USB 设置", "");
     create_label(s_page, 20, 51, 200, 22, &quota_font_16, UI_INK,
-                 LV_TEXT_ALIGN_CENTER, "可选电脑采集器");
+                 LV_TEXT_ALIGN_CENTER, "电脑管理账户与设置");
     create_label(s_page, 20, 74, 200, 22, &quota_font_16, UI_INK,
-                 LV_TEXT_ALIGN_CENTER, "仅用于电脑账户更新");
+                 LV_TEXT_ALIGN_CENTER, "账户保存在 Passport");
     create_logo(s_page, &quota_openai_logo, 30, 109, 36, 36);
     create_logo(s_page, &quota_claude_logo, 102, 109, 36, 36);
     create_logo(s_page, &quota_deepseek_logo, 174, 109, 36, 36);
@@ -343,7 +343,7 @@ static void create_setup_page(void)
                                         UI_MINT, LV_TEXT_ALIGN_CENTER, "配对窗口 02:00");
     s_ui.setup_hint = create_label(s_page, 16, 220, 208, 44, &quota_font_12,
                                    UI_MUTED, LV_TEXT_ALIGN_CENTER,
-                                   "请通过 USB 配对采集器\n账户凭证保留在电脑中");
+                                   "请通过 USB 设置采集器\n账户凭证保留在电脑中");
     create_footer("长按 OK 返回");
 }
 
@@ -369,7 +369,7 @@ static void create_device_settings_page(void)
 {
     create_header("设备设置", "");
     static const char *const labels[] = {"热点", "USB"};
-    static const char *const hints[] = {"手机和电脑管理账户", "配对可选电脑采集器"};
+    static const char *const hints[] = {"手机和电脑管理账户", "电脑管理账户与设置"};
     for (size_t i = 0; i < 2; i++) {
         int y = 70 + (int)i * 76;
         create_focus_row(&s_ui.device_rows[i], &s_ui.device_markers[i], y, 60);
@@ -797,7 +797,7 @@ static void render_setup(const quota_service_view_t *service)
     }
     char countdown[32];
     if (service->pairing_preparing) {
-        snprintf(countdown, sizeof(countdown), "正在准备 USB 配对");
+        snprintf(countdown, sizeof(countdown), "正在准备 USB 设置");
         lv_obj_set_style_text_color(s_ui.setup_countdown, color(UI_AMBER), 0);
         set_label_text(s_ui.setup_hint,
             strcmp(service->portable.login_error, "storage_failed") == 0
@@ -808,7 +808,7 @@ static void render_setup(const quota_service_view_t *service)
         snprintf(countdown, sizeof(countdown), "配对窗口 %02u:%02u",
                  (unsigned)(seconds / 60), (unsigned)(seconds % 60));
         lv_obj_set_style_text_color(s_ui.setup_countdown, color(UI_MINT), 0);
-        set_label_text(s_ui.setup_hint, "请通过 USB 配对采集器\n账户凭证保留在电脑中");
+        set_label_text(s_ui.setup_hint, "请通过 USB 设置采集器\n账户凭证保留在电脑中");
     } else {
         snprintf(countdown, sizeof(countdown), "配对窗口已关闭");
         lv_obj_set_style_text_color(s_ui.setup_countdown, color(UI_AMBER), 0);
@@ -1010,7 +1010,7 @@ static void render_auth(const quota_portable_view_t *portable)
         portable->login_state == QUOTA_PORTABLE_LOGIN_ERROR;
     bool saving = portable->login_state == QUOTA_PORTABLE_LOGIN_EXCHANGING &&
                   strcmp(portable->login_error, "storage_failed") == 0;
-    set_label_text(s_ui.footer, saving ? "正在保存 · 请稍候" : terminal ? "长按 OK 返回" : "长按OK取消 · 长按DOWN暂停");
+    set_label_text(s_ui.footer, saving ? "正在保存 · 请稍候" : terminal ? "长按 OK 返回" : "OK USB 设置 · 长按OK取消");
     switch (portable->login_state) {
         case QUOTA_PORTABLE_LOGIN_CONNECTING: title = "正在连接网络"; break;
         case QUOTA_PORTABLE_LOGIN_REQUESTING_CODE: title = "正在获取验证码"; break;

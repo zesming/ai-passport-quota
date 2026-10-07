@@ -151,7 +151,10 @@ typedef enum {
     QUOTA_PORTABLE_OP_ACCOUNT_DEACTIVATE,
     QUOTA_PORTABLE_OP_EXTERNAL_IMPORT,
     QUOTA_PORTABLE_OP_NETWORK_ACTIVATE,
+    QUOTA_PORTABLE_OP_COLLECTOR_CONFIGURE, /* Owner-only USB endpoint operation. */
 } quota_portable_op_t;
+
+typedef enum { QUOTA_SETUP_AP = 0, QUOTA_SETUP_USB } quota_setup_transport_t;
 
 /* This private queue payload may hold secrets; wipe after consumption. */
 typedef struct {
@@ -176,6 +179,8 @@ typedef struct {
     /* Captured by the service, never accepted from a phone request. */
     quota_mode_t accepted_mode;
     uint32_t accepted_config_generation;
+    quota_setup_transport_t accepted_transport;
+    uint64_t accepted_usb_deadline;
 } quota_portable_command_t;
 
 typedef enum {

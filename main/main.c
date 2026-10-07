@@ -196,6 +196,7 @@ static void process_button(const quota_app_event_t *event, quota_service_view_t 
     } else if (action == QUOTA_ACTION_CLOSE_PHONE) {
         quota_service_close_phone();
     } else if (action == QUOTA_ACTION_CANCEL_AUTH) {
+        quota_service_close_pairing_window();
         quota_service_cancel_auth();
     } else if (action == QUOTA_ACTION_RECONNECT) {
         quota_service_reconnect();

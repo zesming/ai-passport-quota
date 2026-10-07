@@ -8,6 +8,14 @@
 
 ## Unreleased
 
+### 2026-10-07 — Device account settings over USB
+
+The computer now opens the same account/network/display page over USB while keeping its internet connection. Codex starts a fresh device authorization; DeepSeek keys go directly to Passport. Native accounts remain device-owned. Claude collector pairing and verified account import are explicit actions in this page.
+
+USB keeps the fixed two-minute physical window and request-ID matching, adds a per-window session, and shares the existing command queue and receipts. Idle USB settings retain Wi-Fi; accepted authorization and storage continue after the window closes. On the authorization screen, short OK reopens USB settings without canceling authorization. Both transports use the same page assets; no permanent USB task or credential import was added.
+
+Validation: **PASS**, complete ESP-IDF 5.5.3 gate, companion 61 tests and production build, shared-page browser checks and independent review. Installed bundle `9e15479a10ebd4e13ad34ac6005cc054bc98cd54b19cd9a2b52ca281d8904052`, app 1,797,600 bytes, version `759f682-dirty`, ELF SHA-256 `e123b93e31b989910bb67fc0ad5c41012c12c34be8b620a5ced0f8bb7b700394`. Device partitions matched; all three component write hashes passed, preserving both NVS partitions and PHY. The owner opened the physical USB window; the board completed v2 session opening and two state reads on the same port. Real native provider authorization, credential submission and renewal across window expiry remain acceptance checks.
+
 ### 2026-10-06 — Simplified settings and responsive keys
 
 Settings now has passive Network information (connection/IP and committed saved Wi-Fi names) and Device settings (Hotspot / USB). Hotspot retains the shared account/settings page; USB retains the physical collector-pairing window and same-session desktop flow. USB does not manage native credentials. README and desktop preview/guidance follow these routes.
