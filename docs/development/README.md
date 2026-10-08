@@ -10,7 +10,7 @@
 | Wi-Fi 驱动 | `main/quota_wifi.c` |
 | USB 设置窗口、会话与帧解析 | `main/quota_usb.c`、`main/quota_json.c` |
 | 账户目录、控制器、授权/查询与存储 | `main/quota_catalog.c`、`main/quota_portable_service.c`、`main/quota_direct*.c`、`main/quota_store.c` |
-| 热点设置页 | `main/quota_portal.c`、`main/portable_setup.html`、`main/portable_setup.mjs`、`main/portable_serial.mjs` |
+| 设置页（热点与 USB 共用） | 源码 `main/setup/`（`page.html`、`style.css`、`app.mjs`、`transport_http.mjs`、`transport_serial.mjs`），生成文件 `main/setup_page.html`；热点服务端 `main/quota_portal.c` |
 | 看板与显示资源 | `main/quota_ui.c`、`main/quota_brand_assets.c`、`assets/` |
 | 板卡驱动 | `components/bsp/include/`、`components/bsp/src/` |
 | 主机检查与固件打包 | `tests/`、`tools/` |
@@ -58,7 +58,17 @@ python3 tools/archive_firmware.py verify <bundle-directory>
 
 分析崩溃时使用匹配 ELF，后续重构建可能具有不同身份。失败运行可能保留旧输出，必须报告确切成功归档路径和镜像哈希。生成固件和调试归档不提交，也不自动上传。额外自定义分区载荷不会单独保存于此归档。
 
-设备内嵌设置页可用 `node tools/preview_portable.mjs` 预览同一生产 HTML 和示例数据，打开启动输出的地址。`http://127.0.0.1:4328/__preview/manual` 可验证手动连接，示例密钥为连续 43 个 `s`。这是手动开发预览，不连接设备或服务。
+## 设置页
+
+`main/setup_page.html` 由 `npm run build:setup`（`tools/build_setup_page.mjs`）从 `main/setup/` 生成并提交入库，所以固件构建不需要 Node。改了 `main/setup/` 就重新生成；`tools/check_repo.py` 在生成文件过期时失败。构建脚本还会拒绝 `style=` 属性、`on*=` 事件处理器、`javascript:` 地址和拼进 `innerHTML` 的 `<style>`，因为页面的 meta CSP 只按哈希放行页面自己的一个样式块和一个脚本块。设置页文件不做格式检查（生成文件），源码用 prettier。
+
+`node tools/preview_portable.mjs [--scenario=default|empty|pending|failed|full] [--firmware=3|2|4]` 启动手动预览：输出的 `http://127.0.0.1` 地址模拟热点传输（响应头与设备相同，包括 `frame-ancestors 'none'`），输出的 `file://` 地址模拟 USB 传输，用软件模拟的串口代替 `navigator.serial`。`--firmware=2` 模拟只会说协议 2 的旧固件，`--firmware=4` 模拟更新的固件。模拟设备（`tools/fake_device.mjs`）同时是页面测试 `tests/test_portable_phone.mjs` 的对端。这只是开发预览，不连接设备或服务。
+
+`tests/test_setup_page_browser.mjs` 在真实 Chrome 里加载生成的页面，检查没有控制台错误、没有 CSP 违规、框架中不渲染，并跑一遍 USB 会话。它需要浏览器，所以只在设置了 `CHROME` 环境变量时运行：`CHROME=".../Google Chrome" node tests/test_setup_page_browser.mjs`。
+
+### 发布
+
+推送 `v*` 标签触发 `.github/workflows/pages.yml`：把 `main/setup_page.html` 复制为 `p<协议版本>/index.html` 和最新的 `index.html`，提交到 `gh-pages` 分支并部署到 GitHub Pages。其他协议版本的 `/pN/` 目录原样保留，同一协议的新版本替换自己的目录。步骤在 `tools/publish_setup_page.sh`，`tests/test_publish_setup_page.py` 演练多次发布。首次使用前需要在仓库设置里把 Pages 的来源设为 GitHub Actions，并在 Settings → Environments → `github-pages` 的 Deployment branches and tags 里加一条允许 `v*` 标签的规则（默认只允许默认分支，标签触发的部署会被拒绝）。第一个 `v*` 标签之前，设备界面（P4）的用词和菜单应已更新，页面和 README 才与设备屏幕一致。
 
 ## 刷写与 NVS
 

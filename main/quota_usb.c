@@ -57,7 +57,7 @@ bool quota_usb_parse(const char *frame, size_t length, quota_usb_request_t *requ
     char op[32] = {0};
     if (valid && text(root, "request_id", request->request_id, sizeof(request->request_id)) &&
         quota_json_is_lower_hex(request->request_id, 8)) {
-        if (version->valuedouble != 2) {
+        if (version->valuedouble != QUOTA_PROTOCOL_VERSION) {
             if (error)
                 *error = "unsupported_version";
             valid = false;
@@ -113,6 +113,20 @@ uint64_t quota_usb_deadline_ms(void)
 {
     return atomic_load(&s_usb_deadline);
 }
+uint64_t quota_usb_window_id(void)
+{
+    return (uint64_t)s_usb_opened_at_ms;
+}
+void quota_usb_extend_window(void)
+{
+    uint64_t now = quota_monotonic_ms(), deadline = atomic_load(&s_usb_deadline);
+    uint64_t cap = (uint64_t)s_usb_opened_at_ms + QUOTA_SESSION_MAX_MS;
+    uint64_t wanted = now + QUOTA_SESSION_TOPUP_MS;
+    if (wanted > cap)
+        wanted = cap;
+    if (quota_usb_active() && wanted > deadline)
+        atomic_store(&s_usb_deadline, wanted);
+}
 bool quota_usb_active(void)
 {
     return quota_usb_requested() && quota_monotonic_ms() < quota_usb_deadline_ms();
@@ -124,13 +138,10 @@ bool quota_usb_blocked(void)
 
 void quota_usb_fill_view_locked(quota_service_view_t *view)
 {
-    uint64_t now = quota_monotonic_ms();
-    view->usb_window_active =
-        quota_usb_window_active(s_usb_window_open, now, (uint64_t)s_usb_opened_at_ms);
+    uint64_t now = quota_monotonic_ms(), deadline = quota_usb_deadline_ms();
+    view->usb_window_active = quota_usb_window_active(s_usb_window_open, now, deadline);
     view->usb_window_seconds_left =
-        view->usb_window_active
-            ? (uint32_t)((QUOTA_USB_WINDOW_MS - (now - (uint64_t)s_usb_opened_at_ms) + 999) / 1000)
-            : 0;
+        view->usb_window_active ? (uint32_t)((deadline - now + 999) / 1000) : 0;
 }
 
 QUOTA_TESTABLE void release_usb_decoder(void)
@@ -152,21 +163,26 @@ QUOTA_TESTABLE bool usb_authorized(const char *session)
         difference |= (unsigned char)session[i] ^ (unsigned char)s_usb_session[i];
     return difference == 0;
 }
+/* Every result names the protocol and firmware, so a page of another version can tell. */
 QUOTA_TESTABLE void send_usb_result(const char *id, const char *session, const char *error,
                                     bool accepted)
 {
     if (!error && (!quota_usb_active() || (session && !usb_authorized(session))))
         error = "session_expired";
-    char response[320];
+    char response[384];
     int length =
         error ? snprintf(response, sizeof(response),
-                         "@AIQ:{\"v\":2,\"op\":\"result\",\"request_id\":\"%.8s\",\"ok\":false,"
-                         "\"error_code\":\"%s\"}\n",
-                         id ? id : "00000000", error)
+                         "@AIQ:{\"v\":%d,\"op\":\"result\",\"request_id\":\"%.8s\",\"ok\":false,"
+                         "\"error_code\":\"%s\",\"protocol\":%d,\"firmware\":\"%s\"}\n",
+                         QUOTA_PROTOCOL_VERSION, id ? id : "00000000", error,
+                         QUOTA_PROTOCOL_VERSION, quota_portable_service_firmware())
               : snprintf(response, sizeof(response),
-                         "@AIQ:{\"v\":2,\"op\":\"result\",\"request_id\":\"%.8s\",\"ok\":true,"
-                         "\"session_id\":\"%.32s\",\"accepted\":%s}\n",
-                         id ? id : "00000000", session ? session : "", accepted ? "true" : "false");
+                         "@AIQ:{\"v\":%d,\"op\":\"result\",\"request_id\":\"%.8s\",\"ok\":true,"
+                         "\"session_id\":\"%.32s\",\"accepted\":%s,\"protocol\":%d,"
+                         "\"firmware\":\"%s\"}\n",
+                         QUOTA_PROTOCOL_VERSION, id ? id : "00000000", session ? session : "",
+                         accepted ? "true" : "false", QUOTA_PROTOCOL_VERSION,
+                         quota_portable_service_firmware());
     if (length > 0 && (size_t)length < sizeof(response))
         (void)fwrite(response, 1, (size_t)length, stdout);
     (void)fflush(stdout);
@@ -179,9 +195,9 @@ QUOTA_TESTABLE void send_usb_state(const char *id, const char *session)
         return;
     }
     int prefix = snprintf(response, QUOTA_USB_RESPONSE_BYTES,
-                          "@AIQ:{\"v\":2,\"op\":\"state\",\"request_id\":\"%.8s\",\"session_id\":"
+                          "@AIQ:{\"v\":%d,\"op\":\"state\",\"request_id\":\"%.8s\",\"session_id\":"
                           "\"%.32s\",\"ok\":true,\"state\":",
-                          id, session);
+                          QUOTA_PROTOCOL_VERSION, id, session);
     size_t length = 0;
     bool ok =
         prefix > 0 && (size_t)prefix + QUOTA_PORTABLE_STATE_BYTES + 3 <= QUOTA_USB_RESPONSE_BYTES;
@@ -235,14 +251,16 @@ QUOTA_TESTABLE void handle_serial_frame(const char *frame, size_t length)
                 new_usb_session();
             memcpy(s_usb_opener, request->request_id, 9);
             s_usb_opener_at = quota_monotonic_ms();
-            char response[320];
+            char response[384];
             uint64_t left = (quota_usb_deadline_ms() - quota_monotonic_ms() + 999) / 1000;
             int bytes =
                 snprintf(response, sizeof(response),
-                         "@AIQ:{\"v\":2,\"op\":\"result\",\"request_id\":\"%.8s\",\"ok\":true,"
+                         "@AIQ:{\"v\":%d,\"op\":\"result\",\"request_id\":\"%.8s\",\"ok\":true,"
                          "\"session_id\":\"%.32s\",\"remaining_seconds\":%u,\"max_command_bytes\":"
-                         "2048,\"max_frame_bytes\":4096,\"max_state_bytes\":16384}\n",
-                         request->request_id, s_usb_session, (unsigned)left);
+                         "2048,\"max_frame_bytes\":4096,\"max_state_bytes\":16384,\"protocol\":%d,"
+                         "\"firmware\":\"%s\"}\n",
+                         QUOTA_PROTOCOL_VERSION, request->request_id, s_usb_session, (unsigned)left,
+                         QUOTA_PROTOCOL_VERSION, quota_portable_service_firmware());
             if (quota_usb_active() && bytes > 0 && (size_t)bytes < sizeof(response))
                 (void)fwrite(response, 1, (size_t)bytes, stdout);
             (void)fflush(stdout);
@@ -263,8 +281,12 @@ QUOTA_TESTABLE void handle_serial_frame(const char *frame, size_t length)
     } else {
         s_usb_opener_at = quota_monotonic_ms();
         quota_portable_submit_result_t result = QUOTA_PORTABLE_SUBMIT_INVALID;
-        if (request->op == QUOTA_USB_COMMAND)
+        if (request->op == QUOTA_USB_COMMAND) {
             result = quota_portable_service_submit(&request->command, QUOTA_SETUP_USB);
+            if (result == QUOTA_PORTABLE_SUBMIT_ACCEPTED &&
+                quota_portable_op_changes_setup(request->command.op))
+                quota_usb_extend_window();
+        }
         static const char *errors[] = {NULL, "busy", "session_expired", "invalid_command",
                                        "request_conflict"};
         send_usb_result(request->request_id, request->session_id,

@@ -2,14 +2,32 @@ const encoder = new TextEncoder();
 const REQUEST_ID = /^[a-f0-9]{8}$/;
 const SESSION_ID = /^[a-f0-9]{32}$/;
 const DEFAULT_LINE_BYTES = 32768;
+// The setup protocol this page speaks, and the USB identity of a Passport.
+export const SERIAL_PROTOCOL = 3;
+export const SESSION_OPEN_TRY_MS = 1500;
+const STATE_TRY_MS = 5000;
+export const PASSPORT_USB_FILTER = { usbVendorId: 0x303a, usbProductId: 0x1001 };
 
 export class DeviceSerialError extends Error {
-  constructor(code, diagnostics = {}) {
+  // `device` carries the protocol and firmware a rejecting Passport reported, if it did.
+  constructor(code, diagnostics = {}, device = null) {
     super(code);
     this.name = 'DeviceSerialError';
     this.code = code;
     this.diagnostics = { ...diagnostics };
+    this.device = device;
   }
+}
+
+function deviceError(result, diagnostics = {}) {
+  return new DeviceSerialError(
+    `device_${result.error_code ?? result.error ?? 'rejected'}`,
+    diagnostics,
+    {
+      protocol: result.protocol,
+      firmware: result.firmware,
+    },
+  );
 }
 
 export function makeUsbRequestId() {
@@ -32,17 +50,12 @@ function startReader(port, { maxLineBytes = DEFAULT_LINE_BYTES } = {}) {
 
   const diagnostics = {
     received_data: false,
-    ready_seen: false,
     result_seen: false,
     matching_result_seen: false,
   };
   const pending = new Map();
-  let resolveReady;
   let stopped = false;
   let terminalError = null;
-  const ready = new Promise((resolve) => {
-    resolveReady = resolve;
-  });
 
   const fail = (code) => {
     terminalError ??= new DeviceSerialError(code, diagnostics);
@@ -55,10 +68,6 @@ function startReader(port, { maxLineBytes = DEFAULT_LINE_BYTES } = {}) {
 
   const consumeLine = (line) => {
     const normalized = line.endsWith('\r') ? line.slice(0, -1) : line;
-    if (normalized.includes('ai_quota: ready')) {
-      diagnostics.ready_seen = true;
-      resolveReady();
-    }
     if (!normalized.startsWith('@AIQ:')) return;
     let frame;
     try {
@@ -114,7 +123,11 @@ function startReader(port, { maxLineBytes = DEFAULT_LINE_BYTES } = {}) {
   });
 
   return {
-    async send(frameBytes, requestId, { timeoutMs = 15000, bootWaitMs = 1500, onWritten } = {}) {
+    async send(
+      frameBytes,
+      requestId,
+      { timeoutMs = 15000, onWritten, fatalWriteTimeout = true } = {},
+    ) {
       if (!(frameBytes instanceof Uint8Array)) frameBytes = new Uint8Array(frameBytes);
       if (frameBytes.byteLength > 4096) throw new DeviceSerialError('frame_too_long', diagnostics);
       if (!REQUEST_ID.test(requestId ?? ''))
@@ -131,36 +144,23 @@ function startReader(port, { maxLineBytes = DEFAULT_LINE_BYTES } = {}) {
       const current = { resolve, reject, timer: null, writePending: true };
       pending.set(requestId, current);
 
-      let bootTimer;
-      try {
-        await Promise.race([
-          ready,
-          new Promise((done) => {
-            bootTimer = setTimeout(done, bootWaitMs);
-          }),
-        ]);
-      } finally {
-        clearTimeout(bootTimer);
-      }
-      if (terminalError) {
-        pending.delete(requestId);
-        throw terminalError;
-      }
-
       current.timer = setTimeout(() => {
         pending.delete(requestId);
         const error = new DeviceSerialError(
           current.writePending ? 'serial_write_timeout' : 'serial_timeout',
           diagnostics,
         );
-        if (current.writePending) terminalError ??= error;
+        // A write that stays blocked is fatal unless the caller can live with it: the Passport
+        // does not read the port while its USB setting is closed, so it is not a broken link.
+        if (current.writePending && fatalWriteTimeout) terminalError ??= error;
+        current.timedOut = true;
         reject(error);
       }, timeoutMs);
       const write = writer.write(frameBytes).then(
         () => {
           current.writePending = false;
           onWritten?.();
-          return response;
+          return current.timedOut ? undefined : response;
         },
         () => {
           current.writePending = false;
@@ -225,7 +225,8 @@ async function openPort(port) {
         try {
           return await readerSession.send(frameBytes, requestId, options);
         } catch (error) {
-          if (error?.code === 'serial_write_timeout') void close();
+          if (error?.code === 'serial_write_timeout' && options?.fatalWriteTimeout !== false)
+            void close();
           throw error;
         }
       },
@@ -266,9 +267,11 @@ export class UsbDeviceSession {
     this.closed = false;
   }
 
-  resetSession() {
+  // Forget the session. With `sameOpener` the next session_open carries the same request id: a
+  // Passport that did not restart gives the same session back, one that did has no opener yet.
+  resetSession({ sameOpener = false } = {}) {
     if (this.closed) throw new DeviceSerialError('serial_closed');
-    this.openerId = this.requestId();
+    if (!sameOpener) this.openerId = this.requestId();
     this.sessionId = '';
     this.sessionExpiresAt = 0;
     this.limits = null;
@@ -277,12 +280,18 @@ export class UsbDeviceSession {
 
   async exchange(
     frame,
-    { timeoutMs = 15000, retryOnce = false, maxFrameBytes = 4096, onWritten } = {},
+    {
+      timeoutMs = 15000,
+      retryOnce = false,
+      maxFrameBytes = 4096,
+      onWritten,
+      fatalWriteTimeout = true,
+    } = {},
   ) {
     const encoded = encoder.encode(`@AIQ:${JSON.stringify(frame)}\n`);
     if (encoded.byteLength > maxFrameBytes) throw new DeviceSerialError('frame_too_long');
     const send = () =>
-      this.serial.send(encoded, frame.request_id, { timeoutMs, bootWaitMs: 0, onWritten });
+      this.serial.send(encoded, frame.request_id, { timeoutMs, onWritten, fatalWriteTimeout });
     try {
       return await send();
     } catch (error) {
@@ -291,15 +300,28 @@ export class UsbDeviceSession {
     }
   }
 
-  async openSession() {
+  // The Passport answers only while its USB setting is open, so a try that gets no answer within
+  // `timeoutMs` just means "not open yet"; the caller tries again.
+  async openSession({ timeoutMs = SESSION_OPEN_TRY_MS } = {}) {
     if (this.closed) throw new DeviceSerialError('serial_closed');
     if (this.sessionId) return { session_id: this.sessionId, ...this.limits };
+    // A write that is still blocked has not reached the Passport: do not queue another behind it.
+    if (this.openWriting) throw new DeviceSerialError('serial_timeout', { write_pending: true });
+    this.openWriting = true;
     const result = await this.exchange(
-      { v: 2, op: 'session_open', request_id: this.openerId },
-      { retryOnce: true },
-    );
-    if (!result.ok)
-      throw new DeviceSerialError(`device_${result.error_code ?? result.error ?? 'rejected'}`);
+      { v: SERIAL_PROTOCOL, op: 'session_open', request_id: this.openerId },
+      {
+        timeoutMs,
+        fatalWriteTimeout: false,
+        onWritten: () => {
+          this.openWriting = false;
+        },
+      },
+    ).catch((error) => {
+      if (error?.code === 'serial_write_error') this.openWriting = false;
+      throw error;
+    });
+    if (!result.ok) throw deviceError(result);
     if (
       !SESSION_ID.test(result.session_id ?? '') ||
       !Number.isInteger(result.remaining_seconds) ||
@@ -311,6 +333,8 @@ export class UsbDeviceSession {
       throw new DeviceSerialError('usb_invalid_session_response');
     }
     this.sessionId = result.session_id;
+    this.protocol = result.protocol;
+    this.firmware = result.firmware;
     this.sessionExpiresAt = this.now() + result.remaining_seconds * 1000;
     this.limits = {
       remaining_seconds: result.remaining_seconds,
@@ -318,7 +342,12 @@ export class UsbDeviceSession {
       max_frame_bytes: Math.min(result.max_frame_bytes, 4096),
       max_state_bytes: Math.min(result.max_state_bytes, 16384),
     };
-    return { session_id: this.sessionId, ...this.limits };
+    return {
+      session_id: this.sessionId,
+      protocol: this.protocol,
+      firmware: this.firmware,
+      ...this.limits,
+    };
   }
 
   assertSession(result) {
@@ -334,15 +363,30 @@ export class UsbDeviceSession {
   async stateGet() {
     if (!this.sessionId) throw new DeviceSerialError('usb_session_not_open');
     this.assertSessionNotExpired();
+    // A busy Passport reads late: a write that is still blocked is not repeated behind itself, and
+    // a blocked write is not a broken link.
+    if (this.stateWriting) throw new DeviceSerialError('serial_timeout', { write_pending: true });
+    this.stateWriting = true;
     const result = await this.exchange(
-      { v: 2, op: 'state_get', request_id: this.requestId(), session_id: this.sessionId },
       {
-        timeoutMs: 15000,
-        maxFrameBytes: this.limits.max_frame_bytes,
+        v: SERIAL_PROTOCOL,
+        op: 'state_get',
+        request_id: this.requestId(),
+        session_id: this.sessionId,
       },
-    );
-    if (!result.ok)
-      throw new DeviceSerialError(`device_${result.error_code ?? result.error ?? 'rejected'}`);
+      {
+        timeoutMs: STATE_TRY_MS,
+        maxFrameBytes: this.limits.max_frame_bytes,
+        fatalWriteTimeout: false,
+        onWritten: () => {
+          this.stateWriting = false;
+        },
+      },
+    ).catch((error) => {
+      if (error?.code === 'serial_write_error') this.stateWriting = false;
+      throw error;
+    });
+    if (!result.ok) throw deviceError(result);
     this.assertSession(result);
     if (!result.state || typeof result.state !== 'object' || Array.isArray(result.state))
       throw new DeviceSerialError('usb_invalid_state');
@@ -378,7 +422,7 @@ export class UsbDeviceSession {
     if (bodyBytes > this.limits.max_command_bytes)
       throw new DeviceSerialError('usb_command_too_large');
     const packet = {
-      v: 2,
+      v: SERIAL_PROTOCOL,
       op: frame.op,
       request_id: frame.request_id,
       session_id: this.sessionId,
@@ -419,9 +463,7 @@ export class UsbDeviceSession {
       this.pendingMutation = null;
       // retry_used: a rejection after a resend may answer the resend while the first write was
       // already processed.
-      throw new DeviceSerialError(`device_${result.error_code ?? result.error ?? 'rejected'}`, {
-        retry_used: retried,
-      });
+      throw deviceError(result, { retry_used: retried });
     }
     this.assertSession(result);
     if (result.accepted !== true || result.request_id !== frame.request_id) {
@@ -451,29 +493,60 @@ export function serialErrorMessage(error) {
     if (error.code === 'serial_timeout') {
       const flags = error.diagnostics;
       if (!flags?.received_data)
-        return '未收到设备回应。请确认 USB 已连接，再打开「设备设置 → USB 设置」窗口后重试。';
-      if (flags.result_seen) return '已收到设备回复，但没有匹配的确认。请重新读取设备状态。';
-      if (flags.ready_seen) return '设备已启动，但没有确认操作。请检查 USB 设置窗口是否仍打开。';
-      return '已收到 USB 信息，但没有确认。请重新读取设备状态。';
+        return '没有收到 Passport 的回应。请确认 USB 线已连接，并在 Passport 上打开了 USB 设置。';
+      if (flags.result_seen) return 'Passport 回复了，但没有匹配的确认。请重新读取状态。';
+      return '收到了 USB 信息，但没有确认。请重新读取状态。';
     }
     return (
-      '设备是否收到这次操作尚未确认。页面不会再次发送新的修改；请重新读取设备' +
-      '状态，或断开 USB 后重新打开「USB 设置」窗口。'
+      'Passport 是否收到这次操作还不确定。页面不会再发送新的修改；请重新读取状态，' +
+      '或断开 USB 后重新打开 USB 设置。'
     );
   }
   if (['serial_read_error', 'serial_write_error', 'serial_closed'].includes(error?.code))
     return 'USB 连接中断。请关闭占用设备的串口工具，重新插拔 USB 线后重试。';
   const rejected = {
     frame_too_long: '配置内容超过设备协议允许的大小。',
-    unsupported_version: '网页与设备固件版本不匹配。请更新到配套版本。',
-    session_busy: '设备刚刚由另一个 USB 设置页面连接。请关闭另一个页面，或等待数秒后重试。',
-    invalid_session:
-      '已在另一个页面继续设置，或设备窗口已重新打开。如需在此页面继续，请重新连接设备状态。',
-    session_expired: 'USB 设置窗口已过期。请重新打开窗口并连接设备状态。',
+    session_busy: '另一个设置页面刚刚连接了 Passport。请关闭另一个页面，或等待数秒后重试。',
+    invalid_session: '已在另一个页面继续设置，或 USB 设置已重新打开。请重新连接。',
+    session_expired:
+      'USB 设置还没有打开，或设置时间已到。' +
+      '请在 Passport 上：长按 OK，按下键，再按 OK，然后重新连接。',
   };
   if (error?.code?.startsWith('device_'))
     return (
       rejected[error.code.slice(7)] ?? '设备收到配置，但拒绝了此次请求。请重新打开 USB 设置后重试。'
     );
   return null;
+}
+
+// The USB transport of the setup page. Opening the port may restart the Passport, so the page opens
+// it first and the user opens the Passport's USB setting afterwards; the session is then tried
+// again and again until the Passport answers. The port stays open while the setting comes and goes.
+export function createSerialTransport(nav = globalThis.navigator) {
+  let session = null;
+  return {
+    kind: 'serial',
+    supported: Boolean(nav?.serial?.requestPort),
+    hasPort: () => session !== null,
+    hasSession: () => Boolean(session?.sessionId),
+    async openPort() {
+      if (session) return;
+      const port = await nav.serial.requestPort({ filters: [PASSPORT_USB_FILTER] });
+      session = await openUsbDeviceSession(port);
+    },
+    // One try: it fails with serial_timeout or device_session_expired while the setting is closed.
+    openSession: () => session.openSession(),
+    // The Passport ended the session, restarted, or another page took over: keep the port.
+    sessionLost({ sameOpener = false } = {}) {
+      session?.resetSession?.({ sameOpener });
+    },
+    stateGet: () => session.stateGet(),
+    command: (body) => session.command(body),
+    jobProvesAdmission: (state, requestId) => session?.jobProvesAdmission(state, requestId),
+    async close() {
+      const closing = session;
+      session = null;
+      if (closing) await closing.close();
+    },
+  };
 }

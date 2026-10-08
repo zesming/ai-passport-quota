@@ -15,6 +15,21 @@
 - 枚举取值不复用：`provider` 为 Codex = 0、DeepSeek = 2（1 保留），`source` 和 `activity` 只接受 0。NVS 布局不变，已删除字段成为同样大小的保留字节，固件用编译期断言固定 `model_v2` 与观察缓存记录的大小和偏移。
 - 文档只用简体中文：`*.zh_CN.md` 合并进同名 `.md` 并删除，去掉语言链接，仓库检查改为禁止这两类内容。开发文档并为一份，删除便携联网设计文档和所有展示已删功能的截图（新截图随后续界面重设计补充）。
 
+### 重设计第三阶段：协议 v3 与统一设置页
+
+- 设置页合并为一个静态文件：热点（HTTP）和 USB（Web Serial）共用，按页面地址的协议选择传输，不再要求回环地址，USB 下页面不发任何网络请求。源码在 `main/setup/`，`npm run build:setup` 生成并提交 `main/setup_page.html`，meta CSP 只放行按哈希计算的一个样式块和一个脚本块，页面在框架中不渲染，设备响应头另加 `frame-ancestors 'none'`。固件只路由 `/` 与 `/api/*`。
+- 协议升到 v3：USB 帧 `v:3`，`session_open` 结果、`/api/state` 和所有错误都带 `protocol` 与 `firmware`，页面据此提示“Passport 固件过旧”或“设置页版本过旧”，版本不一致时不显示修改控件。v2 帧返回 `unsupported_version`。
+- 命令：新增 `network_remove` 和仅 USB 的 `validate`；删除 `network_scan`、`mode_select`，`codex_launch` 不再是线上命令。状态删除 `pending_accounts`、`network.pending_network`、`accounts[].source`、`source_changed`、`collector`，新增 `protocol`、`firmware`、`validating`、`validation_step` 和每行的 `validation`（待验证、正常、验证失败）。
+- 保存与验证分开：保存立即生效、行状态为待验证；一个验证函数 `quota_portable_validate_pending()`（Wi-Fi → DeepSeek 密钥 → ChatGPT 授权）被 USB 的 `validate` 和热点 `setup_close` 共用。USB 验证后会话保持打开，失败的行可直接修改，再验证只处理待验证和失败的行。验证期间修改类命令返回 `busy`，会话到期不中断验证或授权。DeepSeek 密钥保存时即写入凭据（待验证），换密钥后旧密钥不再保留。ChatGPT 授权在内存里排队，验证走到时才占用凭据缓冲。
+- 会话：热点基础 10 分钟、USB 基础 2 分钟，每个修改类命令补到至少 5 分钟，总时长上限 20 分钟，`state_get` 不补时。访问码由 43 字符改为 16 位 Crockford Base32（`XXXX-XXXX-XXXX-XXXX`，约 80 bit），连续 5 次错误锁定，直到在 Passport 上重新开启热点设置。
+- 发布：`v*` 标签触发 `.github/workflows/pages.yml`，把页面发布到 GitHub Pages（`/` 为最新，`/p<协议版本>/` 保留历史协议）。
+- USB 连接顺序改为：插线 → 点“连接 Passport”选串口 → 在 Passport 上打开 USB 设置。打开串口可能让 C3 重启，所以页面先开串口，之后每 1.5 秒重试 `session_open` 直到 Passport 回应；固件在 USB 设置之外不回应；不再等待启动日志。到期后页面自动等待再次打开。
+- Wi-Fi 验证状态增加 `saved`：重启后已保存的网络既不算待验证也不算失败，实际连上时变为正常，所选网络被拒绝密码时变为验证失败。修改正在使用的网络时，新凭据只在内存里暂存，验证通过才写入，失败的密码不会让设备掉线或被保存。ChatGPT 授权超时、取消或没有网络时，账户留在队列里（验证失败）等待重试，不再丢失。
+- 暂存的新凭据只属于它自己：用旧凭据连上不会把行改成正常；暂存的网络不再被使用时随选用另一个网络一并写入存储，普通保存同一网络或移除它时清除暂存。USB 等待期间被阻塞的写不再关闭串口也不会堆积帧。设备忙于慢请求时帧只是延后：累计 20 秒无回应才视为重启，随后用同一个打开者编号重新打开会话（没重启则原样取回同一个会话），等待中遇到 `session_busy` 等约 6 秒再试。
+- 访问码错误次数按“连续”计数，输对一次清零。`session_expired` 是热点和 USB 统一的“设置时间已到”错误码。发布脚本只在协议版本不低于当前根页面时更新根页面。
+- 发布前须知：设备界面重设计（P4）应在第一个 `v*` 标签之前完成，设备屏幕上仍是旧用词（例如“设置密钥”）；GitHub Pages 的 `github-pages` 环境需要允许 `v*` 标签（见开发指南）。
+- 升级数据影响：无。账户、Wi-Fi 和设置的存储布局不变；已保存的 Wi-Fi 重启后显示“已保存”，DeepSeek 在换密钥后、验证通过前保持“待验证”。
+
 ### 升级数据影响
 
 升级后首次启动读取账户目录时自动清理。清理幂等：先把被删账户占用的凭据槽改为墓碑，再清零观察缓存中对应的行，最后以序号加 1 原子提交新目录；中途断电后下次启动重新执行，结果相同。目录没有变化时不写 Flash。

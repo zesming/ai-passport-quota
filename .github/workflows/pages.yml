@@ -1,0 +1,62 @@
+name: Publish setup page
+
+# The setup page is one static file. A version tag publishes it to GitHub Pages as the latest
+# page (/) and under its protocol (/p<N>/), so a Passport that speaks protocol N always has a
+# matching page. Earlier /p<N>/ directories stay on the gh-pages branch, which is the history.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to GitHub Pages
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Check that the page is the build of its sources
+        run: node tools/build_setup_page.mjs --check
+
+      - name: Make sure the gh-pages branch exists
+        run: |
+          if ! git ls-remote --exit-code --heads origin gh-pages > /dev/null; then
+            empty_tree="$(git hash-object -t tree /dev/null)"
+            first="$(git -c user.name=github-actions[bot] \
+              -c user.email=41898282+github-actions[bot]@users.noreply.github.com \
+              commit-tree "${empty_tree}" -m "Start the published setup pages")"
+            git push origin "${first}:refs/heads/gh-pages"
+          fi
+
+      - name: Check out the published pages
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: gh-pages
+          path: site
+
+      - name: Add this version
+        run: ./tools/publish_setup_page.sh site
+
+      - name: Keep the history
+        run: git -C site push origin HEAD:gh-pages
+
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
+        with:
+          path: site
+
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5

@@ -8,8 +8,9 @@
 #include <string.h>
 static uint64_t now_ms = 100, wall = 1800000000;
 static bool common_locked, usb_hold, connected, network_ok = true, store_fail, cache_fail,
-                                                acquire_fail;
-static unsigned config_generation = 1, query_calls, refresh_calls, retry_calls, release_calls;
+                                                acquire_fail, credential_fail;
+static unsigned config_generation = 1, query_calls, refresh_calls, retry_calls, release_calls,
+                wifi_connects, deepseek_queries;
 static quota_service_view_t public_view;
 static quota_direct_credential_t credentials[QUOTA_MAX_ACCOUNTS];
 static bool used[QUOTA_MAX_ACCOUNTS];
@@ -59,15 +60,22 @@ struct quota_direct {
 };
 static struct quota_direct provider;
 static quota_direct_result_code_t query_code = QUOTA_DIRECT_OK, refresh_code = QUOTA_DIRECT_OK,
-                                  login_code = QUOTA_DIRECT_WAITING;
+                                  login_code = QUOTA_DIRECT_WAITING,
+                                  login_begin_code = QUOTA_DIRECT_WAITING;
 int64_t esp_timer_get_time(void)
 {
     return (int64_t)now_ms * 1000;
 }
+const esp_app_desc_t *esp_app_get_description(void)
+{
+    static const esp_app_desc_t description = {.version = "3.0.0-test"};
+    return &description;
+}
 uint32_t esp_random(void)
 {
-    static uint32_t n = 7;
-    return n++;
+    static uint32_t n = 7; /* a linear congruential generator; its high bits do not repeat */
+    n = n * 1664525u + 1013904223u;
+    return n >> 8;
 }
 size_t esp_get_free_heap_size(void)
 {
@@ -123,7 +131,9 @@ esp_err_t esp_wifi_set_config(int iface, const wifi_config_t *value)
 esp_err_t esp_wifi_connect(void)
 {
     unlocked();
-    connected = network_ok;
+    wifi_connects++;
+    /* A password that contains "bad" is refused, as a real access point would. */
+    connected = network_ok && !strstr((const char *)wifi_config.sta.password, "bad");
     return ESP_OK;
 }
 esp_err_t esp_wifi_disconnect(void)
@@ -157,13 +167,25 @@ void esp_netif_sntp_deinit(void)
 {
     unlocked();
 }
+/* The shape of an access code, written out independently of the production check: sixteen
+ * characters of 0-9 and A-Z without I, L, O and U, in four groups divided by dashes. */
+static bool valid_access_code(const char *code)
+{
+    if (strlen(code) != 19)
+        return false;
+    for (unsigned i = 0; i < 19; i++) {
+        if (i % 5 == 4 ? code[i] != '-' : !strchr("0123456789ABCDEFGHJKMNPQRSTVWXYZ", code[i]))
+            return false;
+    }
+    return true;
+}
 bool quota_portal_start(const char *secret, const quota_portal_callbacks_t *callbacks)
 {
     unlocked();
     portal_starts++;
     if (portal_fail)
         return false;
-    assert(strlen(secret) == 43);
+    assert(valid_access_code(secret));
     portal = *callbacks;
     portal_active = true;
     return true;
@@ -230,7 +252,7 @@ bool quota_store_save_credential(uint8_t slot, const quota_portable_credential_t
 {
     unlocked();
     assert(in == acquired);
-    if (store_fail)
+    if (store_fail || credential_fail)
         return false;
     credentials[slot] = *in;
     used[slot] = true;
@@ -297,7 +319,7 @@ quota_direct_result_t quota_direct_login_begin(quota_direct_t *direct,
     (void)epoch;
     assert(direct->hooks.admit(NULL, c->id, c->generation));
     direct->active = true;
-    return answer(QUOTA_DIRECT_WAITING, c);
+    return answer(login_begin_code, c);
 }
 quota_direct_result_t quota_direct_login_step(quota_direct_t *direct, quota_direct_credential_t *c,
                                               uint64_t time, uint64_t epoch)
@@ -342,6 +364,8 @@ quota_direct_result_t quota_direct_query(quota_direct_t *direct, quota_direct_cr
     if (!direct->hooks.admit(NULL, c->id, c->generation))
         return answer(QUOTA_DIRECT_DEFERRED, c);
     query_calls++;
+    if (c->provider == QUOTA_PROVIDER_DEEPSEEK)
+        deepseek_queries++;
     return answer(query_code, c);
 }
 quota_direct_result_t quota_direct_retry_persist(quota_direct_t *direct)
@@ -383,7 +407,7 @@ static void changed_locked(void)
     config_generation++;
 }
 static bool usb_enabled, usb_window, usb_scratch;
-static uint64_t usb_deadline;
+static uint64_t usb_deadline, usb_opened;
 static unsigned usb_closes;
 bool quota_usb_blocked(void)
 {
@@ -397,6 +421,10 @@ uint64_t quota_usb_deadline_ms(void)
 {
     return usb_deadline;
 }
+uint64_t quota_usb_window_id(void)
+{
+    return usb_opened;
+}
 void quota_usb_close_window(void)
 {
     usb_window = false;
@@ -406,6 +434,7 @@ static void usb_open(void)
 {
     usb_enabled = true;
     usb_window = true;
+    usb_opened = now_ms;
     usb_deadline = now_ms + 120000;
     assert(quota_portable_service_prepare_usb());
 }
@@ -581,6 +610,85 @@ static void close_phone(void)
     now_ms += 500;
     ready();
 }
+/* Public state as the page reads it: parsed, so tests look at the contract rather than text. */
+static cJSON *state_of(quota_setup_transport_t transport)
+{
+    static char text[QUOTA_PORTABLE_STATE_BYTES + 1];
+    size_t length = 0;
+    assert(quota_portable_service_state_json(text, sizeof(text), &length, transport));
+    cJSON *root = cJSON_Parse(text);
+    assert(root);
+    return root;
+}
+/* One member of an array item of the state, for example ("network.saved_networks", 0, ...). */
+static const char *state_item(cJSON *root, const char *list, unsigned index, const char *member)
+{
+    cJSON *array = cJSON_GetObjectItemCaseSensitive(root, list);
+    if (!strcmp(list, "saved_networks"))
+        array = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(root, "network"),
+                                                 list);
+    cJSON *item = cJSON_GetArrayItem(array, (int)index);
+    cJSON *value = cJSON_GetObjectItemCaseSensitive(item, member);
+    assert(cJSON_IsString(value));
+    return value->valuestring;
+}
+/* The validation of Wi-Fi network `index` as the page sees it ("pending", "ok", "failed"). */
+static const char *network_state(unsigned index, const char **error)
+{
+    static char validation[16], code[48];
+    cJSON *root = state_of(QUOTA_SETUP_USB);
+    snprintf(validation, sizeof(validation), "%s",
+             state_item(root, "saved_networks", index, "validation"));
+    snprintf(code, sizeof(code), "%s", state_item(root, "saved_networks", index, "error_code"));
+    cJSON_Delete(root);
+    if (error)
+        *error = code;
+    return validation;
+}
+static const char *account_state(unsigned index, const char **error)
+{
+    static char validation[16], code[48];
+    cJSON *root = state_of(QUOTA_SETUP_USB);
+    snprintf(validation, sizeof(validation), "%s",
+             state_item(root, "accounts", index, "validation"));
+    snprintf(code, sizeof(code), "%s", state_item(root, "accounts", index, "error_code"));
+    cJSON_Delete(root);
+    if (error)
+        *error = code;
+    return validation;
+}
+static unsigned account_count_in_state(void)
+{
+    cJSON *root = state_of(QUOTA_SETUP_USB);
+    unsigned count =
+        (unsigned)cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(root, "accounts"));
+    cJSON_Delete(root);
+    return count;
+}
+static void submit_usb(quota_portable_command_t *command)
+{
+    command->phone_utc = wall;
+    assert(quota_portable_service_submit(command, QUOTA_SETUP_USB) ==
+           QUOTA_PORTABLE_SUBMIT_ACCEPTED);
+    tick(false);
+}
+/* Let the network task run until the validation pass has ended. */
+static void settle(void)
+{
+    for (unsigned i = 0; i < 400 && (s_validation.active || s_validation.requested); i++) {
+        now_ms += 500;
+        tick(false);
+    }
+    assert(!s_validation.active && !s_validation.requested);
+}
+static void run_until_login_started(void)
+{
+    for (unsigned i = 0; i < 40 && !s_operation.started; i++) {
+        now_ms += 500;
+        tick(false);
+    }
+    assert(s_operation.kind == OP_LOGIN && s_operation.started);
+}
 static void seed_model(void)
 {
     model_defaults(&durable_model);
@@ -669,6 +777,8 @@ int main(int argc, char **argv)
         assert(!strcmp(credentials[0].refresh_token, "received-rotation"));
         assert(quota_portable_service_next_deadline_ms(true) == UINT64_MAX);
     } else if (!strcmp(argv[1], "key")) {
+        /* A key is stored at once as it is, pending. Nothing asks DeepSeek and no record is held.
+         */
         boot();
         phone();
         quota_portable_command_t cmd = {.op = QUOTA_PORTABLE_OP_DEEPSEEK_SAVE};
@@ -677,30 +787,58 @@ int main(int argc, char **argv)
         strcpy(cmd.api_key, "candidate-key");
         strcpy(cmd.label, "candidate");
         submit_command(&cmd);
-        assert(acquired && !strcmp(credentials[1].api_key, "old-key"));
-        assert(query_calls == 0);
+        assert(!acquired && !strcmp(credentials[1].api_key, "candidate-key") &&
+               credentials[1].generation == 2 &&
+               credentials[1].auth_state == QUOTA_PORTABLE_AUTH_PENDING);
+        assert(durable_model.intent.kind == QUOTA_INTENT_NONE &&
+               !strcmp(durable_model.entries[1].label, "candidate"));
+        assert(job(cmd.request_id)->state == 2 && query_calls == 0);
+        assert(!strcmp(account_state(1, NULL), "pending") && !strcmp(account_state(0, NULL), "ok"));
+        /* Closing the hotspot from the Passport saves nothing and validates nothing. */
         close_phone();
-        assert(!acquired && !strcmp(credentials[1].api_key, "candidate-key"));
-        assert(credentials[1].generation == 2);
-        assert(durable_model.intent.kind == QUOTA_INTENT_NONE);
-        assert(!strcmp(durable_model.entries[1].label, "candidate"));
-        assert(job(cmd.request_id)->state == 2);
+        for (unsigned i = 0; i < 6; i++) {
+            now_ms += 500;
+            tick(false);
+        }
+        assert(s_validate_runs == 0 && !strcmp(account_state(1, NULL), "pending"));
+        assert(!public_view.snapshot.accounts[1].has_observed_at); /* not asked in the background */
+        unsigned background = query_calls;
+        /* setup_close does: the hotspot closes, then the one validation function runs. */
+        phone();
+        quota_portable_command_t close = {.op = QUOTA_PORTABLE_OP_SETUP_CLOSE};
+        strcpy(close.request_id, "22345678");
+        submit_command(&close);
+        assert(portal_active && s_validate_runs == 0);
+        now_ms += 500;
+        tick(false);
+        assert(!portal_active && s_validate_runs == 1);
+        settle();
+        assert(query_calls == background + 1 && !strcmp(account_state(1, NULL), "ok") &&
+               credentials[1].auth_state == QUOTA_PORTABLE_AUTH_READY &&
+               !strcmp(credentials[1].api_key, "candidate-key"));
     } else if (!strcmp(argv[1], "cancel")) {
+        /* A queued ChatGPT authorization is only a note in RAM until validation reaches it. */
         boot();
         phone();
-        quota_portable_command_t cmd = {.op = QUOTA_PORTABLE_OP_DEEPSEEK_SAVE};
+        quota_portable_command_t cmd = {.op = QUOTA_PORTABLE_OP_CODEX_QUEUE};
         strcpy(cmd.request_id, "12345678");
-        strcpy(cmd.api_key, "candidate-key");
+        strcpy(cmd.label, "Work");
         submit_command(&cmd);
-        assert(public_view.snapshot.account_count == 2 &&
-               durable_model.intent.kind == QUOTA_INTENT_UPSERT_NATIVE);
+        assert(s_login_queue.present && s_login_queue.is_new && !acquired &&
+               job(cmd.request_id)->state == 2);
+        assert(public_view.snapshot.account_count == 2 && account_count_in_state() == 3);
+        assert(!strcmp(account_state(2, NULL), "pending") &&
+               durable_model.intent.kind == QUOTA_INTENT_NONE);
+        quota_portable_command_t again = {.op = QUOTA_PORTABLE_OP_CODEX_QUEUE};
+        strcpy(again.request_id, "22345678");
+        submit_command(&again); /* one authorization at a time */
+        assert(job(again.request_id)->state == 3 &&
+               !strcmp(job(again.request_id)->error, "login_pending"));
         quota_portable_command_t cancel = {.op = QUOTA_PORTABLE_OP_OPERATION_CANCEL};
-        strcpy(cancel.request_id, "22345678");
+        strcpy(cancel.request_id, "32345678");
         strcpy(cancel.target_request_id, cmd.request_id);
         submit_command(&cancel);
-        assert(!acquired && public_view.snapshot.account_count == 2);
-        assert(durable_model.intent.kind == QUOTA_INTENT_NONE);
-        assert(!strcmp(job(cmd.request_id)->error, "canceled"));
+        assert(!s_login_queue.present && account_count_in_state() == 2 && !acquired);
     } else if (!strcmp(argv[1], "queue")) {
         boot();
         phone();
@@ -714,20 +852,23 @@ int main(int argc, char **argv)
         config_generation++;
         common_unlock();
         tick(false);
-        assert(!s_candidate_pending &&
-               !strcmp(job(cmd.request_id)->error, "configuration_changed"));
+        assert(!strcmp(job(cmd.request_id)->error, "configuration_changed") &&
+               !strcmp(durable_model.networks[0].ssid, "old-hotspot"));
         strcpy(cmd.request_id, "22345678");
         submit_command(&cmd);
-        network_ok = false;
-        quota_portable_service_close();
-        tick(false);
-        assert(s_candidate_pending);
+        /* New credentials for the network in use wait for validation; the stored ones stay. */
+        assert(job(cmd.request_id)->state == 2 && durable_model.network_count == 1 &&
+               !strcmp(durable_model.networks[0].ssid, "old-hotspot"));
+        assert(s_staged.present && !strcmp(s_staged.network.ssid, "new-hotspot"));
+        assert(!strcmp(network_state(0, NULL), "pending") && !s_candidate_pending &&
+               s_validate_runs == 0);
+        cJSON *root = state_of(QUOTA_SETUP_USB);
+        assert(!strcmp(state_item(root, "saved_networks", 0, "ssid"), "new-hotspot"));
+        cJSON_Delete(root);
         assert(public_view.portable.saved_network_count == 1 &&
-               !strcmp(public_view.portable.saved_network_ssids[0], "old-hotspot"));
-        now_ms += 25000;
-        tick(false);
-        assert(!s_candidate_pending && !strcmp(durable_model.networks[0].ssid, "old-hotspot"));
-        assert(job(cmd.request_id)->state == 3);
+               !strcmp(public_view.portable.saved_network_ssids[0], "old-hotspot") &&
+               public_view.portable.saved_network_validation[0] == QUOTA_VALIDATION_PENDING &&
+               public_view.portable.pending_items == 1);
     } else if (!strcmp(argv[1], "cadence")) {
         boot();
         ready();
@@ -765,6 +906,12 @@ int main(int argc, char **argv)
                !strstr(json, "\"source\"") && !strstr(json, "source_changed"));
         assert(!strstr(json, "old-key") && !strstr(json, "old-access") &&
                !strstr(json, "\"mode\""));
+        /* Protocol 3: identity, validation, and no leftover of removed features. */
+        assert(strstr(json, "\"protocol\":3,\"firmware\":\"3.0.0-test\"") &&
+               strstr(json, "\"validating\":false") && strstr(json, "\"validation\":\"ok\""));
+        assert(!strstr(json, "collector") && !strstr(json, "\"candidate\"") &&
+               !strstr(json, "\"kind\":\"network\""));
+        assert(!strcmp(network_state(0, NULL), "ok") && !strcmp(account_state(0, NULL), "ok"));
     } else if (!strcmp(argv[1], "physical-gate")) {
         boot();
         ready();
@@ -866,19 +1013,18 @@ int main(int argc, char **argv)
         strcpy(cmd.account_id, credentials[1].id);
         strcpy(cmd.api_key, "candidate-key");
         submit_command(&cmd);
-        assert(acquired);
-        close_phone();
-        assert(credentials[1].generation == 2 && !acquired);
+        assert(credentials[1].generation == 2 && !acquired && job(cmd.request_id)->state == 2 &&
+               durable_model.entry_count == 8);
     } else if (!strcmp(argv[1], "received-cancel")) {
+        /* A key that reached the Passport is never dropped: it is saved before anything else. */
         boot();
         phone();
         quota_portable_command_t cmd = {.op = QUOTA_PORTABLE_OP_DEEPSEEK_SAVE};
         strcpy(cmd.request_id, "12345678");
         strcpy(cmd.account_id, credentials[1].id);
         strcpy(cmd.api_key, "received-key");
+        credential_fail = true;
         submit_command(&cmd);
-        store_fail = true;
-        close_phone();
         assert(acquired && s_operation.kind == OP_SAVE && s_operation.received);
         quota_portable_service_cancel_auth();
         quota_portable_service_open();
@@ -886,28 +1032,38 @@ int main(int argc, char **argv)
         tick(true);
         assert(acquired && s_model.intent.kind == QUOTA_INTENT_UPSERT_NATIVE);
         unsigned http = query_calls + refresh_calls;
-        store_fail = false;
+        credential_fail = false;
         now_ms += 1000;
         tick(true);
         assert(!acquired && !strcmp(credentials[1].api_key, "received-key") &&
                durable_model.intent.kind == QUOTA_INTENT_NONE);
-        assert(query_calls + refresh_calls == http);
+        assert(job(cmd.request_id)->state == 2 && query_calls + refresh_calls == http);
     } else if (!strcmp(argv[1], "physical-login")) {
+        /* A hotspot requested on the Passport ends a running authorization and its validation. */
         boot();
-        phone();
+        ready();
+        usb_open();
         quota_portable_command_t queue = {.op = QUOTA_PORTABLE_OP_CODEX_QUEUE};
         strcpy(queue.request_id, "12345678");
-        submit_command(&queue);
-        quota_portable_command_t launch = {.op = QUOTA_PORTABLE_OP_CODEX_LAUNCH};
-        strcpy(launch.request_id, "22345678");
-        submit_command(&launch);
-        close_phone();
-        assert(s_operation.started);
+        strcpy(queue.label, "Chat");
+        submit_usb(&queue);
+        assert(s_login_queue.present && !acquired && s_operation.kind == OP_NONE);
+        quota_portable_command_t validate = {.op = QUOTA_PORTABLE_OP_VALIDATE};
+        strcpy(validate.request_id, "22345678");
+        submit_usb(&validate);
+        run_until_login_started();
+        assert(s_validation.active && acquired && s_operation.job_id[0]);
         quota_portable_service_open();
         assert(!quota_portable_service_http_allowed());
         tick(false);
         assert(portal_active && !acquired && s_operation.kind == OP_NONE &&
                durable_model.intent.kind == QUOTA_INTENT_NONE);
+        /* The account stays queued, failed, for the next 完成设置. */
+        assert(!s_validation.active && s_login_queue.present && s_login_queue.is_new &&
+               !strcmp(s_login_queue.error, "canceled") && public_view.snapshot.account_count == 2);
+        assert(!strcmp(account_state(2, NULL), "failed") && public_view.portable.failed_items == 1);
+        assert(job(validate.request_id)->state == 3 &&
+               !strcmp(job(validate.request_id)->error, "canceled"));
     } else if (!strcmp(argv[1], "received-model-unknown")) {
         boot();
         phone();
@@ -915,17 +1071,16 @@ int main(int argc, char **argv)
         strcpy(cmd.request_id, "12345678");
         strcpy(cmd.account_id, credentials[1].id);
         strcpy(cmd.api_key, "received-key");
-        submit_command(&cmd);
         model_unknown = true;
         model_apply_unknown = true;
-        close_phone();
+        submit_command(&cmd);
         assert(acquired && s_dirty_model && s_operation.kind == OP_SAVE);
         unsigned calls = query_calls;
         model_unknown = false;
         now_ms += 1000;
         tick(true);
         assert(!s_dirty_model && !acquired && s_model.intent.kind == QUOTA_INTENT_NONE &&
-               credentials[1].generation == 2);
+               credentials[1].generation == 2 && !strcmp(credentials[1].api_key, "received-key"));
         assert(query_calls == calls);
     } else if (!strcmp(argv[1], "sleep-open-deadline")) {
         boot();
@@ -938,42 +1093,49 @@ int main(int argc, char **argv)
         tick(false);
         assert(portal_active);
     } else if (!strcmp(argv[1], "prepare-unknown")) {
+        /* The authorization record is prepared when validation reaches it; an unknown write result
+         * holds everything until it is resolved. */
         boot();
-        phone();
-        model_unknown = true;
+        ready();
+        usb_open();
         quota_portable_command_t queue = {.op = QUOTA_PORTABLE_OP_CODEX_QUEUE};
         strcpy(queue.request_id, "12345678");
-        submit_command(&queue);
-        assert(s_dirty_model && job(queue.request_id)->state == 1 &&
-               public_view.portable.login_state == QUOTA_PORTABLE_LOGIN_QUEUED);
+        submit_usb(&queue);
+        model_unknown = true;
+        quota_portable_command_t validate = {.op = QUOTA_PORTABLE_OP_VALIDATE};
+        strcpy(validate.request_id, "22345678");
+        submit_usb(&validate);
+        assert(s_dirty_model && job(validate.request_id)->state == 1 &&
+               public_view.portable.login_state == QUOTA_PORTABLE_LOGIN_CONNECTING);
+        assert(!quota_portable_service_http_allowed() && !s_operation.started);
         model_unknown = false;
         now_ms += 1000;
         tick(false);
-        assert(!s_dirty_model && job(queue.request_id)->state == 2 &&
-               durable_model.intent.kind == QUOTA_INTENT_UPSERT_NATIVE);
-        quota_portable_command_t launch = {.op = QUOTA_PORTABLE_OP_CODEX_LAUNCH};
-        strcpy(launch.request_id, "22345678");
-        submit_command(&launch);
-        assert(job(launch.request_id)->state == 1 &&
-               public_view.portable.login_state == QUOTA_PORTABLE_LOGIN_CONNECTING);
+        assert(!s_dirty_model && durable_model.intent.kind == QUOTA_INTENT_UPSERT_NATIVE &&
+               s_validation.active);
     } else if (!strcmp(argv[1], "prepare-unknown-cancel")) {
         boot();
-        phone();
+        ready();
+        usb_open();
+        quota_portable_command_t queue = {.op = QUOTA_PORTABLE_OP_CODEX_QUEUE};
+        strcpy(queue.request_id, "12345678");
+        submit_usb(&queue);
         model_unknown = true;
-        quota_portable_command_t cmd = {.op = QUOTA_PORTABLE_OP_DEEPSEEK_SAVE};
-        strcpy(cmd.request_id, "12345678");
-        strcpy(cmd.api_key, "candidate-key");
-        submit_command(&cmd);
+        quota_portable_command_t validate = {.op = QUOTA_PORTABLE_OP_VALIDATE};
+        strcpy(validate.request_id, "22345678");
+        submit_usb(&validate);
         quota_portable_command_t cancel = {.op = QUOTA_PORTABLE_OP_OPERATION_CANCEL};
-        strcpy(cancel.request_id, "22345678");
-        strcpy(cancel.target_request_id, cmd.request_id);
-        submit_command(&cancel);
+        strcpy(cancel.request_id, "32345678");
+        strcpy(cancel.target_request_id, validate.request_id);
+        submit_usb(&cancel);
         assert(s_operation.cancel_requested && s_dirty_model && acquired);
         model_unknown = false;
         now_ms += 1000;
         tick(false);
+        settle();
         assert(!s_dirty_model && !acquired && durable_model.intent.kind == QUOTA_INTENT_NONE &&
-               job(cmd.request_id)->state == 3 && !strcmp(job(cmd.request_id)->error, "canceled"));
+               job(validate.request_id)->state == 3 &&
+               !strcmp(job(validate.request_id)->error, "canceled"));
         assert(!query_calls && !refresh_calls);
     } else if (!strcmp(argv[1], "unknown-corruption")) {
         boot();
@@ -1092,8 +1254,10 @@ int main(int argc, char **argv)
         assert(quota_portable_service_submit(&key, QUOTA_SETUP_USB) ==
                QUOTA_PORTABLE_SUBMIT_CONFLICT);
         tick(false);
+        /* Saved and pending: nothing was asked of DeepSeek, and the session stays open. */
         assert(!acquired && !strcmp(credentials[1].api_key, "usb-new-key") &&
                job(key.request_id)->state == 2 && usb_window && !s_queue);
+        assert(!strcmp(account_state(1, NULL), "pending") && query_calls == 0);
         quota_portable_command_t net = {.op = QUOTA_PORTABLE_OP_NETWORK_SAVE, .network_index = 0};
         strcpy(net.request_id, "22345678");
         strcpy(net.ssid, "USB network");
@@ -1101,11 +1265,12 @@ int main(int argc, char **argv)
         assert(quota_portable_service_submit(&net, QUOTA_SETUP_USB) ==
                QUOTA_PORTABLE_SUBMIT_ACCEPTED);
         tick(false);
-        assert(s_candidate_pending && s_candidate_deadline == now_ms + 25000);
+        assert(!s_candidate_pending && !strcmp(durable_model.networks[0].ssid, "old-hotspot") &&
+               !strcmp(s_staged.network.ssid, "USB network") &&
+               !strcmp(network_state(0, NULL), "pending") && usb_window);
         now_ms += 500;
         tick(false);
-        assert(!s_candidate_pending && !strcmp(durable_model.networks[0].ssid, "USB network") &&
-               usb_window);
+        assert(query_calls == 0 && s_validate_runs == 0);
         usb_scratch = true;
         assert(!quota_portable_service_http_allowed());
         unsigned calls = query_calls;
@@ -1128,34 +1293,37 @@ int main(int argc, char **argv)
                QUOTA_PORTABLE_SUBMIT_CLOSED);
     } else if (!strcmp(argv[1], "usb-login-reopen-save")) {
         boot();
-        phone();
+        ready();
+        usb_open();
         quota_portable_command_t queue = {.op = QUOTA_PORTABLE_OP_CODEX_QUEUE};
         strcpy(queue.request_id, "12345678");
-        submit_command(&queue);
+        strcpy(queue.label, "Chat");
+        submit_usb(&queue);
+        assert(!portal_active && s_operation.kind == OP_NONE && s_login_queue.present && !acquired);
+        quota_portable_command_t validate = {.op = QUOTA_PORTABLE_OP_VALIDATE};
+        strcpy(validate.request_id, "22345678");
+        submit_usb(&validate);
+        run_until_login_started();
         quota_direct_credential_t *held = acquired;
-        usb_open();
-        assert(!portal_active && s_operation.kind == OP_LOGIN && acquired == held &&
-               s_view.login_state == QUOTA_PORTABLE_LOGIN_QUEUED &&
-               job(queue.request_id)->state == 2);
-        quota_portable_command_t launch = {.op = QUOTA_PORTABLE_OP_CODEX_LAUNCH};
-        strcpy(launch.request_id, "22345678");
-        assert(quota_portable_service_submit(&launch, QUOTA_SETUP_USB) ==
-               QUOTA_PORTABLE_SUBMIT_ACCEPTED);
-        tick(false);
-        ready();
-        assert(s_operation.started && usb_window && s_operation.deadline == s_login_deadline);
+        assert(held && usb_window && s_operation.deadline == s_login_deadline &&
+               s_validation.active);
+        assert(public_view.portable.auth_hold_awake && public_view.portable.validating);
         strcpy(s_view.login_user_code, "TEST-CODE");
         s_view.login_state = QUOTA_PORTABLE_LOGIN_WAITING;
         char json[QUOTA_PORTABLE_STATE_BYTES + 1];
         size_t length = 0;
         assert(quota_portable_service_state_json(json, sizeof(json), &length, QUOTA_SETUP_USB));
         assert(strstr(json, "TEST-CODE") && strstr(json, QUOTA_DIRECT_VERIFICATION_URL) &&
-               !strstr(json, "old-refresh"));
+               !strstr(json, "old-refresh") && strstr(json, "\"validation_step\":\"chatgpt\""));
         assert(quota_portable_service_state_json(json, sizeof(json), &length, QUOTA_SETUP_AP));
         assert(!strstr(json, "TEST-CODE") && !strstr(json, "verification_url"));
+        /* The window ends or is opened again: the authorization and its validation carry on. */
         usb_window = false;
+        now_ms += 500;
+        tick(false);
+        assert(s_operation.started && s_validation.active && acquired == held);
         usb_open();
-        assert(s_operation.started && acquired == held);
+        assert(s_operation.started && acquired == held && s_validation.active);
         quota_portable_command_t close = {.op = QUOTA_PORTABLE_OP_SETUP_CLOSE};
         strcpy(close.request_id, "32345678");
         assert(quota_portable_service_submit(&close, QUOTA_SETUP_USB) ==
@@ -1163,7 +1331,7 @@ int main(int argc, char **argv)
         tick(false);
         now_ms += 500;
         tick(false);
-        assert(!usb_window && usb_closes == 1 && s_operation.started && acquired == held);
+        assert(!usb_window && usb_closes >= 1 && s_operation.started && acquired == held);
         uint8_t login_slot = held->slot;
         usb_open();
         login_code = QUOTA_DIRECT_PERSIST_PENDING;
@@ -1178,7 +1346,11 @@ int main(int argc, char **argv)
         assert(!provider.pending && !acquired &&
                !strcmp(credentials[login_slot].access_token, "received-login-token"));
         usb_open();
-        assert(job(launch.request_id)->state == 2 && s_operation.kind == OP_NONE);
+        settle();
+        assert(job(validate.request_id)->state == 2 && s_operation.kind == OP_NONE &&
+               !s_login_queue.present && durable_model.entry_count == 3 &&
+               !strcmp(durable_model.entries[2].label, "Chat"));
+        assert(!strcmp(account_state(2, NULL), "ok") && account_count_in_state() == 3);
     } else if (!strcmp(argv[1], "open-while-active")) {
         /* A second open request is a no-op: it keeps the session, never spins, and never reopens a
          * new hotspot after expiry. */
@@ -1335,6 +1507,661 @@ int main(int argc, char **argv)
         assert(job(net.request_id)->state == 3 &&
                !strcmp(job(net.request_id)->error, "network_limit") && !s_candidate_pending &&
                durable_model.network_count == 3);
+    } else if (!strcmp(argv[1], "usb-validate-e2e")) {
+        /* Acceptance: a wrong Wi-Fi password is saved, validated (failed), corrected and
+         * validated again over USB without a single key pressed on the Passport. */
+        boot();
+        ready();
+        usb_open();
+        quota_portable_command_t net = {.op = QUOTA_PORTABLE_OP_NETWORK_SAVE, .network_index = 0};
+        strcpy(net.request_id, "12345678");
+        strcpy(net.ssid, "Home");
+        strcpy(net.password, "wrong-password");
+        submit_usb(&net);
+        unsigned connects = wifi_connects;
+        assert(job(net.request_id)->state == 2 && !strcmp(network_state(0, NULL), "pending"));
+        assert(s_validate_runs == 0 && !s_candidate_pending && wifi_connects == connects);
+        network_ok = false;
+        quota_portable_command_t validate = {.op = QUOTA_PORTABLE_OP_VALIDATE};
+        strcpy(validate.request_id, "22345678");
+        submit_usb(&validate);
+        assert(s_validate_runs == 1 && s_validation.active && s_candidate_pending);
+        cJSON *root = state_of(QUOTA_SETUP_USB);
+        assert(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "validating")));
+        cJSON_Delete(root);
+        now_ms += 500;
+        tick(false);
+        quota_portable_service_disconnected(WIFI_REASON_AUTH_FAIL);
+        settle();
+        const char *error = NULL;
+        assert(!strcmp(network_state(0, &error), "failed") && !strcmp(error, "wifi_auth_failed"));
+        assert(job(validate.request_id)->state == 2 && usb_window && usb_closes == 0);
+        /* The failed row is editable and only pending or failed rows are validated again. */
+        strcpy(net.request_id, "32345678");
+        strcpy(net.password, "right-password");
+        submit_usb(&net);
+        assert(!strcmp(network_state(0, NULL), "pending") &&
+               !strcmp(durable_model.networks[0].password, "password")); /* still the old ones */
+        network_ok = true;
+        strcpy(validate.request_id, "42345678");
+        submit_usb(&validate);
+        assert(s_validate_runs == 2);
+        settle();
+        assert(!strcmp(network_state(0, &error), "ok") && !error[0] &&
+               s_model.selected_network == 0);
+        /* Only now are the new credentials stored. */
+        assert(!strcmp(durable_model.networks[0].password, "right-password") && !s_staged.present);
+        assert(job(validate.request_id)->state == 2 && usb_window && usb_closes == 0);
+        connects = wifi_connects;
+        unsigned queries = query_calls;
+        strcpy(validate.request_id, "52345678");
+        submit_usb(&validate); /* nothing is pending: it asks nothing */
+        settle();
+        assert(s_validate_runs == 3 && wifi_connects == connects && query_calls == queries &&
+               job(validate.request_id)->state == 2);
+    } else if (!strcmp(argv[1], "validate-only-pending")) {
+        boot();
+        ready();
+        usb_open();
+        quota_portable_command_t key = {.op = QUOTA_PORTABLE_OP_DEEPSEEK_SAVE};
+        strcpy(key.request_id, "12345678");
+        strcpy(key.api_key, "first-key");
+        strcpy(key.label, "First");
+        submit_usb(&key);
+        strcpy(key.request_id, "22345678");
+        strcpy(key.api_key, "second-key");
+        strcpy(key.label, "Second");
+        submit_usb(&key);
+        assert(durable_model.entry_count == 4 && !strcmp(account_state(2, NULL), "pending") &&
+               !strcmp(account_state(3, NULL), "pending"));
+        /* Every key is refused. */
+        query_code = QUOTA_DIRECT_AUTH_REQUIRED;
+        quota_portable_command_t validate = {.op = QUOTA_PORTABLE_OP_VALIDATE};
+        strcpy(validate.request_id, "32345678");
+        unsigned before = deepseek_queries;
+        submit_usb(&validate);
+        settle();
+        const char *error = NULL;
+        assert(deepseek_queries == before + 2);
+        assert(!strcmp(account_state(0, NULL), "ok") && !strcmp(account_state(1, NULL), "ok"));
+        assert(!strcmp(account_state(2, &error), "failed") &&
+               !strcmp(error, "deepseek_invalid_key"));
+        assert(!strcmp(account_state(3, NULL), "failed"));
+        /* Replacing one key resets only that row; both failed rows are validated again. */
+        query_code = QUOTA_DIRECT_OK;
+        strcpy(key.request_id, "42345678");
+        strcpy(key.account_id, durable_model.entries[2].logical_id);
+        strcpy(key.api_key, "fixed-key");
+        strcpy(key.label, "First");
+        submit_usb(&key);
+        assert(!strcmp(account_state(2, NULL), "pending") &&
+               !strcmp(account_state(3, NULL), "failed") && credentials[2].generation == 2);
+        before = deepseek_queries;
+        strcpy(validate.request_id, "52345678");
+        submit_usb(&validate);
+        settle();
+        assert(deepseek_queries == before + 2);
+        assert(!strcmp(account_state(2, NULL), "ok") && !strcmp(account_state(3, NULL), "ok"));
+        /* Everything is ok: another validate asks nothing. */
+        before = deepseek_queries;
+        unsigned connects = wifi_connects;
+        strcpy(validate.request_id, "62345678");
+        submit_usb(&validate);
+        settle();
+        assert(deepseek_queries == before && wifi_connects == connects);
+    } else if (!strcmp(argv[1], "validate-busy-and-expiry")) {
+        boot();
+        ready();
+        usb_open();
+        quota_portable_command_t net = {.op = QUOTA_PORTABLE_OP_NETWORK_SAVE, .network_index = 0};
+        strcpy(net.request_id, "12345678");
+        strcpy(net.ssid, "Home");
+        strcpy(net.password, "right-password");
+        submit_usb(&net);
+        quota_portable_command_t validate = {.op = QUOTA_PORTABLE_OP_VALIDATE, .phone_utc = wall};
+        strcpy(validate.request_id, "22345678");
+        assert(quota_portable_service_submit(&validate, QUOTA_SETUP_USB) ==
+               QUOTA_PORTABLE_SUBMIT_ACCEPTED);
+        /* From the moment validate is accepted, every change is refused. */
+        quota_portable_command_t late[] = {
+            {.op = QUOTA_PORTABLE_OP_NETWORK_SAVE, .network_index = 0},
+            {.op = QUOTA_PORTABLE_OP_NETWORK_REMOVE},
+            {.op = QUOTA_PORTABLE_OP_DEEPSEEK_SAVE},
+            {.op = QUOTA_PORTABLE_OP_CODEX_QUEUE},
+            {.op = QUOTA_PORTABLE_OP_ACCOUNT_REMOVE},
+            {.op = QUOTA_PORTABLE_OP_SETTINGS_SAVE, .refresh_seconds = 300},
+            {.op = QUOTA_PORTABLE_OP_VALIDATE},
+            {.op = QUOTA_PORTABLE_OP_REFRESH},
+            {.op = QUOTA_PORTABLE_OP_RECONNECT},
+        };
+        for (unsigned i = 0; i < sizeof(late) / sizeof(late[0]); i++) {
+            snprintf(late[i].request_id, sizeof(late[i].request_id), "a%07u", i);
+            strcpy(late[i].ssid, "Other");
+            strcpy(late[i].password, "other-password");
+            assert(quota_portable_service_submit(&late[i], QUOTA_SETUP_USB) ==
+                   QUOTA_PORTABLE_SUBMIT_BUSY);
+        }
+        assert(quota_portable_service_submit(&validate, QUOTA_SETUP_USB) ==
+               QUOTA_PORTABLE_SUBMIT_ACCEPTED); /* the same request again is a retry */
+        tick(false);
+        assert(s_validation.active && s_candidate_pending);
+        /* State reads work meanwhile and say what is going on. */
+        cJSON *root = state_of(QUOTA_SETUP_USB);
+        assert(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "validating")));
+        cJSON *step = cJSON_GetObjectItemCaseSensitive(root, "validation_step");
+        assert(cJSON_IsString(step) && !strcmp(step->valuestring, "wifi"));
+        cJSON_Delete(root);
+        assert(quota_portable_service_submit(&late[0], QUOTA_SETUP_USB) ==
+               QUOTA_PORTABLE_SUBMIT_BUSY);
+        /* The window runs out in the middle of the pass: validation still finishes and records. */
+        usb_window = false;
+        assert(quota_portable_service_submit(&late[0], QUOTA_SETUP_USB) ==
+               QUOTA_PORTABLE_SUBMIT_CLOSED);
+        settle();
+        assert(!strcmp(network_state(0, NULL), "ok") && job(validate.request_id)->state == 2);
+        assert(!s_candidate_pending && !s_validation.requested);
+        /* A validate that was accepted before a change landed is told the settings moved on. */
+        usb_open();
+        quota_portable_command_t settings = {.op = QUOTA_PORTABLE_OP_SETTINGS_SAVE,
+                                             .phone_utc = wall,
+                                             .refresh_seconds = 900,
+                                             .screen_timeout_seconds = 120,
+                                             .auto_refresh = true};
+        strcpy(settings.request_id, "b2345678");
+        assert(quota_portable_service_submit(&settings, QUOTA_SETUP_USB) ==
+               QUOTA_PORTABLE_SUBMIT_ACCEPTED);
+        strcpy(validate.request_id, "c2345678");
+        assert(quota_portable_service_submit(&validate, QUOTA_SETUP_USB) ==
+               QUOTA_PORTABLE_SUBMIT_ACCEPTED);
+        tick(false);
+        assert(job(settings.request_id)->state == 2 && s_model.refresh_seconds == 900);
+        tick(false);
+        assert(job(validate.request_id)->state == 3 &&
+               !strcmp(job(validate.request_id)->error, "configuration_changed") &&
+               !s_validation.requested && !s_validation.active && s_validate_runs == 1);
+        strcpy(validate.request_id, "d2345678");
+        submit_usb(&validate);
+        settle();
+        assert(!strcmp(network_state(0, NULL), "ok") && s_validate_runs == 2 &&
+               job(validate.request_id)->state == 2);
+    } else if (!strcmp(argv[1], "validate-hotspot")) {
+        /* The hotspot saves and then validates after the access point has closed. The USB
+         * validate command is not accepted over the hotspot. */
+        boot();
+        phone();
+        quota_portable_command_t validate = {.op = QUOTA_PORTABLE_OP_VALIDATE};
+        strcpy(validate.request_id, "01234567");
+        assert(portal.submit(&validate, NULL) == QUOTA_PORTABLE_SUBMIT_INVALID);
+        quota_portable_command_t net = {.op = QUOTA_PORTABLE_OP_NETWORK_SAVE,
+                                        .network_index = UINT8_MAX};
+        strcpy(net.request_id, "12345678");
+        strcpy(net.ssid, "Office");
+        strcpy(net.password, "office-password");
+        submit_command(&net);
+        quota_portable_command_t key = {.op = QUOTA_PORTABLE_OP_DEEPSEEK_SAVE};
+        strcpy(key.request_id, "22345678");
+        strcpy(key.api_key, "office-key");
+        strcpy(key.label, "Office key");
+        submit_command(&key);
+        assert(durable_model.network_count == 2 && s_model.selected_network == 0 &&
+               !strcmp(network_state(1, NULL), "pending") &&
+               !strcmp(account_state(2, NULL), "pending"));
+        now_ms += 500;
+        tick(false);
+        assert(s_validate_runs == 0 && !s_candidate_pending && portal_active);
+        quota_portable_command_t close = {.op = QUOTA_PORTABLE_OP_SETUP_CLOSE};
+        strcpy(close.request_id, "32345678");
+        submit_command(&close);
+        assert(portal_active && s_validate_runs == 0 && job(close.request_id)->state == 2);
+        now_ms += 500;
+        tick(false);
+        assert(!portal_active && s_validate_runs == 1 && s_validation.active);
+        settle();
+        assert(!strcmp(network_state(1, NULL), "ok") && s_model.selected_network == 1);
+        assert(!strcmp(account_state(2, NULL), "ok") &&
+               credentials[2].auth_state == QUOTA_PORTABLE_AUTH_READY);
+        /* No validation when the access point closes for another reason. */
+        phone();
+        quota_portable_command_t more = {.op = QUOTA_PORTABLE_OP_DEEPSEEK_SAVE};
+        strcpy(more.request_id, "42345678");
+        strcpy(more.api_key, "later-key");
+        strcpy(more.label, "Later");
+        submit_command(&more);
+        quota_portable_service_close();
+        tick(false);
+        now_ms += 500;
+        tick(false);
+        assert(!portal_active && s_validate_runs == 1 &&
+               !strcmp(account_state(3, NULL), "pending"));
+    } else if (!strcmp(argv[1], "keys-wait-for-network")) {
+        boot();
+        ready();
+        usb_open();
+        connected = false;
+        network_ok = false;
+        quota_portable_command_t key = {.op = QUOTA_PORTABLE_OP_DEEPSEEK_SAVE};
+        strcpy(key.request_id, "12345678");
+        strcpy(key.api_key, "some-key");
+        strcpy(key.label, "Key");
+        submit_usb(&key);
+        quota_portable_command_t validate = {.op = QUOTA_PORTABLE_OP_VALIDATE};
+        strcpy(validate.request_id, "22345678");
+        submit_usb(&validate);
+        for (unsigned i = 0; i < 20 && s_validation.active; i++) {
+            now_ms += 500;
+            tick(false);
+        }
+        assert(s_validation.active && query_calls == 0); /* still waiting for the network */
+        settle();
+        const char *error = NULL;
+        assert(!strcmp(account_state(2, &error), "failed") &&
+               !strcmp(error, "network_unavailable") && query_calls == 0 &&
+               job(validate.request_id)->state == 2);
+    } else if (!strcmp(argv[1], "ap-top-up")) {
+        boot();
+        phone();
+        uint64_t opened = s_setup_opened;
+        assert(s_setup_deadline == opened + QUOTA_PORTABLE_SETUP_MS);
+        char json[QUOTA_PORTABLE_STATE_BYTES + 1];
+        size_t length = 0;
+        now_ms += 60000;
+        assert(state_json(json, sizeof(json), &length, NULL));
+        quota_portable_command_t refresh = {.op = QUOTA_PORTABLE_OP_REFRESH};
+        strcpy(refresh.request_id, "01234567");
+        submit_command(&refresh);
+        assert(s_setup_deadline == opened + QUOTA_PORTABLE_SETUP_MS); /* neither extends it */
+        quota_portable_command_t settings = {.op = QUOTA_PORTABLE_OP_SETTINGS_SAVE,
+                                             .refresh_seconds = 300,
+                                             .screen_timeout_seconds = 120,
+                                             .auto_refresh = true};
+        /* Near the end of the ten minutes a change gives five more. */
+        now_ms = opened + QUOTA_PORTABLE_SETUP_MS - 60000;
+        strcpy(settings.request_id, "11111111");
+        submit_command(&settings);
+        assert(s_setup_deadline == now_ms + QUOTA_SESSION_TOPUP_MS);
+        uint64_t topped = s_setup_deadline;
+        strcpy(settings.request_id, "22222222"); /* five minutes left already: unchanged */
+        submit_command(&settings);
+        assert(s_setup_deadline == topped);
+        /* Steady use ends at twenty minutes after the hotspot opened. */
+        now_ms = opened + 13 * 60000;
+        strcpy(settings.request_id, "33333333");
+        submit_command(&settings);
+        assert(s_setup_deadline == now_ms + QUOTA_SESSION_TOPUP_MS);
+        now_ms = opened + 16 * 60000;
+        strcpy(settings.request_id, "66666666");
+        submit_command(&settings);
+        assert(s_setup_deadline == opened + QUOTA_SESSION_MAX_MS);
+        now_ms = opened + QUOTA_SESSION_MAX_MS - 1;
+        strcpy(settings.request_id, "44444444");
+        submit_command(&settings);
+        assert(s_setup_deadline == opened + QUOTA_SESSION_MAX_MS);
+        now_ms = opened + QUOTA_SESSION_MAX_MS;
+        strcpy(settings.request_id, "55555555");
+        assert(portal.submit(&settings, NULL) == QUOTA_PORTABLE_SUBMIT_CLOSED);
+        tick(false);
+        assert(!public_view.portable.setup_active);
+    } else if (!strcmp(argv[1], "login-queue")) {
+        boot();
+        phone();
+        quota_portable_command_t queue = {.op = QUOTA_PORTABLE_OP_CODEX_QUEUE};
+        strcpy(queue.request_id, "12345678");
+        strcpy(queue.account_id, credentials[0].id);
+        submit_command(&queue); /* re-authorize the ChatGPT row that exists */
+        assert(s_login_queue.present && !s_login_queue.is_new && account_count_in_state() == 2 &&
+               !strcmp(account_state(0, NULL), "pending"));
+        quota_portable_command_t wrong = {.op = QUOTA_PORTABLE_OP_CODEX_QUEUE};
+        strcpy(wrong.request_id, "22345678");
+        strcpy(wrong.account_id, credentials[1].id); /* a DeepSeek row cannot be authorized */
+        submit_command(&wrong);
+        assert(job(wrong.request_id)->state == 3);
+        quota_portable_command_t drop = {.op = QUOTA_PORTABLE_OP_ACCOUNT_REMOVE};
+        strcpy(drop.request_id, "32345678");
+        strcpy(drop.account_id, credentials[0].id);
+        submit_command(&drop);
+        assert(!s_login_queue.present && public_view.snapshot.account_count == 1);
+        /* A new ChatGPT account takes a place while it waits, and removing it frees the place. */
+        quota_portable_command_t fresh = {.op = QUOTA_PORTABLE_OP_CODEX_QUEUE};
+        strcpy(fresh.request_id, "42345678");
+        submit_command(&fresh);
+        assert(s_login_queue.is_new && account_count_in_state() == 2);
+        strcpy(drop.request_id, "52345678");
+        strcpy(drop.account_id, s_login_queue.id);
+        submit_command(&drop);
+        assert(!s_login_queue.present && account_count_in_state() == 1 &&
+               durable_model.entry_count == 1);
+    } else if (!strcmp(argv[1], "queue-counts-toward-limit")) {
+        all_native();
+        used[7] = false; /* seven accounts */
+        boot();
+        assert(durable_model.entry_count == 7);
+        phone();
+        quota_portable_command_t queue = {.op = QUOTA_PORTABLE_OP_CODEX_QUEUE};
+        strcpy(queue.request_id, "12345678");
+        submit_command(&queue);
+        assert(s_login_queue.present && job(queue.request_id)->state == 2);
+        quota_portable_command_t key = {.op = QUOTA_PORTABLE_OP_DEEPSEEK_SAVE};
+        strcpy(key.request_id, "22345678");
+        strcpy(key.api_key, "eighth-key");
+        strcpy(key.label, "Eighth");
+        submit_command(&key); /* the waiting ChatGPT account is the eighth */
+        assert(job(key.request_id)->state == 3 &&
+               !strcmp(job(key.request_id)->error, "account_limit") && !acquired &&
+               durable_model.entry_count == 7);
+        strcpy(key.request_id, "32345678");
+        strcpy(key.account_id, credentials[1].id); /* changing a key is not a new account */
+        submit_command(&key);
+        assert(job(key.request_id)->state == 2);
+    } else if (!strcmp(argv[1], "network-remove")) {
+        seed_model();
+        durable_model.network_count = 3;
+        for (unsigned i = 1; i < 3; i++) {
+            snprintf(durable_model.networks[i].ssid, sizeof(durable_model.networks[i].ssid),
+                     "hotspot-%u", i);
+            strcpy(durable_model.networks[i].password, "password");
+        }
+        durable_model.selected_network = 2;
+        boot();
+        phone();
+        s_network_validation[2] = QUOTA_VALIDATION_FAILED;
+        strcpy(s_network_error[2], "wifi_auth_failed");
+        quota_portable_command_t remove_first = {.op = QUOTA_PORTABLE_OP_NETWORK_REMOVE,
+                                                 .network_index = 0};
+        strcpy(remove_first.request_id, "12345678");
+        submit_command(&remove_first);
+        const char *error = NULL;
+        assert(durable_model.network_count == 2 && durable_model.selected_network == 1 &&
+               !strcmp(durable_model.networks[0].ssid, "hotspot-1") &&
+               !strcmp(durable_model.networks[1].ssid, "hotspot-2"));
+        assert(!strcmp(network_state(1, &error), "failed") && !strcmp(error, "wifi_auth_failed") &&
+               !strcmp(network_state(0, NULL), "saved"));
+        quota_portable_command_t remove_used = {.op = QUOTA_PORTABLE_OP_NETWORK_REMOVE,
+                                                .network_index = 1};
+        strcpy(remove_used.request_id, "22345678");
+        submit_command(&remove_used);
+        assert(durable_model.network_count == 1 && durable_model.selected_network == 0 &&
+               !strcmp(durable_model.networks[0].ssid, "hotspot-1"));
+        quota_portable_command_t missing = {.op = QUOTA_PORTABLE_OP_NETWORK_REMOVE,
+                                            .network_index = 2};
+        strcpy(missing.request_id, "32345678");
+        submit_command(&missing);
+        assert(job(missing.request_id)->state == 3 &&
+               !strcmp(job(missing.request_id)->error, "invalid_request"));
+        strcpy(remove_first.request_id, "42345678");
+        submit_command(&remove_first);
+        assert(durable_model.network_count == 0 && durable_model.selected_network == 0 &&
+               public_view.portable.saved_network_count == 0);
+    } else if (!strcmp(argv[1], "access-code")) {
+        boot();
+        phone();
+        char first[QUOTA_PORTABLE_ACCESS_CODE_BYTES + 1], url[QUOTA_PORTABLE_URL_BYTES + 1];
+        strcpy(first, public_view.portable.setup_secret);
+        assert(strlen(first) == 19 && valid_access_code(first));
+        snprintf(url, sizeof(url), "http://192.168.4.1/#code=%s", first);
+        assert(!strcmp(public_view.portable.setup_page_url, url));
+        quota_portable_service_close();
+        tick(false);
+        assert(!public_view.portable.setup_secret[0] && !public_view.portable.setup_page_url[0]);
+        phone();
+        assert(valid_access_code(public_view.portable.setup_secret) &&
+               strcmp(first, public_view.portable.setup_secret) != 0);
+        char json[QUOTA_PORTABLE_STATE_BYTES + 1];
+        size_t length = 0;
+        assert(state_json(json, sizeof(json), &length, NULL));
+        assert(!strstr(json, public_view.portable.setup_secret) &&
+               !strstr(json, public_view.portable.setup_password));
+    } else if (!strcmp(argv[1], "network-saved-state")) {
+        boot();
+        /* After a restart a saved network is neither waiting nor failed. */
+        assert(!strcmp(network_state(0, NULL), "saved") &&
+               public_view.portable.pending_items == 0 && public_view.portable.failed_items == 0);
+        assert(!quota_portable_validate_pending() && !s_validation.active);
+        /* Connecting to it for real makes it ok. */
+        ready();
+        assert(!strcmp(network_state(0, NULL), "ok") &&
+               public_view.portable.saved_network_validation[0] == QUOTA_VALIDATION_OK);
+        /* The Passport is refused by the network in use: failed, and fine again once it connects.
+         */
+        connected = false;
+        network_ok = false;
+        quota_portable_service_reconnect();
+        tick(false);
+        now_ms += 500;
+        tick(false);
+        quota_portable_service_disconnected(WIFI_REASON_AUTH_FAIL);
+        tick(false);
+        const char *error = NULL;
+        assert(!strcmp(network_state(0, &error), "failed") && !strcmp(error, "wifi_auth_failed"));
+        assert(public_view.portable.failed_items == 1 &&
+               !strcmp(public_view.portable.saved_network_errors[0], "wifi_auth_failed"));
+        network_ok = true;
+        quota_portable_service_reconnect();
+        for (unsigned i = 0; i < 6; i++) {
+            now_ms += 500;
+            tick(false);
+        }
+        assert(!strcmp(network_state(0, &error), "ok") && !error[0] &&
+               public_view.portable.failed_items == 0);
+    } else if (!strcmp(argv[1], "staged-credentials")) {
+        boot();
+        ready();
+        usb_open();
+        quota_portable_command_t net = {.op = QUOTA_PORTABLE_OP_NETWORK_SAVE, .network_index = 0};
+        strcpy(net.request_id, "12345678");
+        strcpy(net.ssid, "old-hotspot");
+        strcpy(net.password, "wrong-password");
+        submit_usb(&net);
+        /* The working password stays stored and in use; the new one is only a candidate. */
+        assert(!strcmp(durable_model.networks[0].password, "password") && s_staged.present);
+        quota_portable_command_t validate = {.op = QUOTA_PORTABLE_OP_VALIDATE};
+        strcpy(validate.request_id, "22345678");
+        network_ok = false;
+        submit_usb(&validate);
+        now_ms += 500;
+        tick(false);
+        assert(!strcmp((char *)wifi_config.sta.password, "wrong-password"));
+        quota_portable_service_disconnected(WIFI_REASON_AUTH_FAIL);
+        network_ok = true;
+        settle();
+        const char *error = NULL;
+        assert(!strcmp(network_state(0, &error), "failed") && !strcmp(error, "wifi_auth_failed"));
+        assert(!strcmp(durable_model.networks[0].password, "password") && s_staged.present);
+        for (unsigned i = 0; i < 4; i++) { /* back on the stored credentials */
+            now_ms += 500;
+            tick(false);
+        }
+        assert(!strcmp((char *)wifi_config.sta.password, "password"));
+        /* Edited again, validated, and only then stored. */
+        strcpy(net.request_id, "32345678");
+        strcpy(net.password, "better-password");
+        submit_usb(&net);
+        assert(!strcmp(durable_model.networks[0].password, "password"));
+        strcpy(validate.request_id, "42345678");
+        submit_usb(&validate);
+        settle();
+        assert(!strcmp(network_state(0, NULL), "ok") && !s_staged.present &&
+               !strcmp(durable_model.networks[0].password, "better-password"));
+        /* Another network that is not in use is stored at once. */
+        strcpy(net.request_id, "52345678");
+        strcpy(net.ssid, "second");
+        net.network_index = UINT8_MAX;
+        submit_usb(&net);
+        assert(durable_model.network_count == 2 && !s_staged.present &&
+               !strcmp(network_state(1, NULL), "pending"));
+    } else if (!strcmp(argv[1], "login-needs-network")) {
+        boot();
+        ready();
+        usb_open();
+        quota_portable_command_t queue = {.op = QUOTA_PORTABLE_OP_CODEX_QUEUE};
+        strcpy(queue.request_id, "12345678");
+        strcpy(queue.label, "Chat");
+        submit_usb(&queue);
+        /* The network is gone: authorization waits for it, then gives up without dropping the
+         * queued account. */
+        connected = false;
+        network_ok = false;
+        quota_portable_service_reconnect();
+        tick(false);
+        quota_portable_command_t validate = {.op = QUOTA_PORTABLE_OP_VALIDATE};
+        strcpy(validate.request_id, "22345678");
+        submit_usb(&validate);
+        for (unsigned i = 0; i < 120 && s_validation.active; i++) {
+            now_ms += 500;
+            tick(false);
+        }
+        assert(!s_validation.active && s_operation.kind == OP_NONE && !acquired);
+        assert(job(validate.request_id)->state == 3 &&
+               !strcmp(job(validate.request_id)->error, "network_unavailable"));
+        const char *error = NULL;
+        assert(s_login_queue.present && !strcmp(account_state(2, &error), "failed") &&
+               !strcmp(error, "network_unavailable"));
+        /* The same account asked for again is armed again; it runs once the network is back. */
+        network_ok = true;
+        quota_portable_service_reconnect();
+        ready();
+        strcpy(queue.request_id, "32345678");
+        submit_usb(&queue);
+        assert(!strcmp(account_state(2, NULL), "pending"));
+        strcpy(validate.request_id, "42345678");
+        submit_usb(&validate);
+        run_until_login_started();
+        /* Cancelling the authorization keeps the account, failed, to try again. */
+        quota_portable_command_t cancel = {.op = QUOTA_PORTABLE_OP_OPERATION_CANCEL};
+        strcpy(cancel.request_id, "52345678");
+        strcpy(cancel.target_request_id, validate.request_id);
+        submit_usb(&cancel);
+        settle();
+        assert(s_login_queue.present && !strcmp(account_state(2, &error), "failed") &&
+               !strcmp(error, "canceled") && !acquired && durable_model.entry_count == 2);
+        assert(job(validate.request_id)->state == 3);
+    } else if (!strcmp(argv[1], "hotspot-aborts-unstarted-login")) {
+        boot();
+        ready();
+        usb_open();
+        quota_portable_command_t queue = {.op = QUOTA_PORTABLE_OP_CODEX_QUEUE};
+        strcpy(queue.request_id, "12345678");
+        strcpy(queue.label, "Chat");
+        submit_usb(&queue);
+        login_begin_code = QUOTA_DIRECT_DEFERRED; /* the authorization has not started asking */
+        quota_portable_command_t validate = {.op = QUOTA_PORTABLE_OP_VALIDATE};
+        strcpy(validate.request_id, "22345678");
+        submit_usb(&validate);
+        now_ms += 500;
+        tick(false);
+        assert(s_validation.active && s_operation.kind == OP_LOGIN && !s_operation.started);
+        quota_portable_service_open();
+        tick(false);
+        assert(portal_active && !s_validation.active && s_operation.kind == OP_NONE && !acquired);
+        assert(durable_model.intent.kind == QUOTA_INTENT_NONE && s_login_queue.present &&
+               !s_login_queue.error[0] && !strcmp(account_state(2, NULL), "pending"));
+        assert(job(validate.request_id)->state == 3);
+    } else if (!strcmp(argv[1], "staged-fail-stays")) {
+        /* A refused staged password is not forgotten when the Passport falls back to the stored
+         * one: connecting with those says nothing about the new ones. */
+        boot();
+        ready();
+        usb_open();
+        quota_portable_command_t net = {.op = QUOTA_PORTABLE_OP_NETWORK_SAVE, .network_index = 0};
+        strcpy(net.request_id, "12345678");
+        strcpy(net.ssid, "old-hotspot");
+        strcpy(net.password, "bad-password");
+        submit_usb(&net);
+        quota_portable_command_t validate = {.op = QUOTA_PORTABLE_OP_VALIDATE};
+        strcpy(validate.request_id, "22345678");
+        submit_usb(&validate);
+        for (unsigned i = 0; i < 400 && (s_validation.active || s_validation.requested); i++) {
+            now_ms += 500;
+            tick(false);
+            if (!connected && strstr((const char *)wifi_config.sta.password, "bad"))
+                quota_portable_service_disconnected(WIFI_REASON_AUTH_FAIL);
+        }
+        const char *error = NULL;
+        assert(!strcmp(network_state(0, &error), "failed") && !strcmp(error, "wifi_auth_failed"));
+        assert(s_staged.present && !strcmp(durable_model.networks[0].password, "password"));
+        for (unsigned i = 0; i < 12; i++) { /* back on the stored password, connected again */
+            now_ms += 500;
+            tick(false);
+        }
+        assert(connected && !strcmp((char *)wifi_config.sta.password, "password"));
+        assert(!strcmp(network_state(0, &error), "failed") && !strcmp(error, "wifi_auth_failed"));
+        assert(s_staged.present && public_view.portable.failed_items == 1 &&
+               public_view.portable.pending_items == 0);
+        /* So there is still something to validate, and fixing the password resolves it. */
+        strcpy(net.request_id, "32345678");
+        strcpy(net.password, "fixed-password");
+        submit_usb(&net);
+        strcpy(validate.request_id, "42345678");
+        submit_usb(&validate);
+        settle();
+        assert(!strcmp(network_state(0, NULL), "ok") && !s_staged.present &&
+               !strcmp(durable_model.networks[0].password, "fixed-password"));
+    } else if (!strcmp(argv[1], "staged-stale")) {
+        /* Staged credentials never outlive the network being in use. */
+        boot();
+        ready();
+        usb_open();
+        quota_portable_command_t add = {.op = QUOTA_PORTABLE_OP_NETWORK_SAVE,
+                                        .network_index = UINT8_MAX};
+        strcpy(add.request_id, "02345678");
+        strcpy(add.ssid, "second");
+        strcpy(add.password, "good-password");
+        submit_usb(&add);
+        quota_portable_command_t net = {.op = QUOTA_PORTABLE_OP_NETWORK_SAVE, .network_index = 0};
+        strcpy(net.request_id, "12345678");
+        strcpy(net.ssid, "old-hotspot");
+        strcpy(net.password, "bad-password");
+        submit_usb(&net);
+        assert(s_staged.present && s_staged.index == 0);
+        quota_portable_command_t validate = {.op = QUOTA_PORTABLE_OP_VALIDATE};
+        strcpy(validate.request_id, "22345678");
+        submit_usb(&validate);
+        for (unsigned i = 0; i < 400 && (s_validation.active || s_validation.requested); i++) {
+            now_ms += 500;
+            tick(false);
+            if (!connected && strstr((const char *)wifi_config.sta.password, "bad"))
+                quota_portable_service_disconnected(WIFI_REASON_AUTH_FAIL);
+        }
+        /* The second network took over; the refused password was stored for the first one, which
+         * is no longer in use, and it still counts as failed. */
+        const char *error = NULL;
+        assert(s_model.selected_network == 1 && !s_staged.present);
+        assert(!strcmp(durable_model.networks[0].ssid, "old-hotspot") &&
+               !strcmp(durable_model.networks[0].password, "bad-password") &&
+               !strcmp(durable_model.networks[1].password, "good-password"));
+        assert(!strcmp(network_state(1, NULL), "ok") &&
+               !strcmp(network_state(0, &error), "failed") && !strcmp(error, "wifi_auth_failed"));
+        /* Fixing the first one through the normal path really fixes it. */
+        strcpy(net.request_id, "32345678");
+        strcpy(net.password, "fixed-password");
+        submit_usb(&net);
+        assert(!s_staged.present && !strcmp(durable_model.networks[0].password, "fixed-password"));
+        assert(!strcmp(network_state(0, NULL), "pending"));
+        strcpy(validate.request_id, "42345678");
+        submit_usb(&validate);
+        char tried[QUOTA_PASSWORD_MAX_BYTES + 1] = "";
+        for (unsigned i = 0; i < 400 && (s_validation.active || s_validation.requested); i++) {
+            if (s_candidate_pending && !tried[0])
+                snprintf(tried, sizeof(tried), "%s", s_candidate.password);
+            now_ms += 500;
+            tick(false);
+        }
+        assert(!strcmp(tried, "fixed-password") && !strcmp(network_state(0, NULL), "ok"));
+        /* The first network is in use again: a staged password stays through the removal of
+         * another network, and goes with its own network. */
+        assert(s_model.selected_network == 0);
+        strcpy(net.request_id, "52345678");
+        strcpy(net.password, "other-password");
+        submit_usb(&net);
+        assert(s_staged.present && s_staged.index == 0);
+        quota_portable_command_t drop = {.op = QUOTA_PORTABLE_OP_NETWORK_REMOVE,
+                                         .network_index = 1};
+        strcpy(drop.request_id, "62345678");
+        submit_usb(&drop);
+        assert(s_staged.present && s_staged.index == 0 && durable_model.network_count == 1);
+        drop.network_index = 0;
+        strcpy(drop.request_id, "72345678");
+        submit_usb(&drop);
+        assert(!s_staged.present && durable_model.network_count == 0);
     } else
         assert(false);
     puts("whole controller runtime passed");

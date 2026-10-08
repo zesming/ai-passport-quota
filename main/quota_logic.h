@@ -203,7 +203,7 @@ quota_frame_result_t quota_frame_decoder_feed(quota_frame_decoder_t *decoder, ch
 
 bool quota_data_is_stale(uint64_t now, bool has_observed_at, uint64_t observed_at,
                          uint16_t refresh_seconds);
-bool quota_usb_window_active(bool setup_screen_open, uint64_t now_ms, uint64_t opened_at_ms);
+bool quota_usb_window_active(bool setup_screen_open, uint64_t now_ms, uint64_t deadline_ms);
 void quota_display_tick(quota_display_state_t *display, uint64_t now_ms, uint16_t timeout_seconds,
                         bool usb_window_active);
 /* True permits navigation; the entire first waking gesture is consumed. */

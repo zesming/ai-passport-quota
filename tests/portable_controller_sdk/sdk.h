@@ -18,6 +18,10 @@ enum {
     WIFI_REASON_AUTH_FAIL = 202,
     WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT = 15
 };
+typedef struct {
+    char version[32];
+} esp_app_desc_t;
+const esp_app_desc_t *esp_app_get_description(void);
 typedef void *QueueHandle_t;
 typedef void *TaskHandle_t;
 typedef unsigned UBaseType_t;

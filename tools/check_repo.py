@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 import sys
 import unicodedata
@@ -18,11 +19,11 @@ HEADING_RE = re.compile(r"^ {0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", re.M)
 LANGUAGE_LINK_RE = re.compile(r"\]\([^)]*\.(?:zh_CN|en_US)\.md|href=\"[^\"]*\.(?:zh_CN|en_US)\.md|\[English\]|\[简体中文\]", re.I)
 LINE_LIMIT = 100
 LINE_LIMIT_ROOTS = ("main/", "components/", "tests/")
-# Third-party code, generated data and pages that the single-page setup rework replaces.
+# Third-party code and generated files.
 LINE_LIMIT_EXEMPT = (
     "tests/cjson/",
     "main/quota_brand_assets.c",
-    "main/portable_setup.html",
+    "main/setup_page.html",
 )
 SECRET_PATTERNS = {
     "GitHub token": re.compile(r"(?:ghp_|github_pat_)[A-Za-z0-9_]{20,}"),
@@ -158,6 +159,22 @@ def check_line_length(files: list[Path], errors: list[str]) -> None:
                 errors.append(f"{name}:{number}: longer than {LINE_LIMIT} columns")
 
 
+def check_setup_page_is_current(errors: list[str]) -> None:
+    """main/setup_page.html is generated from main/setup/ and is committed."""
+    node = shutil.which("node")
+    if node is None:
+        errors.append("node is required to check that main/setup_page.html is up to date")
+        return
+    result = subprocess.run(
+        [node, "tools/build_setup_page.mjs", "--check"], cwd=ROOT, capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        errors.append(
+            "main/setup_page.html is out of date (run npm run build:setup): "
+            + (result.stderr.strip() or result.stdout.strip())
+        )
+
+
 def main() -> int:
     errors: list[str] = []
     files = text_files()
@@ -168,6 +185,7 @@ def main() -> int:
     check_sensitive_content(files, errors)
     check_conflict_markers(files, errors)
     check_line_length(files, errors)
+    check_setup_page_is_current(errors)
 
     if errors:
         for error in errors:

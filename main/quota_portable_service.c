@@ -5,6 +5,7 @@
 #include "quota_usb.h"
 #include "quota_wifi.h"
 #include "cJSON.h"
+#include "esp_app_desc.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_netif.h"
@@ -78,10 +79,8 @@ static bool s_cycle;
 static esp_netif_t *s_ap;
 static quota_direct_t *s_direct;
 static active_operation_t s_operation;
-static char s_network_job[9];
 static uint64_t s_init_retry_at, s_candidate_deadline;
-static uint32_t s_candidate_generation;
-static quota_portable_network_t s_candidate;
+static quota_portable_network_t s_candidate; /* The Wi-Fi network a validation pass tries. */
 static uint8_t s_candidate_index;
 static bool s_candidate_pending;
 static uint8_t s_disconnect_reason;
@@ -89,6 +88,42 @@ static char s_selected_pending[QUOTA_ACCOUNT_ID_BYTES + 1];
 static bool s_local_settings_pending;
 static quota_settings_t s_local_settings;
 static uint32_t s_local_settings_generation;
+
+/* Validation of what the user saved. Wi-Fi rows keep it in RAM only (a restart reports saved
+ * networks as "saved": neither waiting nor failed until the Passport connects or is refused); a
+ * DeepSeek row is pending while its credential record is, and a failed one is remembered in RAM;
+ * a ChatGPT account has no row until its authorization has succeeded. */
+typedef quota_validation_t validation_t;
+static validation_t s_network_validation[QUOTA_PORTABLE_NETWORKS];
+static char s_network_error[QUOTA_PORTABLE_NETWORKS][QUOTA_PORTABLE_ERROR_BYTES + 1];
+/* The ChatGPT authorization the user queued: a new account or the re-authorization of a row. It
+ * is RAM only and starts, with its credential record, when validation reaches it. */
+typedef struct {
+    bool present, is_new;
+    char id[QUOTA_ACCOUNT_ID_BYTES + 1], label[QUOTA_PLAN_MAX_BYTES + 1], job[9];
+    char error[QUOTA_PORTABLE_ERROR_BYTES + 1]; /* set when the last attempt did not finish */
+} login_queue_t;
+static login_queue_t s_login_queue;
+/* New credentials for the network in use. The stored ones stay until these have passed validation,
+ * so a wrong password cannot take the device offline; a restart drops them. */
+static struct {
+    bool present;
+    uint8_t index;
+    quota_portable_network_t network;
+} s_staged;
+typedef enum { PHASE_WIFI, PHASE_KEYS, PHASE_LOGIN } validation_phase_t;
+static struct {
+    bool requested; /* validate accepted; refuse changes before the network task starts it */
+    bool active, login_started;
+    validation_phase_t phase;
+    uint8_t tried_networks, tried_rows;
+    uint64_t wait_deadline;
+    char job[9];
+} s_validation;
+static bool s_validate_after_close;
+static uint64_t s_setup_opened;
+static unsigned s_validate_runs; /* passes started; host tests count entries through it */
+#define KEYS_WAIT_MS 45000ULL
 
 static uint64_t millis(void)
 {
@@ -135,6 +170,7 @@ static void finish_job(const char *id, const char *error);
 static void sync_public_locked(void);
 static void finish_operation(const char *error);
 static void cancel_candidate(const char *error);
+static void abort_validation(void);
 static bool submit_model(quota_model_t *candidate, bool effective, const char *job);
 static bool ensure_direct(void);
 static bool usb_blocked(void)
@@ -262,9 +298,14 @@ static bool publish_model(const quota_model_t *previous)
             }
             credential = scratch;
         }
-        if (credential)
-            metadata[row].auth =
+        if (credential) {
+            quota_portable_auth_state_t stored =
                 credential->refresh_inflight ? QUOTA_PORTABLE_AUTH_REAUTH : credential->auth_state;
+            /* A failed validation is remembered in RAM; the stored key stays pending. */
+            if (!(unchanged && metadata[row].auth == QUOTA_PORTABLE_AUTH_ERROR &&
+                  stored == QUOTA_PORTABLE_AUTH_PENDING))
+                metadata[row].auth = stored;
+        }
         unsigned index = next->account_count++;
         quota_account_t *account = &next->accounts[index];
         copy(account->id, sizeof(account->id), entry->logical_id);
@@ -299,11 +340,31 @@ static bool publish_model(const quota_model_t *previous)
     free(next);
     return true;
 }
+/* A network that is new or whose name or password changed is pending; the others keep their
+ * state when the list shifts. Called under the lock, before the new model replaces the old. */
+static void reconcile_networks_locked(const quota_model_t *old, const quota_model_t *next)
+{
+    validation_t validation[QUOTA_PORTABLE_NETWORKS] = {QUOTA_VALIDATION_SAVED};
+    char error[QUOTA_PORTABLE_NETWORKS][QUOTA_PORTABLE_ERROR_BYTES + 1] = {{0}};
+    for (unsigned i = 0; i < next->network_count; i++) {
+        validation[i] = QUOTA_VALIDATION_PENDING;
+        for (unsigned j = 0; j < old->network_count; j++)
+            if (!strcmp(old->networks[j].ssid, next->networks[i].ssid) &&
+                !strcmp(old->networks[j].password, next->networks[i].password)) {
+                validation[i] = s_network_validation[j];
+                memcpy(error[i], s_network_error[j], sizeof(error[i]));
+                break;
+            }
+    }
+    memcpy(s_network_validation, validation, sizeof(validation));
+    memcpy(s_network_error, error, sizeof(error));
+}
 static void apply_model(quota_model_t *candidate, bool effective, quota_model_t *previous)
 {
     bool cadence_changed = s_model.refresh_seconds != candidate->refresh_seconds ||
                            s_model.auto_refresh != candidate->auto_refresh;
     lock();
+    reconcile_networks_locked(&s_model, candidate);
     s_model = *candidate;
     s_sequence++;
     s_model_ready = true;
@@ -404,13 +465,20 @@ static void dispose_candidate(quota_model_t *candidate)
         free(candidate);
     }
 }
+/* An authorized ChatGPT credential, or a DeepSeek key that waits for its validation. */
+static bool finalizable(const quota_portable_credential_t *credential)
+{
+    return !credential->refresh_inflight &&
+           (credential->auth_state == QUOTA_PORTABLE_AUTH_READY ||
+            (credential->provider == QUOTA_PROVIDER_DEEPSEEK &&
+             credential->auth_state == QUOTA_PORTABLE_AUTH_PENDING));
+}
 static bool finalize_native(const quota_direct_credential_t *credential)
 {
     if (s_model.intent.kind != QUOTA_INTENT_UPSERT_NATIVE)
         return native_row(credential->id, credential->generation) >= 0;
     const quota_model_intent_t *intent = &s_model.intent;
-    if (!intent_target(credential->id, credential->generation) ||
-        credential->auth_state != QUOTA_PORTABLE_AUTH_READY || credential->refresh_inflight)
+    if (!intent_target(credential->id, credential->generation) || !finalizable(credential))
         return false;
     quota_model_t *candidate = malloc(sizeof(*candidate));
     if (!candidate) {
@@ -443,8 +511,7 @@ static bool persist(void *context, const quota_direct_credential_t *credential)
     if (s_dirty_model || !account_current(NULL, credential->id, credential->generation) ||
         !quota_store_save_credential(credential->slot, credential))
         return false;
-    if (intent_target(credential->id, credential->generation) &&
-        credential->auth_state == QUOTA_PORTABLE_AUTH_READY && !credential->refresh_inflight) {
+    if (intent_target(credential->id, credential->generation) && finalizable(credential)) {
         s_operation.received = true;
         return finalize_native(credential);
     }
@@ -476,8 +543,10 @@ static void finish_job(const char *id, const char *error)
     lock();
     for (unsigned i = 0; i < s_job_count; i++)
         if (!strcmp(s_jobs[i].id, id)) {
-            s_jobs[i].state = error ? 3 : 2;
-            copy(s_jobs[i].error, sizeof(s_jobs[i].error), error);
+            if (s_jobs[i].state < 2) { /* The first result stands. */
+                s_jobs[i].state = error ? 3 : 2;
+                copy(s_jobs[i].error, sizeof(s_jobs[i].error), error);
+            }
             break;
         }
     unlock();
@@ -526,11 +595,33 @@ static quota_portable_submit_result_t reserve_job(const char *id, quota_portable
     *created = true;
     return QUOTA_PORTABLE_SUBMIT_ACCEPTED;
 }
+/* Called under the common lock. */
+static void top_up_setup_locked(void)
+{
+    uint64_t now = millis(), cap = s_setup_opened + QUOTA_SESSION_MAX_MS;
+    uint64_t wanted = now + QUOTA_SESSION_TOPUP_MS;
+    if (wanted > cap)
+        wanted = cap;
+    if (wanted > s_setup_deadline)
+        s_setup_deadline = wanted;
+}
+/* While a validation pass runs only cancel and setup_close are taken; the rest waits. */
+static bool validating_locked(void)
+{
+    return s_validation.requested || s_validation.active;
+}
+static void validation_not_started(void)
+{
+    lock();
+    s_validation.requested = false;
+    unlock();
+}
 quota_portable_submit_result_t
 quota_portable_service_submit(const quota_portable_command_t *command,
                               quota_setup_transport_t transport)
 {
-    if (!command || command->op == QUOTA_PORTABLE_OP_MODE_SELECT)
+    if (!command || command->op == QUOTA_PORTABLE_OP_INVALID ||
+        (command->op == QUOTA_PORTABLE_OP_VALIDATE && transport != QUOTA_SETUP_USB))
         return QUOTA_PORTABLE_SUBMIT_INVALID;
     quota_portable_command_t *fresh =
         transport == QUOTA_SETUP_USB ? calloc(QUEUE_DEPTH, sizeof(*fresh)) : NULL;
@@ -552,6 +643,12 @@ quota_portable_service_submit(const quota_portable_command_t *command,
                 free(fresh);
                 return result;
             }
+        if (validating_locked() && command->op != QUOTA_PORTABLE_OP_OPERATION_CANCEL &&
+            command->op != QUOTA_PORTABLE_OP_SETUP_CLOSE) {
+            unlock();
+            free(fresh);
+            return QUOTA_PORTABLE_SUBMIT_BUSY;
+        }
         if (!s_queue && fresh) {
             s_queue = fresh;
             fresh = NULL;
@@ -560,13 +657,17 @@ quota_portable_service_submit(const quota_portable_command_t *command,
         if (s_queue && s_count < QUEUE_DEPTH) {
             result = reserve_job(command->request_id, command->op, command_hash(command), &created);
             if (created) {
-                s_queue[(s_head + s_count) % QUEUE_DEPTH] = *command;
-                s_queue[(s_head + s_count) % QUEUE_DEPTH].accepted_config_generation =
-                    s_hooks.config_generation_locked();
-                s_queue[(s_head + s_count) % QUEUE_DEPTH].accepted_transport = transport;
-                s_queue[(s_head + s_count) % QUEUE_DEPTH].accepted_usb_deadline =
-                    transport == QUOTA_SETUP_USB ? quota_usb_deadline_ms() : 0;
+                quota_portable_command_t *slot = &s_queue[(s_head + s_count) % QUEUE_DEPTH];
+                *slot = *command;
+                slot->accepted_config_generation = s_hooks.config_generation_locked();
+                slot->accepted_transport = transport;
+                slot->accepted_usb_window =
+                    transport == QUOTA_SETUP_USB ? quota_usb_window_id() : 0;
                 s_count++;
+                if (command->op == QUOTA_PORTABLE_OP_VALIDATE)
+                    s_validation.requested = true;
+                if (transport == QUOTA_SETUP_AP && quota_portable_op_changes_setup(command->op))
+                    top_up_setup_locked();
             }
         } else
             result = QUOTA_PORTABLE_SUBMIT_BUSY;
@@ -695,8 +796,7 @@ static void recover_intent(void)
             return;
         }
     } else if (target && !credential->tombstone && credential->provider == intent.provider &&
-               credential->auth_state == QUOTA_PORTABLE_AUTH_READY &&
-               !credential->refresh_inflight) {
+               finalizable(credential)) {
         s_operation.credential = credential;
         s_operation.kind = OP_SAVE;
         s_operation.received = true;
@@ -732,11 +832,45 @@ static const char *provider_name(quota_provider_t provider)
 }
 static const char *op_name(quota_portable_op_t op)
 {
-    static const char *names[] = {
-        "invalid",      "network_save",   "network_scan",    "deepseek_save", "codex_queue",
-        "codex_launch", "account_remove", "settings_save",   "mode_select",   "setup_close",
-        "refresh",      "reconnect",      "operation_cancel"};
+    static const char *names[] = {"invalid",       "network_save",     "network_remove",
+                                  "deepseek_save", "codex_queue",      "account_remove",
+                                  "settings_save", "setup_close",      "refresh",
+                                  "reconnect",     "operation_cancel", "validate"};
     return (unsigned)op < sizeof(names) / sizeof(names[0]) ? names[op] : "invalid";
+}
+const char *quota_portable_service_firmware(void)
+{
+    static char version[QUOTA_FIRMWARE_VERSION_BYTES + 1];
+    if (!version[0]) {
+        const char *text = esp_app_get_description()->version;
+        size_t length = 0;
+        /* The version goes into JSON frames: keep it to plain characters. */
+        for (; text && text[length] && length < QUOTA_FIRMWARE_VERSION_BYTES; length++) {
+            char ch = text[length];
+            bool plain = (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') ||
+                         (ch >= 'a' && ch <= 'z') || ch == '.' || ch == '-' || ch == '+' ||
+                         ch == '_';
+            version[length] = plain ? ch : '-';
+        }
+        if (!length)
+            copy(version, sizeof(version), "unknown");
+    }
+    return version;
+}
+static const char *validation_name(validation_t validation)
+{
+    return validation == QUOTA_VALIDATION_SAVED     ? "saved"
+           : validation == QUOTA_VALIDATION_OK      ? "ok"
+           : validation == QUOTA_VALIDATION_PENDING ? "pending"
+                                                    : "failed";
+}
+/* A stored key or ChatGPT authorization decides the row: ready is ok, a new one is pending, and
+ * an expired, rejected or failed one has failed. */
+static const char *account_validation_name(quota_portable_auth_state_t auth)
+{
+    return auth == QUOTA_PORTABLE_AUTH_READY     ? "ok"
+           : auth == QUOTA_PORTABLE_AUTH_PENDING ? "pending"
+                                                 : "failed";
 }
 typedef struct {
     quota_snapshot_t snapshot;
@@ -753,7 +887,11 @@ typedef struct {
         storage_error[QUOTA_PORTABLE_ERROR_BYTES + 1];
     uint64_t setup_deadline, operation_deadline;
     operation_kind_t operation_kind;
-    bool candidate;
+    validation_t network_validation[QUOTA_PORTABLE_NETWORKS];
+    char network_errors[QUOTA_PORTABLE_NETWORKS][QUOTA_PORTABLE_ERROR_BYTES + 1];
+    bool validating;
+    const char *validation_step;
+    login_queue_t queue;
     char operation_job[9];
     quota_portable_login_state_t login_state;
     char login_code[QUOTA_PORTABLE_USER_CODE_BYTES + 1],
@@ -776,7 +914,9 @@ bool quota_portable_service_state_json(char *buffer, size_t capacity, size_t *le
     state->network_count = s_model.network_count;
     state->selected_network = s_model.selected_network;
     for (unsigned i = 0; i < s_model.network_count; i++)
-        copy(state->ssids[i], sizeof(state->ssids[i]), s_model.networks[i].ssid);
+        copy(state->ssids[i], sizeof(state->ssids[i]),
+             s_staged.present && s_staged.index == i ? s_staged.network.ssid
+                                                     : s_model.networks[i].ssid);
     state->refresh_seconds = s_model.refresh_seconds;
     state->auto_refresh = s_model.auto_refresh;
     state->screen_timeout_seconds = s_model.screen_timeout_seconds;
@@ -788,10 +928,16 @@ bool quota_portable_service_state_json(char *buffer, size_t capacity, size_t *le
     copy(state->storage_error, sizeof(state->storage_error), s_storage_error);
     state->setup_deadline = s_setup_deadline;
     state->operation_kind = s_operation.kind;
-    state->candidate = s_candidate_pending;
-    state->operation_deadline = s_candidate_pending ? s_candidate_deadline : s_operation.deadline;
-    copy(state->operation_job, sizeof(state->operation_job),
-         s_candidate_pending ? s_network_job : s_operation.job_id);
+    state->operation_deadline = s_operation.deadline;
+    copy(state->operation_job, sizeof(state->operation_job), s_operation.job_id);
+    memcpy(state->network_validation, s_network_validation, sizeof(s_network_validation));
+    memcpy(state->network_errors, s_network_error, sizeof(s_network_error));
+    state->validating = validating_locked();
+    state->validation_step = !s_validation.active               ? ""
+                             : s_validation.phase == PHASE_WIFI ? "wifi"
+                             : s_validation.phase == PHASE_KEYS ? "deepseek"
+                                                                : "chatgpt";
+    state->queue = s_login_queue;
     state->login_state = s_view.login_state;
     if (transport == QUOTA_SETUP_USB) {
         state->setup_deadline = quota_usb_deadline_ms();
@@ -805,7 +951,11 @@ bool quota_portable_service_state_json(char *buffer, size_t capacity, size_t *le
         free(state);
         return false;
     }
+    cJSON_AddNumberToObject(json, "protocol", QUOTA_PROTOCOL_VERSION);
+    cJSON_AddStringToObject(json, "firmware", quota_portable_service_firmware());
     cJSON_AddStringToObject(json, "storage_error", state->storage_error);
+    cJSON_AddBoolToObject(json, "validating", state->validating);
+    cJSON_AddStringToObject(json, "validation_step", state->validation_step);
     cJSON *session = cJSON_AddObjectToObject(json, "session");
     cJSON_AddNumberToObject(session, "remaining_seconds",
                             millis() < state->setup_deadline
@@ -822,6 +972,8 @@ bool quota_portable_service_state_json(char *buffer, size_t capacity, size_t *le
         cJSON_AddNumberToObject(item, "index", i);
         cJSON_AddStringToObject(item, "ssid", state->ssids[i]);
         cJSON_AddBoolToObject(item, "selected", i == state->selected_network);
+        cJSON_AddStringToObject(item, "validation", validation_name(state->network_validation[i]));
+        cJSON_AddStringToObject(item, "error_code", state->network_errors[i]);
         cJSON_AddItemToArray(networks, item);
     }
     cJSON *clock = cJSON_AddObjectToObject(json, "clock");
@@ -840,7 +992,13 @@ bool quota_portable_service_state_json(char *buffer, size_t capacity, size_t *le
         cJSON_AddStringToObject(item, "id", entry->logical_id);
         cJSON_AddStringToObject(item, "provider", provider_name(entry->provider));
         cJSON_AddStringToObject(item, "label", entry->label);
-        cJSON_AddStringToObject(item, "error_code", state->metadata[row].error);
+        bool queued = state->queue.present && !strcmp(state->queue.id, entry->logical_id);
+        cJSON_AddStringToObject(item, "error_code",
+                                queued && state->queue.error[0] ? state->queue.error
+                                                                : state->metadata[row].error);
+        cJSON_AddStringToObject(item, "validation",
+                                queued ? (state->queue.error[0] ? "failed" : "pending")
+                                       : account_validation_name(state->metadata[row].auth));
         int index = quota_find_account_by_id(&state->snapshot, entry->logical_id);
         const quota_account_t *account = index >= 0 ? &state->snapshot.accounts[index] : NULL;
         cJSON_AddStringToObject(item, "status",
@@ -880,15 +1038,28 @@ bool quota_portable_service_state_json(char *buffer, size_t capacity, size_t *le
         }
         cJSON_AddItemToArray(accounts, item);
     }
+    /* A new ChatGPT account has no row until it is authorized; it is listed as pending. */
+    bool listed = false;
+    for (unsigned row = 0; row < state->entry_count; row++)
+        listed = listed || !strcmp(state->entries[row].logical_id, state->queue.id);
+    if (state->queue.present && !listed) {
+        cJSON *item = cJSON_CreateObject();
+        cJSON_AddStringToObject(item, "id", state->queue.id);
+        cJSON_AddStringToObject(item, "provider", provider_name(QUOTA_PROVIDER_CODEX));
+        cJSON_AddStringToObject(item, "label", state->queue.label);
+        cJSON_AddStringToObject(item, "error_code", state->queue.error);
+        cJSON_AddStringToObject(item, "status", "waiting");
+        cJSON_AddStringToObject(item, "auth_state", "pending");
+        cJSON_AddStringToObject(item, "validation", state->queue.error[0] ? "failed" : "pending");
+        cJSON_AddNumberToObject(item, "retry_after_seconds", 0);
+        cJSON_AddItemToArray(accounts, item);
+    }
     cJSON *operation = cJSON_AddObjectToObject(json, "operation");
     static const char *operations[] = {"none", "login", "key", "query", "save"};
-    cJSON_AddStringToObject(operation, "kind",
-                            state->candidate ? "network" : operations[state->operation_kind]);
+    cJSON_AddStringToObject(operation, "kind", operations[state->operation_kind]);
     cJSON_AddStringToObject(operation, "request_id", state->operation_job);
     cJSON_AddStringToObject(operation, "state",
                             state->operation_kind == OP_SAVE                        ? "saving"
-                            : state->candidate                                      ? "connecting"
-                            : state->operation_kind == OP_KEY                       ? "validating"
                             : state->login_state == QUOTA_PORTABLE_LOGIN_QUEUED     ? "queued"
                             : state->login_state == QUOTA_PORTABLE_LOGIN_EXCHANGING ? "exchanging"
                                                                                     : "waiting");
@@ -896,9 +1067,8 @@ bool quota_portable_service_state_json(char *buffer, size_t capacity, size_t *le
                             state->operation_deadline > millis()
                                 ? (double)((state->operation_deadline - millis() + 999) / 1000)
                                 : 0);
-    cJSON_AddBoolToObject(
-        operation, "cancelable",
-        state->candidate || (state->operation_kind != OP_NONE && state->operation_kind != OP_SAVE));
+    cJSON_AddBoolToObject(operation, "cancelable",
+                          state->operation_kind != OP_NONE && state->operation_kind != OP_SAVE);
     if (transport == QUOTA_SETUP_USB) {
         static const char *login_names[] = {
             "idle",       "queued",    "connecting", "requesting_code", "waiting",
@@ -916,6 +1086,7 @@ bool quota_portable_service_state_json(char *buffer, size_t capacity, size_t *le
                                                                  : "");
         cJSON_AddStringToObject(login, "user_code", awaiting ? state->login_code : "");
         cJSON_AddStringToObject(login, "error_code", state->login_error);
+        cJSON_AddStringToObject(login, "account_id", state->queue.present ? state->queue.id : "");
         cJSON_AddNumberToObject(login, "seconds_left",
                                 awaiting && state->login_deadline > millis()
                                     ? (double)((state->login_deadline - millis() + 999) / 1000)
@@ -944,12 +1115,11 @@ static bool state_json(char *buffer, size_t capacity, size_t *length, void *cont
     return quota_portable_service_state_json(buffer, capacity, length, QUOTA_SETUP_AP);
 }
 
-static void close_setup_preserving_login(bool preserve_login)
+static void close_setup(void)
 {
     /* Stop waits for handlers before releasing their heap queue. Accepted
      * commands stay queued until the owner consumes them. */
     quota_portal_stop();
-    uint64_t now = millis();
     lock();
     s_view.setup_active = false;
     s_view.setup_ready = false;
@@ -958,13 +1128,6 @@ static void close_setup_preserving_login(bool preserve_login)
     s_view.setup_page_url[0] = 0;
     s_setup_deadline = 0;
     unlock();
-    if (!preserve_login && s_operation.kind == OP_LOGIN && !s_operation.started &&
-        s_view.login_state == QUOTA_PORTABLE_LOGIN_QUEUED)
-        finish_operation("canceled");
-    if (s_operation.kind == OP_KEY && s_operation.deadline > now + 60000)
-        s_operation.deadline = now + 60000;
-    if (s_candidate_pending && s_candidate_deadline > now + NETWORK_TIMEOUT_MS)
-        s_candidate_deadline = now + NETWORK_TIMEOUT_MS;
     publish_operation();
     if (s_wifi_active) {
         (void)esp_wifi_set_mode(WIFI_MODE_STA);
@@ -973,10 +1136,6 @@ static void close_setup_preserving_login(bool preserve_login)
     s_connect_at = 0;
     s_retry_at = 0;
     changed();
-}
-static void close_setup(void)
-{
-    close_setup_preserving_login(false);
 }
 static bool open_setup(void)
 {
@@ -1001,11 +1160,14 @@ static bool open_setup(void)
     if (!s_ap)
         return false;
     wifi_config_t ap = {0};
-    char suffix[5], password[17], secret[44];
+    char suffix[5], password[17], secret[QUOTA_PORTABLE_ACCESS_CODE_BYTES + 1], digits[17];
     random_text(suffix, 4, "0123456789ABCDEF");
     random_text(password, 16, "ABCDEFGHJKLMNPQRSTUVWXYZ23456789");
-    random_text(secret, QUOTA_PORTABLE_SESSION_BYTES,
-                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_");
+    /* 16 Crockford Base32 characters (80 bits) as XXXX-XXXX-XXXX-XXXX. */
+    random_text(digits, 16, "0123456789ABCDEFGHJKMNPQRSTVWXYZ");
+    snprintf(secret, sizeof(secret), "%.4s-%.4s-%.4s-%.4s", digits, digits + 4, digits + 8,
+             digits + 12);
+    quota_portable_clear_secret(digits, sizeof(digits));
     snprintf((char *)ap.ap.ssid, sizeof(ap.ap.ssid), "Passport-%s", suffix);
     copy((char *)ap.ap.password, sizeof(ap.ap.password), password);
     ap.ap.ssid_len = strlen((char *)ap.ap.ssid);
@@ -1026,11 +1188,12 @@ static bool open_setup(void)
         copy(s_view.setup_ssid, sizeof(s_view.setup_ssid), (char *)ap.ap.ssid);
         copy(s_view.setup_password, sizeof(s_view.setup_password), password);
         copy(s_view.setup_secret, sizeof(s_view.setup_secret), secret);
-        snprintf(s_view.setup_page_url, sizeof(s_view.setup_page_url), "http://192.168.4.1/#s=%s",
-                 secret);
+        snprintf(s_view.setup_page_url, sizeof(s_view.setup_page_url),
+                 "http://192.168.4.1/#code=%s", secret);
         s_view.setup_active = s_view.setup_ready = true;
         s_view.network_state = QUOTA_PORTABLE_NETWORK_AP;
-        s_setup_deadline = millis() + QUOTA_PORTABLE_SETUP_MS;
+        s_setup_opened = millis();
+        s_setup_deadline = s_setup_opened + QUOTA_PORTABLE_SETUP_MS;
         unlock();
         quota_portal_callbacks_t callbacks = {
             .submit = submit, .state_json = state_json, .session_active = session_active};
@@ -1051,6 +1214,7 @@ static void open_attempt(void)
     lock();
     s_open = false;
     unlock();
+    abort_validation();
     bool ok = open_setup();
     lock();
     if (ok || ++s_open_failures >= OPEN_RETRY_MAX) {
@@ -1108,7 +1272,7 @@ static const char *result_error(quota_direct_result_code_t code)
     case QUOTA_DIRECT_LOGIN_DISABLED:
         return "login_disabled";
     case QUOTA_DIRECT_EXPIRED:
-        return "auth_expired";
+        return "codex_expired";
     case QUOTA_DIRECT_RATE_LIMITED:
         return "rate_limited";
     case QUOTA_DIRECT_STORAGE_ERROR:
@@ -1141,6 +1305,7 @@ static void sync_public_locked(void)
     view->connected = s_view.network_state == QUOTA_PORTABLE_NETWORK_READY ||
                       s_view.network_state == QUOTA_PORTABLE_NETWORK_CONNECTED;
     view->refreshing = !s_sleeping && s_refreshing;
+    s_view.validating = s_validation.active;
     view->request_failed = s_failed || s_storage_error[0];
     view->refresh_seconds = s_model.refresh_seconds;
     view->auto_refresh = s_model.auto_refresh;
@@ -1157,6 +1322,27 @@ static void sync_public_locked(void)
         copy(s_view.saved_network_ssids[i], sizeof(s_view.saved_network_ssids[i]),
              s_model.networks[i].ssid);
     }
+    unsigned pending = 0, failed = 0;
+    memset(s_view.saved_network_validation, 0, sizeof(s_view.saved_network_validation));
+    memset(s_view.saved_network_errors, 0, sizeof(s_view.saved_network_errors));
+    for (unsigned i = 0; i < s_view.saved_network_count; i++) {
+        s_view.saved_network_validation[i] = (uint8_t)s_network_validation[i];
+        copy(s_view.saved_network_errors[i], sizeof(s_view.saved_network_errors[i]),
+             s_network_error[i]);
+        pending += s_network_validation[i] == QUOTA_VALIDATION_PENDING;
+        failed += s_network_validation[i] == QUOTA_VALIDATION_FAILED;
+    }
+    for (unsigned row = 0; row < s_model.entry_count; row++) {
+        pending += s_accounts[row].auth == QUOTA_PORTABLE_AUTH_PENDING;
+        failed += s_accounts[row].auth == QUOTA_PORTABLE_AUTH_REAUTH ||
+                  s_accounts[row].auth == QUOTA_PORTABLE_AUTH_ERROR;
+    }
+    if (s_login_queue.present) {
+        pending += s_login_queue.error[0] == 0;
+        failed += s_login_queue.error[0] != 0;
+    }
+    s_view.pending_items = pending > UINT8_MAX ? UINT8_MAX : (uint8_t)pending;
+    s_view.failed_items = failed > UINT8_MAX ? UINT8_MAX : (uint8_t)failed;
     memset(s_view.account_errors, 0, sizeof(s_view.account_errors));
     memset(s_view.account_retry_at, 0, sizeof(s_view.account_retry_at));
     for (unsigned i = 0; i < s_snapshot.account_count; i++) {
@@ -1169,11 +1355,17 @@ static void sync_public_locked(void)
             s_clock_ready && retry > millis() ? epoch() + (retry - millis() + 999) / 1000 : 0;
     }
 }
+/* The candidate network failed its validation. */
 static void cancel_candidate(const char *error)
 {
     if (!s_candidate_pending)
         return;
-    finish_job(s_network_job, error);
+    lock();
+    if (s_candidate_index < QUOTA_PORTABLE_NETWORKS) {
+        s_network_validation[s_candidate_index] = QUOTA_VALIDATION_FAILED;
+        copy(s_network_error[s_candidate_index], sizeof(s_network_error[0]), error);
+    }
+    unlock();
     s_candidate_pending = false;
     s_candidate_deadline = 0;
     quota_portable_clear_secret(&s_candidate, sizeof(s_candidate));
@@ -1183,16 +1375,28 @@ static void cancel_candidate(const char *error)
     copy(s_view.network_ssid, sizeof(s_view.network_ssid),
          s_model.network_count ? s_model.networks[s_model.selected_network].ssid : "");
     unlock();
+    changed();
+}
+/* New credentials wait for the network in use: what the stored ones do says nothing about them. */
+static bool staged_for_selected(void)
+{
+    return s_staged.present && s_staged.index == s_model.selected_network;
+}
+static bool wifi_auth_failure(uint8_t reason)
+{
+    return reason == WIFI_REASON_AUTH_FAIL || reason == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT;
+}
+static const char *wifi_failure_code(void)
+{
+    lock();
+    uint8_t reason = s_disconnect_reason;
+    unlock();
+    return wifi_auth_failure(reason) ? "wifi_auth_failed" : "wifi_not_found";
 }
 static void maintain_network(void)
 {
     uint64_t now = millis();
     char ip[16];
-    lock();
-    uint32_t current_generation = s_hooks.config_generation_locked();
-    unlock();
-    if (s_candidate_pending && s_candidate_generation != current_generation)
-        cancel_candidate("configuration_changed");
     const quota_portable_network_t *target = s_candidate_pending ? &s_candidate
                                              : s_model.network_count
                                                  ? &s_model.networks[s_model.selected_network]
@@ -1208,27 +1412,55 @@ static void maintain_network(void)
         !memcmp(association.ssid, target->ssid, strlen(target->ssid));
     if (matching && connected_ip(ip)) {
         if (s_candidate_pending) {
-            quota_model_t *candidate = malloc(sizeof(*candidate));
-            if (!candidate) {
-                storage_failed(QUOTA_STORE_READ_NO_MEMORY);
-                return;
+            /* The validated network becomes the one in use, with the credentials that worked. */
+            bool staged = s_staged.present && s_staged.index == s_candidate_index;
+            /* Credentials staged for the network that stops being in use are stored now: only
+             * the network in use is protected. */
+            bool promote = s_staged.present && s_staged.index != s_candidate_index;
+            if (staged || promote || s_model.selected_network != s_candidate_index) {
+                quota_model_t *candidate = malloc(sizeof(*candidate));
+                if (!candidate) {
+                    storage_failed(QUOTA_STORE_READ_NO_MEMORY);
+                    return;
+                }
+                *candidate = s_model;
+                validation_t promoted_state =
+                    promote ? s_network_validation[s_staged.index] : QUOTA_VALIDATION_SAVED;
+                char promoted_error[QUOTA_PORTABLE_ERROR_BYTES + 1] = {0};
+                if (promote)
+                    memcpy(promoted_error, s_network_error[s_staged.index], sizeof(promoted_error));
+                if (staged)
+                    candidate->networks[s_candidate_index] = s_staged.network;
+                if (promote && s_staged.index < candidate->network_count)
+                    candidate->networks[s_staged.index] = s_staged.network;
+                candidate->selected_network = s_candidate_index;
+                bool ok = submit_model(candidate, true, NULL);
+                dispose_candidate(candidate);
+                if (!ok) {
+                    if (!s_dirty_model)
+                        cancel_candidate("storage_failed");
+                    return;
+                }
+                if (staged || promote) {
+                    lock();
+                    if (promote) { /* storing it reset its state; it keeps what validation found */
+                        s_network_validation[s_staged.index] = promoted_state;
+                        memcpy(s_network_error[s_staged.index], promoted_error,
+                               sizeof(promoted_error));
+                    }
+                    s_staged.present = false;
+                    quota_portable_clear_secret(&s_staged.network, sizeof(s_staged.network));
+                    unlock();
+                }
             }
-            *candidate = s_model;
-            candidate->networks[s_candidate_index] = s_candidate;
-            if (s_candidate_index == candidate->network_count)
-                candidate->network_count++;
-            candidate->selected_network = s_candidate_index;
-            bool ok = submit_model(candidate, true, s_network_job);
-            dispose_candidate(candidate);
-            if (!ok) {
-                if (!s_dirty_model)
-                    cancel_candidate("storage_failed");
-                return;
-            }
-            finish_job(s_network_job, NULL);
+            lock();
+            s_network_validation[s_candidate_index] = QUOTA_VALIDATION_OK;
+            s_network_error[s_candidate_index][0] = 0;
+            unlock();
             s_candidate_pending = false;
             s_candidate_deadline = 0;
             quota_portable_clear_secret(&s_candidate, sizeof(s_candidate));
+            changed();
         }
         /* lwIP falls through the list on timeout. Server Date headers are not a clock source: TLS
          * certificate checks need time first. */
@@ -1244,6 +1476,13 @@ static void maintain_network(void)
             unlock();
         }
         lock();
+        /* Connected for real: a network that was only saved, or had been refused, is fine. */
+        if (s_model.network_count && !s_candidate_pending && !staged_for_selected() &&
+            (s_network_validation[s_model.selected_network] == QUOTA_VALIDATION_SAVED ||
+             s_network_validation[s_model.selected_network] == QUOTA_VALIDATION_FAILED)) {
+            s_network_validation[s_model.selected_network] = QUOTA_VALIDATION_OK;
+            s_network_error[s_model.selected_network][0] = 0;
+        }
         s_view.network_state =
             s_clock_ready ? QUOTA_PORTABLE_NETWORK_READY : QUOTA_PORTABLE_NETWORK_CONNECTED;
         copy(s_view.network_ip, sizeof(s_view.network_ip), ip);
@@ -1253,6 +1492,24 @@ static void maintain_network(void)
         return;
     }
     stop_clock();
+    /* A wrong password is known long before the timeout. */
+    if (s_candidate_pending && s_connect_at && !strcmp(wifi_failure_code(), "wifi_auth_failed")) {
+        cancel_candidate("wifi_auth_failed");
+        return;
+    }
+    if (!s_candidate_pending && s_connect_at && s_model.network_count && !staged_for_selected() &&
+        !strcmp(wifi_failure_code(), "wifi_auth_failed")) {
+        /* The network in use refuses its stored password. */
+        lock();
+        validation_t *state = &s_network_validation[s_model.selected_network];
+        if (*state == QUOTA_VALIDATION_SAVED || *state == QUOTA_VALIDATION_OK) {
+            *state = QUOTA_VALIDATION_FAILED;
+            copy(s_network_error[s_model.selected_network], sizeof(s_network_error[0]),
+                 "wifi_auth_failed");
+            sync_public_locked();
+        }
+        unlock();
+    }
     if (s_connect_at && now < s_retry_at) {
         lock();
         s_view.network_state = QUOTA_PORTABLE_NETWORK_CONNECTING;
@@ -1261,13 +1518,7 @@ static void maintain_network(void)
         return;
     }
     if (s_candidate_pending && s_connect_at) {
-        lock();
-        uint8_t reason = s_disconnect_reason;
-        unlock();
-        cancel_candidate(reason == WIFI_REASON_AUTH_FAIL ||
-                                 reason == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT
-                             ? "wifi_auth_failed"
-                             : "wifi_not_found");
+        cancel_candidate(wifi_failure_code());
         return;
     }
     if (s_connect_at && now < s_retry_at + 30000) {
@@ -1310,19 +1561,23 @@ static void finish_operation(const char *error)
     if (kind == OP_LOGIN) {
         quota_direct_login_cancel(s_direct);
         lock();
-        s_view.login_state = !error                           ? QUOTA_PORTABLE_LOGIN_SUCCESS
-                             : !strcmp(error, "canceled")     ? QUOTA_PORTABLE_LOGIN_CANCELED
-                             : !strcmp(error, "auth_expired") ? QUOTA_PORTABLE_LOGIN_EXPIRED
-                                                              : QUOTA_PORTABLE_LOGIN_ERROR;
+        s_view.login_state = !error                            ? QUOTA_PORTABLE_LOGIN_SUCCESS
+                             : !strcmp(error, "canceled")      ? QUOTA_PORTABLE_LOGIN_CANCELED
+                             : !strcmp(error, "codex_expired") ? QUOTA_PORTABLE_LOGIN_EXPIRED
+                                                               : QUOTA_PORTABLE_LOGIN_ERROR;
         copy(s_view.login_error, sizeof(s_view.login_error), error);
         s_view.auth_hold_awake = false;
+        if (!error)
+            s_login_queue.present = false;
+        else /* the account stays queued, failed, for the next 完成设置 */
+            copy(s_login_queue.error, sizeof(s_login_queue.error), error);
         unlock();
     }
     finish_job(s_operation.job_id, error);
     release_operation();
     lock();
     s_refreshing = false;
-    if (!error && (kind == OP_LOGIN || kind == OP_KEY))
+    if (!error && kind == OP_LOGIN)
         s_refresh = true;
     sync_public_locked();
     unlock();
@@ -1377,7 +1632,10 @@ static bool ensure_direct(void)
     }
     return true;
 }
-static const char *start_account(const quota_portable_command_t *command, operation_kind_t kind)
+/* Prepare the credential record and the catalog intent of a DeepSeek key (kind OP_KEY) or a
+ * ChatGPT authorization (OP_LOGIN). new_id names a new ChatGPT account. */
+static const char *start_account(const quota_portable_command_t *command, operation_kind_t kind,
+                                 const char *new_id)
 {
     if (storage_barrier() || s_operation.kind != OP_NONE || !ensure_direct())
         return "busy";
@@ -1397,7 +1655,10 @@ static const char *start_account(const quota_portable_command_t *command, operat
         dispose_candidate(candidate);
         return saved || s_dirty_model ? NULL : "storage_failed";
     }
-    if (row < 0 && s_model.entry_count == QUOTA_MAX_ACCOUNTS)
+    /* A new ChatGPT account the user queued will take a row too. */
+    unsigned rows = s_model.entry_count +
+                    (kind == OP_KEY && s_login_queue.present && s_login_queue.is_new ? 1 : 0);
+    if (row < 0 && rows >= QUOTA_MAX_ACCOUNTS)
         return "account_limit";
     if (row >= 0 && s_model.entries[row].row_generation == UINT32_MAX)
         return "generation_exhausted";
@@ -1460,10 +1721,12 @@ static const char *start_account(const quota_portable_command_t *command, operat
     intent->slot = (uint8_t)slot;
     intent->new_row = row < 0;
     intent->expected_row_generation = row < 0 ? 0 : s_model.entries[row].row_generation;
-    if (row < 0)
-        random_text(intent->logical_id, QUOTA_ACCOUNT_ID_BYTES, "0123456789abcdef");
-    else
+    if (row >= 0)
         copy(intent->logical_id, sizeof(intent->logical_id), s_model.entries[row].logical_id);
+    else if (new_id)
+        copy(intent->logical_id, sizeof(intent->logical_id), new_id);
+    else
+        random_text(intent->logical_id, QUOTA_ACCOUNT_ID_BYTES, "0123456789abcdef");
     intent->previous_missing = previous == QUOTA_STORE_READ_MISSING;
     if (!intent->previous_missing) {
         intent->previous_tombstone = credential->tombstone;
@@ -1504,12 +1767,7 @@ static const char *start_account(const quota_portable_command_t *command, operat
         release_operation();
         return "storage_failed";
     }
-    s_operation.deadline =
-        kind == OP_LOGIN
-            ? millis() + QUOTA_PORTABLE_LOGIN_MS
-            : (command->accepted_transport == QUOTA_SETUP_AP && s_setup_deadline ? s_setup_deadline
-                                                                                 : millis()) +
-                  60000;
+    s_operation.deadline = millis() + (kind == OP_LOGIN ? QUOTA_PORTABLE_LOGIN_MS : 60000);
     if (kind == OP_LOGIN) {
         lock();
         s_view.login_state = QUOTA_PORTABLE_LOGIN_QUEUED;
@@ -1573,8 +1831,6 @@ static const char *catalog_command(const quota_portable_command_t *command)
 }
 static void cancel_operation(const char *target)
 {
-    if (s_candidate_pending && (!target[0] || !strcmp(target, s_network_job)) && !s_dirty_model)
-        cancel_candidate("canceled");
     if (s_operation.kind != OP_NONE && (!target[0] || !strcmp(target, s_operation.job_id)) &&
         s_operation.kind != OP_SAVE && !s_operation.received &&
         !quota_direct_has_pending_persist(s_direct)) {
@@ -1582,11 +1838,174 @@ static void cancel_operation(const char *target)
         finish_operation("canceled");
     }
     lock();
+    if (s_login_queue.present && s_operation.kind != OP_LOGIN &&
+        (!target[0] || !strcmp(target, s_login_queue.job)))
+        s_login_queue.present = false;
     if (s_queue && target[0])
         for (unsigned i = 0; i < s_count; i++)
             if (!strcmp(s_queue[(s_head + i) % QUEUE_DEPTH].request_id, target))
                 s_queue[(s_head + i) % QUEUE_DEPTH].op = QUOTA_PORTABLE_OP_INVALID;
     unlock();
+}
+/* Queue a ChatGPT authorization: a new account, or the re-authorization of a row. It starts when
+ * validation reaches it, so the credential record is not held while the user keeps editing. */
+static const char *queue_login(const quota_portable_command_t *command)
+{
+    if (s_login_queue.present) {
+        /* A failed authorization is armed again by asking for the same account. */
+        bool same = command->account_id[0] ? !strcmp(command->account_id, s_login_queue.id)
+                                           : s_login_queue.is_new;
+        if (!s_login_queue.error[0] || !same || s_operation.kind == OP_LOGIN)
+            return "login_pending";
+        lock();
+        s_login_queue.error[0] = 0;
+        if (command->label[0])
+            copy(s_login_queue.label, sizeof(s_login_queue.label), command->label);
+        copy(s_login_queue.job, sizeof(s_login_queue.job), command->request_id);
+        sync_public_locked();
+        unlock();
+        return NULL;
+    }
+    int row = command->account_id[0] ? quota_catalog_find(&s_model, command->account_id) : -1;
+    if (command->account_id[0] &&
+        (row < 0 || s_model.entries[row].provider != QUOTA_PROVIDER_CODEX))
+        return "invalid_request";
+    if (row < 0 && s_model.entry_count >= QUOTA_MAX_ACCOUNTS)
+        return "account_limit";
+    login_queue_t queued = {.present = true, .is_new = row < 0};
+    if (row >= 0)
+        copy(queued.id, sizeof(queued.id), s_model.entries[row].logical_id);
+    else
+        random_text(queued.id, QUOTA_ACCOUNT_ID_BYTES, "0123456789abcdef");
+    copy(queued.label, sizeof(queued.label),
+         command->label[0] ? command->label
+         : row >= 0        ? s_model.entries[row].label
+                           : "");
+    copy(queued.job, sizeof(queued.job), command->request_id);
+    lock();
+    s_login_queue = queued;
+    sync_public_locked();
+    unlock();
+    return NULL;
+}
+/* Start the queued authorization. The result lands on the validate job. */
+static const char *launch_login(void)
+{
+    quota_portable_command_t command = {0};
+    copy(command.request_id, sizeof(command.request_id), s_validation.job);
+    if (!s_login_queue.is_new)
+        copy(command.account_id, sizeof(command.account_id), s_login_queue.id);
+    copy(command.label, sizeof(command.label), s_login_queue.label);
+    const char *error =
+        start_account(&command, OP_LOGIN, s_login_queue.is_new ? s_login_queue.id : NULL);
+    if (error)
+        return error;
+    s_operation.deadline = s_login_deadline = millis() + QUOTA_PORTABLE_LOGIN_MS;
+    lock();
+    s_view.login_state = QUOTA_PORTABLE_LOGIN_CONNECTING;
+    s_login_queue.error[0] = 0;
+    unlock();
+    return NULL;
+}
+static const char *save_key(const quota_portable_command_t *command)
+{
+    const char *error = start_account(command, OP_KEY, NULL);
+    if (error || s_operation.kind != OP_KEY)
+        return error;
+    /* The key is stored as it is and waits for validation; no request goes to DeepSeek yet. */
+    s_operation.credential->auth_state = QUOTA_PORTABLE_AUTH_PENDING;
+    s_operation.received = true;
+    if (persist(NULL, s_operation.credential))
+        finish_operation(NULL);
+    else
+        enter_save();
+    return NULL;
+}
+static const char *save_network(const quota_portable_command_t *command)
+{
+    unsigned index = command->network_index;
+    if (index == UINT8_MAX) {
+        index = s_model.network_count;
+        unsigned matches = 0;
+        for (unsigned i = 0; i < s_model.network_count; i++)
+            if (!strcmp(s_model.networks[i].ssid, command->ssid)) {
+                index = i;
+                matches++;
+            }
+        if (matches > 1)
+            return "network_ambiguous";
+    }
+    if (index >= QUOTA_PORTABLE_NETWORKS)
+        return "network_limit";
+    if (index > s_model.network_count)
+        return "invalid_request";
+    if (index < s_model.network_count && index == s_model.selected_network) {
+        /* The network in use keeps its working credentials until the new ones validate. */
+        lock();
+        s_staged.present = true;
+        s_staged.index = (uint8_t)index;
+        copy(s_staged.network.ssid, sizeof(s_staged.network.ssid), command->ssid);
+        copy(s_staged.network.password, sizeof(s_staged.network.password), command->password);
+        s_network_validation[index] = QUOTA_VALIDATION_PENDING;
+        s_network_error[index][0] = 0;
+        sync_public_locked();
+        unlock();
+        return NULL;
+    }
+    quota_model_t *candidate = malloc(sizeof(*candidate));
+    if (!candidate)
+        return "no_memory";
+    *candidate = s_model;
+    copy(candidate->networks[index].ssid, sizeof(candidate->networks[index].ssid), command->ssid);
+    copy(candidate->networks[index].password, sizeof(candidate->networks[index].password),
+         command->password);
+    if (index == candidate->network_count)
+        candidate->network_count++;
+    bool saved = submit_model(candidate, true, command->request_id);
+    dispose_candidate(candidate);
+    if ((saved || s_dirty_model) && s_staged.present && s_staged.index == index) {
+        lock(); /* stored through the normal path: it replaces what was staged */
+        s_staged.present = false;
+        quota_portable_clear_secret(&s_staged.network, sizeof(s_staged.network));
+        unlock();
+    }
+    return saved || s_dirty_model ? NULL : "storage_failed";
+}
+static const char *remove_network(const quota_portable_command_t *command)
+{
+    unsigned index = command->network_index;
+    if (index >= s_model.network_count)
+        return "invalid_request";
+    quota_model_t *candidate = malloc(sizeof(*candidate));
+    if (!candidate)
+        return "no_memory";
+    *candidate = s_model;
+    memmove(&candidate->networks[index], &candidate->networks[index + 1],
+            (candidate->network_count - index - 1) * sizeof(candidate->networks[0]));
+    quota_portable_clear_secret(&candidate->networks[--candidate->network_count],
+                                sizeof(candidate->networks[0]));
+    /* The list shifts: the selection follows its network, or falls back to the first. */
+    if (candidate->network_count == 0 || index == s_model.selected_network)
+        candidate->selected_network = 0;
+    else if (index < s_model.selected_network)
+        candidate->selected_network--;
+    bool in_use = index == s_model.selected_network;
+    bool saved = submit_model(candidate, true, command->request_id);
+    dispose_candidate(candidate);
+    if (saved && s_staged.present) {
+        lock();
+        if (s_staged.index == index) {
+            s_staged.present = false;
+            quota_portable_clear_secret(&s_staged.network, sizeof(s_staged.network));
+        } else if (s_staged.index > index)
+            s_staged.index--;
+        unlock();
+    }
+    if (saved && in_use) {
+        (void)esp_wifi_disconnect();
+        s_connect_at = 0;
+    }
+    return saved || s_dirty_model ? NULL : "storage_failed";
 }
 static void process_command(quota_portable_command_t *command)
 {
@@ -1597,63 +2016,34 @@ static void process_command(quota_portable_command_t *command)
     bool pending = false;
     if (!current && command->op != QUOTA_PORTABLE_OP_SETUP_CLOSE &&
         command->op != QUOTA_PORTABLE_OP_OPERATION_CANCEL) {
+        if (command->op == QUOTA_PORTABLE_OP_VALIDATE)
+            validation_not_started();
         finish_job(command->request_id, "configuration_changed");
         return;
     }
     if (storage_barrier() && command->op != QUOTA_PORTABLE_OP_SETUP_CLOSE &&
         command->op != QUOTA_PORTABLE_OP_OPERATION_CANCEL) {
+        if (command->op == QUOTA_PORTABLE_OP_VALIDATE)
+            validation_not_started();
         finish_job(command->request_id, s_storage_error[0] ? s_storage_error : "busy");
+        return;
+    }
+    /* Commands accepted before the pass began ran first; none changes anything while it runs. */
+    if (s_validation.active && command->op != QUOTA_PORTABLE_OP_SETUP_CLOSE &&
+        command->op != QUOTA_PORTABLE_OP_OPERATION_CANCEL) {
+        finish_job(command->request_id, "busy");
         return;
     }
     clock_from_phone(command->phone_utc);
     switch (command->op) {
-    case QUOTA_PORTABLE_OP_NETWORK_SAVE: {
-        if (s_candidate_pending) {
-            error = "busy";
-            break;
-        }
-        unsigned index = command->network_index;
-        if (!command->ssid[0]) {
-            if (index >= s_model.network_count) {
-                error = "invalid_request";
-                break;
-            }
-            s_candidate = s_model.networks[index];
-        } else {
-            if (index == UINT8_MAX) {
-                index = s_model.network_count;
-                unsigned matches = 0;
-                for (unsigned i = 0; i < s_model.network_count; i++)
-                    if (!strcmp(s_model.networks[i].ssid, command->ssid)) {
-                        index = i;
-                        matches++;
-                    }
-                if (matches > 1) {
-                    error = "network_ambiguous";
-                    break;
-                }
-            }
-            if (index > s_model.network_count || index >= QUOTA_PORTABLE_NETWORKS) {
-                error = "network_limit";
-                break;
-            }
-            copy(s_candidate.ssid, sizeof(s_candidate.ssid), command->ssid);
-            copy(s_candidate.password, sizeof(s_candidate.password), command->password);
-        }
-        s_candidate_index = (uint8_t)index;
-        lock();
-        s_candidate_generation = s_hooks.config_generation_locked();
-        unlock();
-        s_candidate_pending = true;
-        s_candidate_deadline =
-            (command->accepted_transport == QUOTA_SETUP_AP && s_setup_deadline ? s_setup_deadline
-                                                                               : millis()) +
-            NETWORK_TIMEOUT_MS;
-        copy(s_network_job, sizeof(s_network_job), command->request_id);
-        s_connect_at = 0;
-        pending = true;
+    case QUOTA_PORTABLE_OP_NETWORK_SAVE:
+        error = save_network(command);
+        pending = !error && s_dirty_model;
         break;
-    }
+    case QUOTA_PORTABLE_OP_NETWORK_REMOVE:
+        error = remove_network(command);
+        pending = !error && s_dirty_model;
+        break;
     case QUOTA_PORTABLE_OP_SETTINGS_SAVE: {
         if (!quota_refresh_seconds_is_valid(command->refresh_seconds) ||
             !quota_screen_timeout_is_valid(command->screen_timeout_seconds)) {
@@ -1681,15 +2071,16 @@ static void process_command(quota_portable_command_t *command)
         dispose_candidate(candidate);
         break;
     }
-    case QUOTA_PORTABLE_OP_MODE_SELECT:
-        error = "unsupported";
-        break;
     case QUOTA_PORTABLE_OP_SETUP_CLOSE:
         if (command->accepted_transport == QUOTA_SETUP_USB) {
             s_usb_close_at = millis() + 500;
-            s_usb_close_window = command->accepted_usb_deadline;
-        } else
+            s_usb_close_window = command->accepted_usb_window;
+        } else {
+            /* Answer first, close the access point, then validate: a Wi-Fi check moves the radio
+             * to the station and the phone would lose the access point anyway. */
             s_close_at = millis() + 500;
+            s_validate_after_close = true;
+        }
         break;
     case QUOTA_PORTABLE_OP_RECONNECT:
         if (command->accepted_transport == QUOTA_SETUP_AP)
@@ -1700,9 +2091,20 @@ static void process_command(quota_portable_command_t *command)
         s_refresh = true;
         break;
     case QUOTA_PORTABLE_OP_ACCOUNT_REMOVE:
-        if (s_operation.kind != OP_NONE)
+        if (s_login_queue.present && !strcmp(s_login_queue.id, command->account_id) &&
+            s_login_queue.is_new) {
+            lock();
+            s_login_queue.present = false;
+            sync_public_locked();
+            unlock();
+        } else if (s_operation.kind != OP_NONE)
             error = "busy";
         else {
+            if (s_login_queue.present && !strcmp(s_login_queue.id, command->account_id)) {
+                lock();
+                s_login_queue.present = false;
+                unlock();
+            }
             error = catalog_command(command);
             if (error && !strcmp(error, "storage_pending")) {
                 error = NULL;
@@ -1711,26 +2113,18 @@ static void process_command(quota_portable_command_t *command)
         }
         break;
     case QUOTA_PORTABLE_OP_CODEX_QUEUE:
-        error = start_account(command, OP_LOGIN);
-        pending = !error && s_dirty_model;
-        break;
-    case QUOTA_PORTABLE_OP_CODEX_LAUNCH:
-        if (s_operation.kind != OP_LOGIN || s_operation.started)
-            error = "invalid_request";
-        else {
-            s_operation.deadline = s_login_deadline = millis() + QUOTA_PORTABLE_LOGIN_MS;
-            if (command->accepted_transport == QUOTA_SETUP_AP)
-                s_close_at = millis() + 500;
-            copy(s_operation.job_id, sizeof(s_operation.job_id), command->request_id);
-            pending = true;
-            lock();
-            s_view.login_state = QUOTA_PORTABLE_LOGIN_CONNECTING;
-            unlock();
-        }
+        error = queue_login(command);
         break;
     case QUOTA_PORTABLE_OP_DEEPSEEK_SAVE:
-        error = start_account(command, OP_KEY);
-        pending = !error && (s_operation.kind == OP_KEY || s_dirty_model);
+        error = save_key(command);
+        pending = !error && (s_operation.kind != OP_NONE || s_dirty_model);
+        break;
+    case QUOTA_PORTABLE_OP_VALIDATE:
+        copy(s_validation.job, sizeof(s_validation.job), command->request_id);
+        if (quota_portable_validate_pending())
+            pending = true; /* the job ends with the pass */
+        else
+            s_validation.job[0] = 0;
         break;
     case QUOTA_PORTABLE_OP_OPERATION_CANCEL:
         cancel_operation(command->target_request_id);
@@ -1773,7 +2167,11 @@ static void apply_result(int row, const quota_direct_result_t *result)
         meta->retry_ms = 0;
         s_cache_dirty = true;
     } else {
-        copy(meta->error, sizeof(meta->error), result_error(result->code));
+        copy(meta->error, sizeof(meta->error),
+             result->code == QUOTA_DIRECT_AUTH_REQUIRED &&
+                     entry->provider == QUOTA_PROVIDER_DEEPSEEK
+                 ? "deepseek_invalid_key"
+                 : result_error(result->code));
         if (result->code == QUOTA_DIRECT_AUTH_REQUIRED)
             meta->auth = QUOTA_PORTABLE_AUTH_REAUTH;
         if (index >= 0)
@@ -1827,57 +2225,15 @@ static void login_tick(void)
     unlock();
     changed();
 }
-static void source_tick(void)
+/* Ask one row's provider. ChatGPT refreshes an expiring token first. While validating, a DeepSeek
+ * key that answers is stored as ready, and any other answer leaves the row failed. */
+static quota_direct_result_code_t query_row(int row, bool validating)
 {
-    if (!quota_portable_service_http_allowed() || !ensure_direct())
-        return;
-    if (s_operation.kind == OP_KEY) {
-        quota_direct_result_t result =
-            quota_direct_query(s_direct, s_operation.credential, epoch());
-        if (result.code == QUOTA_DIRECT_DEFERRED)
-            return;
-        if (result.code == QUOTA_DIRECT_OK) {
-            s_operation.credential->auth_state = QUOTA_PORTABLE_AUTH_READY;
-            s_operation.received = true;
-            if (!persist(NULL, s_operation.credential)) {
-                enter_save();
-                return;
-            }
-        }
-        finish_operation(result.code == QUOTA_DIRECT_OK              ? NULL
-                         : result.code == QUOTA_DIRECT_AUTH_REQUIRED ? "invalid_key"
-                                                                     : result_error(result.code));
-        return;
-    }
-    if (s_operation.kind != OP_NONE)
-        return;
-    /* An open USB session owns the serial link: scheduled polling waits. An explicit refresh still
-     * runs. */
-    bool scheduled = !usb_active();
-    if (!s_cycle &&
-        (s_refresh || (scheduled && s_model.auto_refresh && millis() >= s_next_refresh))) {
-        s_cycle = true;
-        s_refresh = false;
-        s_refresh_slot = 0;
-        s_failed = false;
-    }
-    if (!s_cycle)
-        return;
-    while (s_refresh_slot < s_model.entry_count &&
-           (s_accounts[s_refresh_slot].retry_ms > millis() ||
-            s_accounts[s_refresh_slot].auth == QUOTA_PORTABLE_AUTH_REAUTH))
-        s_refresh_slot++;
-    if (s_refresh_slot >= s_model.entry_count) {
-        s_cycle = false;
-        s_next_refresh = millis() + (uint64_t)s_model.refresh_seconds * 1000;
-        return;
-    }
-    int row = s_refresh_slot;
     const quota_catalog_entry_t *entry = &s_model.entries[row];
     quota_direct_credential_t *credential = quota_store_credential_acquire();
     if (!credential) {
         storage_failed(QUOTA_STORE_READ_NO_MEMORY);
-        return;
+        return QUOTA_DIRECT_NO_MEMORY;
     }
     quota_store_read_result_t loaded =
         quota_store_load_credential_result(entry->binding.native.slot, credential);
@@ -1889,7 +2245,7 @@ static void source_tick(void)
             s_recovery_blocked = true;
             copy(s_storage_error, sizeof(s_storage_error), "recovery_conflict");
         }
-        return;
+        return QUOTA_DIRECT_STORAGE_ERROR;
     }
     s_operation.kind = OP_QUERY;
     s_operation.credential = credential;
@@ -1914,17 +2270,241 @@ static void source_tick(void)
                 result = quota_direct_query(s_direct, credential, epoch());
         }
     }
+    if (validating && result.code == QUOTA_DIRECT_OK &&
+        credential->provider == QUOTA_PROVIDER_DEEPSEEK) {
+        credential->auth_state = QUOTA_PORTABLE_AUTH_READY;
+        if (!persist(NULL, credential))
+            result.code = QUOTA_DIRECT_STORAGE_ERROR;
+    }
     lock();
     s_refreshing = false;
     sync_public_locked();
     unlock();
-    if (result.code != QUOTA_DIRECT_DEFERRED)
+    if (!validating && result.code != QUOTA_DIRECT_DEFERRED)
         s_refresh_slot++;
     apply_result(row, &result);
-    if (result.code == QUOTA_DIRECT_PERSIST_PENDING)
+    if (validating && result.code != QUOTA_DIRECT_OK && result.code != QUOTA_DIRECT_DEFERRED) {
+        lock();
+        s_accounts[row].auth = QUOTA_PORTABLE_AUTH_ERROR;
+        sync_public_locked();
+        unlock();
+    }
+    quota_direct_result_code_t code = result.code;
+    if (code == QUOTA_DIRECT_PERSIST_PENDING)
         enter_save();
     else
         release_operation();
+    return code;
+}
+static void source_tick(void)
+{
+    if (!quota_portable_service_http_allowed() || !ensure_direct() || s_operation.kind != OP_NONE)
+        return;
+    /* An open USB session owns the serial link: scheduled polling waits. An explicit refresh still
+     * runs. */
+    bool scheduled = !usb_active();
+    if (!s_cycle &&
+        (s_refresh || (scheduled && s_model.auto_refresh && millis() >= s_next_refresh))) {
+        s_cycle = true;
+        s_refresh = false;
+        s_refresh_slot = 0;
+        s_failed = false;
+    }
+    if (!s_cycle)
+        return;
+    /* A key that waits for validation, or failed it, is not asked in the background. */
+    while (s_refresh_slot < s_model.entry_count &&
+           (s_accounts[s_refresh_slot].retry_ms > millis() ||
+            s_accounts[s_refresh_slot].auth != QUOTA_PORTABLE_AUTH_READY))
+        s_refresh_slot++;
+    if (s_refresh_slot >= s_model.entry_count) {
+        s_cycle = false;
+        s_next_refresh = millis() + (uint64_t)s_model.refresh_seconds * 1000;
+        return;
+    }
+    (void)query_row(s_refresh_slot, false);
+}
+/* Validation: Wi-Fi networks first, then DeepSeek keys, then the queued ChatGPT authorization.
+ * One pass at a time, driven by the network task; nothing here blocks. */
+static bool network_needs_validation(unsigned index)
+{
+    return s_network_validation[index] == QUOTA_VALIDATION_PENDING ||
+           s_network_validation[index] == QUOTA_VALIDATION_FAILED;
+}
+static int next_network_to_validate(void)
+{
+    for (unsigned i = 0; i < s_model.network_count; i++)
+        if (network_needs_validation(i) && !(s_validation.tried_networks & (1u << i)))
+            return (int)i;
+    return -1;
+}
+static int next_key_to_validate(void)
+{
+    for (unsigned row = 0; row < s_model.entry_count; row++)
+        if (s_model.entries[row].provider == QUOTA_PROVIDER_DEEPSEEK &&
+            s_accounts[row].auth != QUOTA_PORTABLE_AUTH_READY &&
+            !(s_validation.tried_rows & (1u << row)))
+            return (int)row;
+    return -1;
+}
+static void validation_finish(const char *error)
+{
+    lock();
+    s_validation.active = s_validation.requested = false;
+    sync_public_locked();
+    unlock();
+    finish_job(s_validation.job, error);
+    s_validation.job[0] = 0;
+    changed();
+}
+/* A physical hotspot request ends the pass; what it had not reached stays pending, including a
+ * ChatGPT authorization that has not started asking yet. */
+static void abort_validation(void)
+{
+    if (!s_validation.active)
+        return;
+    if (s_candidate_pending) {
+        s_candidate_pending = false;
+        s_candidate_deadline = 0;
+        quota_portable_clear_secret(&s_candidate, sizeof(s_candidate));
+        s_connect_at = s_retry_at = 0;
+    }
+    validation_finish("canceled");
+    if (s_operation.kind == OP_LOGIN && !s_operation.started) {
+        finish_operation("canceled");
+        lock();
+        s_login_queue.error[0] = 0; /* not the user's doing: it simply waits for the next pass */
+        unlock();
+    }
+}
+/* Why the network is not there: no link, or no time yet. */
+static const char *network_failure_code(void)
+{
+    return s_view.network_state == QUOTA_PORTABLE_NETWORK_CONNECTED ? "time_required"
+                                                                    : "network_unavailable";
+}
+/* No network came up in time: the keys that were waiting for it fail. */
+static void fail_remaining_keys(void)
+{
+    const char *code = network_failure_code();
+    for (int row; (row = next_key_to_validate()) >= 0;) {
+        s_validation.tried_rows |= 1u << row;
+        lock();
+        s_accounts[row].auth = QUOTA_PORTABLE_AUTH_ERROR;
+        copy(s_accounts[row].error, sizeof(s_accounts[row].error), code);
+        sync_public_locked();
+        unlock();
+    }
+}
+static void validate_tick(void)
+{
+    if (!s_validation.active)
+        return;
+    if (s_validation.phase == PHASE_WIFI) {
+        if (s_candidate_pending)
+            return; /* maintain_network settles it */
+        int index = next_network_to_validate();
+        if (index >= 0) {
+            s_candidate = s_staged.present && s_staged.index == index ? s_staged.network
+                                                                      : s_model.networks[index];
+            s_candidate_index = (uint8_t)index;
+            s_candidate_pending = true;
+            s_candidate_deadline = millis() + NETWORK_TIMEOUT_MS;
+            s_connect_at = 0;
+            s_validation.tried_networks |= 1u << index;
+            changed();
+            return;
+        }
+        lock();
+        s_validation.phase = PHASE_KEYS;
+        unlock();
+        s_validation.wait_deadline = millis() + KEYS_WAIT_MS;
+    }
+    if (s_validation.phase == PHASE_KEYS) {
+        int row = next_key_to_validate();
+        if (row >= 0) {
+            if (s_operation.kind != OP_NONE)
+                return;
+            if (!quota_portable_service_http_allowed()) { /* wait for the network and the clock */
+                if (millis() >= s_validation.wait_deadline) {
+                    fail_remaining_keys();
+                    changed();
+                }
+                return;
+            }
+            if (query_row(row, true) != QUOTA_DIRECT_DEFERRED)
+                s_validation.tried_rows |= 1u << row;
+            changed();
+            return;
+        }
+        lock();
+        s_validation.phase = PHASE_LOGIN;
+        unlock();
+        s_validation.wait_deadline = millis() + KEYS_WAIT_MS;
+    }
+    if (!s_validation.login_started) {
+        if (!s_login_queue.present) {
+            validation_finish(NULL);
+            return;
+        }
+        if (s_operation.kind != OP_NONE)
+            return;
+        if (!quota_portable_service_http_allowed()) {
+            /* Authorization needs the network and the clock; wait a little, then give up without
+             * dropping the queued account. */
+            if (millis() >= s_validation.wait_deadline) {
+                const char *code = network_failure_code();
+                lock();
+                copy(s_login_queue.error, sizeof(s_login_queue.error), code);
+                unlock();
+                validation_finish(code);
+            }
+            return;
+        }
+        const char *error = launch_login();
+        if (error && !strcmp(error, "busy") && millis() < s_validation.wait_deadline)
+            return; /* the direct client is not ready yet; try again shortly */
+        if (error) {
+            lock();
+            copy(s_view.login_error, sizeof(s_view.login_error), error);
+            s_view.login_state = QUOTA_PORTABLE_LOGIN_ERROR;
+            copy(s_login_queue.error, sizeof(s_login_queue.error), error);
+            unlock();
+            validation_finish(error);
+            return;
+        }
+        s_validation.login_started = true;
+        return;
+    }
+    if (s_operation.kind == OP_NONE) /* the authorization ended, whatever its result */
+        validation_finish(NULL);
+}
+bool quota_portable_validate_pending(void)
+{
+    s_validate_runs++;
+    if (s_validation.active)
+        return true;
+    bool work = s_login_queue.present;
+    lock();
+    for (unsigned i = 0; i < s_model.network_count; i++)
+        work = work || network_needs_validation(i);
+    for (unsigned row = 0; row < s_model.entry_count; row++)
+        work = work || (s_model.entries[row].provider == QUOTA_PROVIDER_DEEPSEEK &&
+                        s_accounts[row].auth != QUOTA_PORTABLE_AUTH_READY);
+    s_validation.requested = false;
+    if (work) {
+        s_validation.active = true;
+        s_validation.login_started = false;
+        s_validation.phase = PHASE_WIFI;
+        s_validation.tried_networks = s_validation.tried_rows = 0;
+        sync_public_locked();
+    }
+    unlock();
+    if (work) {
+        changed();
+        wake();
+    }
+    return work;
 }
 static void apply_authentication_overlay(quota_snapshot_t *snapshot)
 {
@@ -2063,7 +2643,7 @@ bool quota_portable_service_prepare_usb(void)
     if (storage_barrier() || quota_direct_has_pending_persist(s_direct))
         return false;
     if (s_view.setup_active)
-        close_setup_preserving_login(true);
+        close_setup();
     return !s_view.setup_active;
 }
 void quota_portable_service_tick(bool sleeping, uint32_t generation)
@@ -2089,20 +2669,24 @@ void quota_portable_service_tick(bool sleeping, uint32_t generation)
     if (s_operation.cancel_requested && !s_dirty_model)
         finish_operation("canceled");
     if (s_candidate_pending && !s_dirty_model && millis() >= s_candidate_deadline)
-        cancel_candidate("operation_expired");
+        cancel_candidate(wifi_failure_code());
     if (s_operation.kind != OP_NONE && s_operation.kind != OP_SAVE && !s_operation.received &&
         s_operation.deadline && millis() >= s_operation.deadline)
-        finish_operation(s_operation.kind == OP_LOGIN ? "auth_expired" : "operation_expired");
+        finish_operation(s_operation.kind == OP_LOGIN ? "codex_expired" : "operation_expired");
     if (cancel)
         cancel_operation("");
     if (close || (s_view.setup_active && millis() >= s_setup_deadline) ||
         (s_close_at && millis() >= s_close_at) || (sleeping && s_view.setup_active)) {
+        bool validate = s_validate_after_close && !sleeping;
         close_setup();
         s_close_at = 0;
+        s_validate_after_close = false;
+        if (validate)
+            (void)quota_portable_validate_pending();
     }
     if (s_usb_close_at && millis() >= s_usb_close_at) {
         s_usb_close_at = 0;
-        if (quota_usb_deadline_ms() == s_usb_close_window)
+        if (quota_usb_window_id() == s_usb_close_window)
             quota_usb_close_window();
         s_usb_close_window = 0;
     }
@@ -2190,9 +2774,10 @@ void quota_portable_service_tick(bool sleeping, uint32_t generation)
     maintain_network();
     if (!storage_barrier()) {
         (void)ensure_direct();
+        validate_tick();
         if (s_operation.kind == OP_LOGIN)
             login_tick();
-        else
+        else if (!s_validation.active)
             source_tick();
         if (s_selection_dirty && s_operation.kind == OP_NONE) {
             quota_model_t *candidate = malloc(sizeof(*candidate));
@@ -2212,7 +2797,8 @@ void quota_portable_service_tick(bool sleeping, uint32_t generation)
         cache_tick();
     }
     lock();
-    s_view.auth_hold_awake = s_operation.kind == OP_LOGIN && millis() < s_operation.deadline;
+    s_view.auth_hold_awake =
+        (s_operation.kind == OP_LOGIN && millis() < s_operation.deadline) || s_validation.active;
     sync_public_locked();
     unlock();
 }
@@ -2226,7 +2812,8 @@ void quota_portable_service_countdown_overlay_locked(quota_service_view_t *view)
     view->portable.login_seconds_left = view->portable.auth_hold_awake && now < s_login_deadline
                                             ? (uint32_t)((s_login_deadline - now + 999) / 1000)
                                             : 0;
-    view->portable.auth_hold_awake = view->portable.auth_hold_awake && now < s_login_deadline;
+    view->portable.auth_hold_awake =
+        view->portable.auth_hold_awake && (view->portable.validating || now < s_login_deadline);
 }
 static void sooner(uint64_t *deadline, uint64_t candidate)
 {
@@ -2278,8 +2865,10 @@ uint64_t quota_portable_service_next_deadline_ms(bool sleeping)
             sooner(&deadline, s_init_retry_at);
         if (s_model.auto_refresh && s_operation.kind == OP_NONE)
             sooner(&deadline, s_next_refresh > millis() ? s_next_refresh : millis() + 500);
-        if (s_refresh || s_cycle || s_operation.kind == OP_LOGIN || s_operation.kind == OP_KEY)
+        if (s_refresh || s_cycle || s_operation.kind == OP_LOGIN)
             sooner(&deadline, millis() + 500);
+        if (s_validation.active)
+            sooner(&deadline, millis() + 200);
         if (s_cache_dirty && s_clock_ready)
             sooner(&deadline, s_cache_at <= millis() ? millis() + 500 : s_cache_at);
     }

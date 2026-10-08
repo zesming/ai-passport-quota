@@ -276,10 +276,9 @@ bool quota_data_is_stale(uint64_t now, bool has_observed_at, uint64_t observed_a
     return now - observed_at > threshold;
 }
 
-bool quota_usb_window_active(bool setup_screen_open, uint64_t now_ms, uint64_t opened_at_ms)
+bool quota_usb_window_active(bool setup_screen_open, uint64_t now_ms, uint64_t deadline_ms)
 {
-    return setup_screen_open && now_ms >= opened_at_ms &&
-           now_ms - opened_at_ms < QUOTA_USB_WINDOW_MS;
+    return setup_screen_open && now_ms < deadline_ms;
 }
 
 quota_metric_state_t quota_metric_state(const quota_window_t *window, uint64_t now)

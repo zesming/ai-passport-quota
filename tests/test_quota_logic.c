@@ -72,10 +72,11 @@ static void test_freshness_and_reset_states(void)
     assert(!quota_data_is_stale(4599, true, 1000, 1800));
     assert(quota_data_is_stale(4601, true, 1000, 1800));
     assert(quota_data_is_stale(999, true, 1000, 300));
-    assert(quota_usb_window_active(true, 1000, 1000));
-    assert(quota_usb_window_active(true, 120999, 1000));
-    assert(!quota_usb_window_active(true, 121000, 1000));
-    assert(!quota_usb_window_active(false, 2000, 1000));
+    assert(quota_usb_window_active(true, 1000, 121000));
+    assert(quota_usb_window_active(true, 120999, 121000));
+    assert(!quota_usb_window_active(true, 121000, 121000));
+    assert(!quota_usb_window_active(true, 1000, 0));
+    assert(!quota_usb_window_active(false, 2000, 121000));
 
     quota_window_t window = {
         .present = true, .remaining_percent = 0, .has_resets_at = true, .resets_at = 1500};

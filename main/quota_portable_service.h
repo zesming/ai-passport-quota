@@ -25,6 +25,13 @@ void quota_portable_service_tick(bool sleeping, uint32_t generation);
 void quota_portable_service_countdown_overlay_locked(quota_service_view_t *view);
 uint64_t quota_portable_service_next_deadline_ms(bool sleeping);
 bool quota_portable_service_prepare_usb(void);
+/* The one validation function, for both entry points: the USB `validate` command and the
+ * hotspot after setup_close has closed the access point. It checks the Wi-Fi networks, DeepSeek
+ * keys and queued ChatGPT authorization whose validation is pending or failed, one after the
+ * other, in the network task. Returns false when nothing needs validating. */
+bool quota_portable_validate_pending(void);
+/* Firmware version for protocol replies. */
+const char *quota_portable_service_firmware(void);
 quota_portable_submit_result_t
 quota_portable_service_submit(const quota_portable_command_t *command,
                               quota_setup_transport_t transport);

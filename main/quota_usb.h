@@ -33,5 +33,10 @@ bool quota_usb_active(void);
 /* Entry pending, or serial input in flight: HTTP work must wait. */
 bool quota_usb_blocked(void);
 uint64_t quota_usb_deadline_ms(void);
+/* Names the current window, so a delayed close cannot end a window opened after it. */
+uint64_t quota_usb_window_id(void);
+/* A command that changed something keeps the window open for at least five more minutes, up to
+ * twenty minutes after it opened. Reading state never does. */
+void quota_usb_extend_window(void);
 /* Refresh the window fields of a view copy; the caller holds the service lock. */
 void quota_usb_fill_view_locked(quota_service_view_t *view);

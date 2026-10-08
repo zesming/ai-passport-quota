@@ -77,6 +77,22 @@ class PortableServiceRuntime(unittest.TestCase):
                 "fresh-orphan-retry",
                 "account-limit",
                 "network-limit",
+                "usb-validate-e2e",
+                "validate-only-pending",
+                "validate-busy-and-expiry",
+                "validate-hotspot",
+                "keys-wait-for-network",
+                "ap-top-up",
+                "login-queue",
+                "queue-counts-toward-limit",
+                "network-remove",
+                "access-code",
+                "network-saved-state",
+                "staged-credentials",
+                "login-needs-network",
+                "hotspot-aborts-unstarted-login",
+                "staged-fail-stays",
+                "staged-stale",
             ):
                 with self.subTest(case=case):
                     result = subprocess.run([str(executable), case], capture_output=True, text=True)

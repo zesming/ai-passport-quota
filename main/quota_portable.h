@@ -3,18 +3,38 @@
 #include "quota_logic.h"
 
 #define QUOTA_PORTABLE_NETWORKS 3
+/* Setup protocol version. The page and the firmware must agree on it. */
+#define QUOTA_PROTOCOL_VERSION 3
+#define QUOTA_FIRMWARE_VERSION_BYTES 32
+/* Base session length: hotspot 10 minutes, USB 2 minutes (QUOTA_USB_WINDOW_MS). Every command that
+ * changes something tops the remaining time up to at least QUOTA_SESSION_TOPUP_MS; a session never
+ * lasts longer than QUOTA_SESSION_MAX_MS in total. */
 #define QUOTA_PORTABLE_SETUP_MS 600000ULL
+#define QUOTA_SESSION_TOPUP_MS 300000ULL
+#define QUOTA_SESSION_MAX_MS 1200000ULL
 #define QUOTA_PORTABLE_LOGIN_MS 900000ULL
 #define QUOTA_PORTABLE_ACCESS_BYTES 8192
 #define QUOTA_PORTABLE_REFRESH_BYTES 4096
 #define QUOTA_PORTABLE_KEY_BYTES 512
 #define QUOTA_PORTABLE_IDENTITY_BYTES 128
-#define QUOTA_PORTABLE_SESSION_BYTES 43
+/* Hotspot access code: 16 Crockford Base32 characters shown as XXXX-XXXX-XXXX-XXXX. */
+#define QUOTA_PORTABLE_ACCESS_CODE_BYTES 19
+/* Wrong access codes in a row after which the hotspot refuses every request. */
+#define QUOTA_PORTABLE_ACCESS_FAILURES 5
 #define QUOTA_PORTABLE_ERROR_BYTES 48
 #define QUOTA_PORTABLE_URL_BYTES 128
 #define QUOTA_PORTABLE_USER_CODE_BYTES 64
 #define QUOTA_PORTABLE_COMMAND_BYTES 2048
 #define QUOTA_PORTABLE_STATE_BYTES 16384
+
+/* Validation result of a saved Wi-Fi network or account. A network that was saved before the last
+ * restart is only SAVED: it is neither waiting nor failed until the Passport connects or fails. */
+typedef enum {
+    QUOTA_VALIDATION_SAVED = 0,
+    QUOTA_VALIDATION_OK,
+    QUOTA_VALIDATION_PENDING,
+    QUOTA_VALIDATION_FAILED,
+} quota_validation_t;
 
 /* Persisted values: never reuse 1. */
 typedef enum {
@@ -56,10 +76,12 @@ typedef enum {
 typedef struct {
     bool setup_active;
     bool setup_ready;
+    /* A validation pass is running; the display stays on until it ends. */
+    bool validating;
     uint32_t setup_seconds_left;
     char setup_ssid[QUOTA_SSID_MAX_BYTES + 1];
     char setup_password[QUOTA_PASSWORD_MAX_BYTES + 1];
-    char setup_secret[QUOTA_PORTABLE_SESSION_BYTES + 1];
+    char setup_secret[QUOTA_PORTABLE_ACCESS_CODE_BYTES + 1]; /* The access code. */
     char setup_page_url[QUOTA_PORTABLE_URL_BYTES + 1];
     quota_portable_network_state_t network_state;
     char network_ssid[QUOTA_SSID_MAX_BYTES + 1];
@@ -80,6 +102,11 @@ typedef struct {
     uint8_t saved_network_count;
     uint8_t selected_saved_network;
     char saved_network_ssids[QUOTA_PORTABLE_NETWORKS][QUOTA_SSID_MAX_BYTES + 1];
+    /* Validation result per saved network (quota_validation_t) with its error code, and how many
+     * networks, accounts and queued authorizations wait or failed: the device screen shows them. */
+    uint8_t saved_network_validation[QUOTA_PORTABLE_NETWORKS];
+    char saved_network_errors[QUOTA_PORTABLE_NETWORKS][QUOTA_PORTABLE_ERROR_BYTES + 1];
+    uint8_t pending_items, failed_items;
 } quota_portable_view_t;
 
 typedef struct {
@@ -112,27 +139,44 @@ typedef quota_portable_credential_t quota_direct_credential_t;
 typedef enum {
     QUOTA_PORTABLE_OP_INVALID = 0,
     QUOTA_PORTABLE_OP_NETWORK_SAVE,
-    QUOTA_PORTABLE_OP_NETWORK_SCAN,
+    QUOTA_PORTABLE_OP_NETWORK_REMOVE,
     QUOTA_PORTABLE_OP_DEEPSEEK_SAVE,
     QUOTA_PORTABLE_OP_CODEX_QUEUE,
-    QUOTA_PORTABLE_OP_CODEX_LAUNCH,
     QUOTA_PORTABLE_OP_ACCOUNT_REMOVE,
     QUOTA_PORTABLE_OP_SETTINGS_SAVE,
-    QUOTA_PORTABLE_OP_MODE_SELECT,
     QUOTA_PORTABLE_OP_SETUP_CLOSE,
     QUOTA_PORTABLE_OP_REFRESH,
     QUOTA_PORTABLE_OP_RECONNECT,
     QUOTA_PORTABLE_OP_OPERATION_CANCEL,
+    QUOTA_PORTABLE_OP_VALIDATE, /* USB only; the hotspot validates after setup_close */
 } quota_portable_op_t;
 
 typedef enum { QUOTA_SETUP_AP = 0, QUOTA_SETUP_USB } quota_setup_transport_t;
+
+/* Commands that change something. They top the session up, and they are refused (busy) while a
+ * validation pass runs. State reads, refresh, reconnect, cancel and setup_close are not. */
+static inline bool quota_portable_op_changes_setup(quota_portable_op_t op)
+{
+    switch (op) {
+    case QUOTA_PORTABLE_OP_NETWORK_SAVE:
+    case QUOTA_PORTABLE_OP_NETWORK_REMOVE:
+    case QUOTA_PORTABLE_OP_DEEPSEEK_SAVE:
+    case QUOTA_PORTABLE_OP_CODEX_QUEUE:
+    case QUOTA_PORTABLE_OP_ACCOUNT_REMOVE:
+    case QUOTA_PORTABLE_OP_SETTINGS_SAVE:
+    case QUOTA_PORTABLE_OP_VALIDATE:
+        return true;
+    default:
+        return false;
+    }
+}
 
 /* This private queue payload may hold secrets; wipe after consumption. */
 typedef struct {
     char request_id[9];
     quota_portable_op_t op;
     char account_id[QUOTA_ACCOUNT_ID_BYTES + 1];
-    uint8_t network_index; /* UINT8_MAX means insert/update by SSID. */
+    uint8_t network_index; /* network_save: UINT8_MAX inserts or updates by SSID. */
     char ssid[QUOTA_SSID_MAX_BYTES + 1];
     char password[QUOTA_PASSWORD_MAX_BYTES + 1];
     bool open_network;
@@ -146,7 +190,7 @@ typedef struct {
     /* Captured by the service, never accepted from a phone request. */
     uint32_t accepted_config_generation;
     quota_setup_transport_t accepted_transport;
-    uint64_t accepted_usb_deadline;
+    uint64_t accepted_usb_window; /* Identifies the USB window; see quota_usb_window_id(). */
 } quota_portable_command_t;
 
 typedef enum {

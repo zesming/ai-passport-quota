@@ -2,6 +2,8 @@
 """Check the repository guards with small synthetic fixtures."""
 
 import importlib.util
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -138,6 +140,35 @@ class RepositoryChecks(unittest.TestCase):
                 'tests/wide.py:1: longer than 100 columns',
             ],
         )
+
+    def test_setup_page_must_match_its_sources(self):
+        repo = Path(__file__).resolve().parents[1]
+        for name in ('tools/build_setup_page.mjs',):
+            (self.root / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(repo / name, self.root / name)
+        shutil.copytree(repo / 'main/setup', self.root / 'main/setup')
+        errors = []
+        CHECKS.check_setup_page_is_current(errors)
+        self.assertEqual(len(errors), 1)  # no generated page yet
+        self.assertIn('out of date', errors[0])
+        subprocess.run(['node', 'tools/build_setup_page.mjs'], cwd=self.root, check=True)
+        errors = []
+        CHECKS.check_setup_page_is_current(errors)
+        self.assertEqual(errors, [])
+        # An edit to a source, without rebuilding, is caught.
+        style = self.root / 'main/setup/style.css'
+        style.write_text(style.read_text() + '\n.extra { color: red; }\n')
+        errors = []
+        CHECKS.check_setup_page_is_current(errors)
+        self.assertEqual(len(errors), 1)
+        self.assertIn('npm run build:setup', errors[0])
+        # A hand edit of the generated page is caught as well.
+        subprocess.run(['node', 'tools/build_setup_page.mjs'], cwd=self.root, check=True)
+        page = self.root / 'main/setup_page.html'
+        page.write_text(page.read_text().replace('Passport 设置', 'Passport 设置 '))
+        errors = []
+        CHECKS.check_setup_page_is_current(errors)
+        self.assertEqual(len(errors), 1)
 
 
 if __name__ == '__main__':

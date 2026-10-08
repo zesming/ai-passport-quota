@@ -16,8 +16,9 @@ idf_component_register(
          "${CMAKE_CURRENT_LIST_DIR}/../assets/fonts/quota_font_12.c"
          "${CMAKE_CURRENT_LIST_DIR}/../assets/fonts/quota_font_16.c"
     INCLUDE_DIRS "."
-    EMBED_TXTFILES "portable_setup.html" "portable_setup.mjs" "portable_serial.mjs"
+    EMBED_TXTFILES "setup_page.html"
     REQUIRES bsp
+             esp_app_format
              esp_driver_usb_serial_jtag
              esp_event
              esp_http_client

@@ -1,6 +1,7 @@
 """Execute portable storage and local-command validation C against fake data."""
 
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -33,89 +34,125 @@ int main(void)
     assert(quota_portal_origin_is_valid("http://192.168.4.1"));
     assert(!quota_portal_origin_is_valid("null"));
     assert(!quota_portal_origin_is_valid("https://192.168.4.1"));
-    char secret[44], wrong[44];
-    memset(secret, 'a', 43);
-    secret[43] = 0;
-    memcpy(wrong, secret, 44);
-    wrong[42] = 'b';
+    const char *secret = "K7QM-2X9D-PA4T-Z8RW", *wrong = "K7QM-2X9D-PA4T-Z8RX";
     assert(quota_portal_secret_matches(secret, secret));
     assert(!quota_portal_secret_matches(secret, wrong));
-    assert(!quota_portal_secret_matches(secret, "a"));
-    assert(parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"network_save\",\"ssid\":\"Phone\","
+    assert(!quota_portal_secret_matches(secret, "K7QM"));
+    assert(!quota_portal_secret_matches(secret, "K7QM2X9DPA4TZ8RW"));
+    assert(!quota_portal_secret_matches(NULL, secret));
+    /* The access code is 16 Crockford Base32 characters in groups of four. */
+    assert(quota_portal_access_code_is_valid(secret));
+    assert(quota_portal_access_code_is_valid("0123-4567-89AB-CDEF"));
+    assert(quota_portal_access_code_is_valid("GHJK-MNPQ-RSTV-WXYZ"));
+    assert(!quota_portal_access_code_is_valid(NULL));
+    assert(!quota_portal_access_code_is_valid("K7QM-2X9D-PA4T-Z8R"));
+    assert(!quota_portal_access_code_is_valid("K7QM-2X9D-PA4T-Z8RWW"));
+    assert(!quota_portal_access_code_is_valid("K7QM2X9D-PA4T-Z8RW-"));
+    assert(!quota_portal_access_code_is_valid("k7qm-2x9d-pa4t-z8rw"));
+    for (const char *bad = "ILOU"; *bad; bad++) {
+        char code[20] = "K7QM-2X9D-PA4T-Z8RW";
+        code[7] = *bad;
+        assert(!quota_portal_access_code_is_valid(code));
+    }
+    assert(parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"network_save\",\"ssid\":\"Phone\","
                  "\"password\":\"12345678\",\"phone_utc\":1800000000}"));
     assert(command.op == QUOTA_PORTABLE_OP_NETWORK_SAVE && command.network_index == UINT8_MAX);
-    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"network_save\",\"ssid\":\"Phone\","
+    assert(!parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"network_save\",\"ssid\":\"Phone\","
                   "\"password\":\"short\"}"));
     assert(
-        !parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"network_save\",\"ssid\":\"Phone\"}"));
-    assert(parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"network_save\",\"ssid\":\"Cafe\","
+        !parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"network_save\",\"ssid\":\"Phone\"}"));
+    assert(parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"network_save\",\"ssid\":\"Cafe\","
                  "\"password\":\"\",\"open_network\":true}"));
     assert(command.open_network);
-    assert(
-        parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"network_save\",\"network_index\":2}"));
-    assert(command.network_index == 2 && command.ssid[0] == 0);
+    /* network_save always names the network; an index picks the one to change. */
     assert(!parse(
-        "{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"network_save\",\"network_index\":3}"));
+        "{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"network_save\",\"network_index\":2}"));
+    assert(parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"network_save\",\"ssid\":\"Home\","
+                 "\"password\":\"12345678\",\"network_index\":2}"));
+    assert(command.network_index == 2 && !strcmp(command.ssid, "Home"));
+    assert(!parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"network_save\",\"ssid\":\"Home\","
+                  "\"password\":\"12345678\",\"network_index\":3}"));
+    assert(parse(
+        "{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"network_remove\",\"network_index\":2}"));
+    assert(command.op == QUOTA_PORTABLE_OP_NETWORK_REMOVE && command.network_index == 2);
+    assert(!parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"network_remove\"}"));
     assert(!parse(
-        "{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"deepseek_save\",\"label\":\"Only label\"}"));
-    assert(parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"deepseek_save\",\"label\":\"Only "
+        "{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"network_remove\",\"network_index\":3}"));
+    assert(!parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"network_remove\",\"network_"
+                  "index\":0,\"ssid\":\"Home\"}"));
+    assert(parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"validate\"}"));
+    assert(command.op == QUOTA_PORTABLE_OP_VALIDATE);
+    assert(!parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"validate\",\"all\":true}"));
+    /* Only protocol 3 bodies are commands. */
+    for (const char *version = "0124"; *version; version++) {
+        char frame[96];
+        snprintf(frame, sizeof(frame), "{\"v\":%c,\"request_id\":\"abcdef01\",\"op\":\"refresh\"}",
+                 *version);
+        assert(!parse(frame));
+    }
+    assert(!parse(
+        "{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"deepseek_save\",\"label\":\"Only label\"}"));
+    assert(parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"deepseek_save\",\"label\":\"Only "
                  "label\",\"account_id\":\"0123456789abcdef0123456789abcdef\"}"));
     assert(command.api_key[0] == 0);
-    assert(parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"deepseek_save\",\"label\":\"My "
+    assert(parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"deepseek_save\",\"label\":\"My "
                  "API\",\"api_key\":\"sk-fake\"}"));
     assert(strcmp(command.api_key, "sk-fake") == 0);
     assert(
-        parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"codex_queue\",\"label\":\"Work\"}"));
+        parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"codex_queue\",\"label\":\"Work\"}"));
     assert(parse(
-        "{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"codex_queue\",\"phone_utc\":1800000000}"));
+        "{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"codex_queue\",\"phone_utc\":1800000000}"));
     assert(command.phone_utc == 1800000000);
-    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"deepseek_save\",\"label\":"
+    assert(!parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"deepseek_save\",\"label\":"
                   "\"Fake\",\"api_key\":\"sk-fake\",\"phone_utc\":-1}"));
-    assert(parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"settings_save\",\"refresh_"
+    assert(parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"settings_save\",\"refresh_"
                  "seconds\":300,\"auto_refresh\":false,\"screen_timeout_seconds\":0}"));
-    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"settings_save\",\"refresh_"
+    assert(!parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"settings_save\",\"refresh_"
                   "seconds\":301,\"auto_refresh\":false,\"screen_timeout_seconds\":0}"));
-    assert(parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"refresh\"}"));
-    assert(parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"reconnect\"}"));
-    assert(parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"operation_cancel\",\"target_"
+    assert(parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"refresh\"}"));
+    assert(parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"reconnect\"}"));
+    assert(parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"operation_cancel\",\"target_"
                  "request_id\":\"abcdef02\"}"));
     assert(command.op == QUOTA_PORTABLE_OP_OPERATION_CANCEL &&
            !strcmp(command.target_request_id, "abcdef02"));
-    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"operation_cancel\"}"));
-    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"operation_cancel\",\"target_"
+    assert(!parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"operation_cancel\"}"));
+    assert(!parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"operation_cancel\",\"target_"
                   "request_id\":\"ABCDEF02\"}"));
-    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"operation_cancel\",\"target_"
+    assert(!parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"operation_cancel\",\"target_"
                   "request_id\":\"abcdef023\"}"));
-    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"refresh\",\"accepted_mode\":0}"));
-    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"refresh\",\"accepted_config_"
+    assert(!parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"refresh\",\"accepted_mode\":0}"));
+    assert(!parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"refresh\",\"accepted_config_"
                   "generation\":1}"));
-    assert(!parse("{\"v\":1,\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"refresh\"}"));
-    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"refresh\",\"unknown\":1}"));
-    assert(!parse("{\"v\":1,\"request_id\":\"ABCDEF01\",\"op\":\"refresh\"}"));
-    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"deepseek_save\",\"label\":"
+    assert(!parse("{\"v\":3,\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"refresh\"}"));
+    assert(!parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"refresh\",\"unknown\":1}"));
+    assert(!parse("{\"v\":3,\"request_id\":\"ABCDEF01\",\"op\":\"refresh\"}"));
+    assert(!parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"deepseek_save\",\"label\":"
                   "\"X\\u0000Y\",\"api_key\":\"sk-fake\"}"));
-    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"deepseek_save\",\"label\":"
+    assert(!parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"deepseek_save\",\"label\":"
                   "\"X\\nY\",\"api_key\":\"sk-fake\"}"));
-    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"refresh\"}junk"));
-    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"refresh\",\"x\":[[[[1]]]]}"));
+    assert(!parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"refresh\"}junk"));
+    assert(!parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"refresh\",\"x\":[[[[1]]]]}"));
     /* Operations of removed features are unknown commands. */
-    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"account_activate\",\"account_id\":"
+    assert(!parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"account_activate\",\"account_id\":"
                   "\"0123456789abcdef0123456789abcdef\"}"));
-    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"account_deactivate\",\"account_"
+    assert(!parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"account_deactivate\",\"account_"
                   "id\":\"0123456789abcdef0123456789abcdef\"}"));
-    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"external_import\",\"remote_"
+    assert(!parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"external_import\",\"remote_"
                   "account_id\":\"0123456789abcdef0123456789abcdef\"}"));
     assert(!parse(
-        "{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"network_activate\",\"replace_index\":2}"));
-    assert(parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"account_remove\",\"account_id\":"
+        "{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"network_activate\",\"replace_index\":2}"));
+    assert(parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"account_remove\",\"account_id\":"
                  "\"0123456789abcdef0123456789abcdef\"}"));
     assert(command.op == QUOTA_PORTABLE_OP_ACCOUNT_REMOVE);
-    assert(
-        parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"mode_select\",\"mode\":\"direct\"}"));
-    assert(command.op == QUOTA_PORTABLE_OP_MODE_SELECT);
-    assert(
-        !parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"mode_select\",\"mode\":\"other\"}"));
-    assert(!parse("{\"v\":1,\"request_id\":\"abcdef01\",\"op\":\"refresh\",\"endpoint_epoch\":1}"));
+    /* Removed in protocol 3. codex_launch is the internal step of validation, not a command. */
+    const char *removed[] = {"mode_select", "network_scan", "codex_launch", "network_activate"};
+    for (size_t i = 0; i < sizeof(removed) / sizeof(removed[0]); i++) {
+        char frame[128];
+        snprintf(frame, sizeof(frame), "{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"%s\"}",
+                 removed[i]);
+        assert(!parse(frame));
+    }
+    assert(!parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"refresh\",\"endpoint_epoch\":1}"));
     unsigned char zero[sizeof(command)] = {0};
     assert(memcmp(&command, zero, sizeof(command)) == 0); /* Rejected secrets cleared. */
     char huge[QUOTA_PORTABLE_COMMAND_BYTES + 2];
@@ -159,7 +196,7 @@ static const char *get(httpd_req_t *r, const char *name)
         return f->host;
     if (!strcmp(name, "Origin"))
         return f->origin;
-    if (!strcmp(name, "X-AIQ-Setup"))
+    if (!strcmp(name, "X-AIQ-Access"))
         return f->secret;
     return NULL;
 }
@@ -220,6 +257,35 @@ static int fake_local(int fd, struct sockaddr *addr, socklen_t *len)
     (void)fd;
     return fake_address(addr, len, local_ip, local_form, local_failure);
 }
+/* What the handlers send, so the tests can read headers and bodies. */
+static char sent_headers[8][2][512], sent_body[512], sent_status[64];
+static unsigned sent_header_count;
+esp_err_t httpd_resp_set_hdr(httpd_req_t *r, const char *field, const char *value)
+{
+    (void)r;
+    snprintf(sent_headers[sent_header_count][0], 512, "%s", field);
+    snprintf(sent_headers[sent_header_count++][1], 512, "%s", value);
+    return ESP_OK;
+}
+esp_err_t httpd_resp_set_status(httpd_req_t *r, const char *status)
+{
+    (void)r;
+    snprintf(sent_status, sizeof(sent_status), "%s", status);
+    return ESP_OK;
+}
+esp_err_t httpd_resp_send(httpd_req_t *r, const char *body, ssize_t length)
+{
+    (void)r;
+    snprintf(sent_body, sizeof(sent_body), "%.*s", length < 0 ? 400 : (int)length, body);
+    return ESP_OK;
+}
+static const char *sent_header(const char *field)
+{
+    for (unsigned i = 0; i < sent_header_count; i++)
+        if (!strcmp(sent_headers[i][0], field))
+            return sent_headers[i][1];
+    return NULL;
+}
 #define getpeername fake_peer
 #define getsockname fake_local
 #include "quota_portal.c"
@@ -227,6 +293,20 @@ static bool session(void *ctx)
 {
     (void)ctx;
     return active;
+}
+static quota_portable_submit_result_t submit_stub(const quota_portable_command_t *c, void *x)
+{
+    (void)c;
+    (void)x;
+    return QUOTA_PORTABLE_SUBMIT_ACCEPTED;
+}
+static bool state_stub(char *b, size_t c, size_t *l, void *x)
+{
+    (void)b;
+    (void)c;
+    (void)l;
+    (void)x;
+    return false;
 }
 static bool allowed(httpd_req_t *r, bool secret, bool mutation)
 {
@@ -238,8 +318,8 @@ static bool allowed(httpd_req_t *r, bool secret, bool mutation)
 }
 int main(void)
 {
-    memset(s_secret, 'a', 43);
-    s_secret[43] = 0;
+    const char *locked_probe = NULL;
+    strcpy(s_secret, "K7QM-2X9D-PA4T-Z8RW");
     s_callbacks.session_active = session;
     active = true;
     peer_ip = 0xc0a80402;
@@ -304,6 +384,67 @@ int main(void)
     assert(!allowed(&r, true, false)); /* IPv6-disabled build keeps IPv4 only. */
 #endif
     peer_form = local_form = 0;
+    /* Five wrong access codes in a row lock the API, even against the right code. */
+    s_failures = 0;
+    /* The count is of wrong codes in a row: a right one starts it again. */
+    for (unsigned round = 0; round < 3; round++) {
+        f.secret = "K7QM-2X9D-PA4T-Z8RX";
+        for (unsigned attempt = 1; attempt < QUOTA_PORTABLE_ACCESS_FAILURES; attempt++) {
+            const char *denial = NULL;
+            assert(!authorize(&r, true, false, &denial) && !strcmp(denial, "unauthorized"));
+        }
+        assert(s_failures == QUOTA_PORTABLE_ACCESS_FAILURES - 1);
+        f.secret = s_secret;
+        assert(authorize(&r, true, false, &locked_probe) && s_failures == 0);
+    }
+    f.secret = "K7QM-2X9D-PA4T-Z8RX";
+    for (unsigned attempt = 1; attempt <= QUOTA_PORTABLE_ACCESS_FAILURES; attempt++) {
+        const char *denial = NULL;
+        assert(!authorize(&r, true, false, &denial));
+        assert(!strcmp(denial, attempt < QUOTA_PORTABLE_ACCESS_FAILURES ? "unauthorized"
+                                                                         : "access_locked"));
+    }
+    f.secret = s_secret;
+    const char *locked = NULL;
+    assert(!authorize(&r, true, false, &locked) && !strcmp(locked, "access_locked"));
+    assert(!authorize(&r, true, true, &locked) && !strcmp(locked, "access_locked"));
+    assert(authorize(&r, false, false, &locked)); /* The page itself holds no secret. */
+    /* A header that is missing does not count; opening a new hotspot session resets the count. */
+    quota_portal_callbacks_t callbacks = {
+        .submit = submit_stub, .state_json = state_stub, .session_active = session};
+    quota_portal_stop();
+    assert(quota_portal_start("K7QM-2X9D-PA4T-Z8RW", &callbacks) && s_failures == 0);
+    assert(!quota_portal_start("K7QM-2X9D-PA4T-Z8RW", &callbacks)); /* already running */
+    f.secret = NULL;
+    assert(!authorize(&r, true, false, &locked) && s_failures == 0);
+    f.secret = s_secret;
+    assert(authorize(&r, true, false, &locked));
+    quota_portal_stop();
+    assert(!quota_portal_start("too-short", &callbacks));
+    assert(!quota_portal_start("k7qm-2x9d-pa4t-z8rw", &callbacks));
+    /* The page is served with its own CSP plus frame-ancestors; errors name protocol and
+     * firmware. */
+    assert(quota_portal_start("K7QM-2X9D-PA4T-Z8RW", &callbacks));
+    sent_header_count = 0;
+    assert(page_handler(&r) == ESP_OK);
+    assert(!strcmp(sent_header("Content-Security-Policy"),
+                   "default-src 'none'; script-src 'sha256-test'; frame-ancestors 'none'"));
+    assert(!strcmp(sent_header("X-Frame-Options"), "DENY"));
+    assert(strstr(sent_body, "http-equiv"));
+    sent_header_count = 0;
+    assert(reply_error(&r, "403 Forbidden", "access_locked") == ESP_OK);
+    assert(!strcmp(sent_status, "403 Forbidden"));
+    assert(!strcmp(sent_body, "{\"ok\":false,\"error_code\":\"access_locked\",\"protocol\":3,"
+                              "\"firmware\":\"3.0.0-test\"}"));
+    char csp[CSP_BYTES];
+    static const char page[] = "<meta http-equiv=\"Content-Security-Policy\" content=\"a; b\">";
+    assert(portal_csp(page, sizeof(page) - 1, csp, sizeof(csp)) == strlen(csp) &&
+           !strcmp(csp, "a; b; frame-ancestors 'none'"));
+    assert(portal_csp("<html></html>", 13, csp, sizeof(csp)) == strlen(csp) &&
+           !strcmp(csp, "default-src 'none'; frame-ancestors 'none'"));
+    csp[0] = 'x';
+    assert(portal_csp(page, sizeof(page) - 1, csp, 24) == 0 && csp[0] == 0); /* too small */
+    quota_portal_stop();
     active = false;
     assert(!allowed(&r, true, false));
     puts("portable AP authorization runtime checks passed");
@@ -322,6 +463,61 @@ int main(void)
                     ),
                     host_sdk=True,
                 )
+
+    def test_csp_header_is_taken_from_the_real_page(self):
+        """The device repeats the page's own policy as a header and adds frame-ancestors."""
+        harness = r'''
+#include "quota_portal.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+size_t portal_csp(const char *html, size_t length, char *out, size_t capacity);
+int main(int argc, char **argv)
+{
+    if (argc != 2)
+        return 2;
+    FILE *file = fopen(argv[1], "rb");
+    char *html = malloc(1 << 20);
+    size_t length = file ? fread(html, 1, 1 << 20, file) : 0;
+    char csp[512];
+    size_t used = portal_csp(html, length, csp, sizeof(csp));
+    if (!used || used != strlen(csp))
+        return 1;
+    puts(csp);
+    return 0;
+}
+'''
+        with tempfile.TemporaryDirectory(prefix="quota-portal-csp-") as directory:
+            path = Path(directory)
+            (path / "test.c").write_text(harness)
+            sources = (
+                "main/quota_portal.c",
+                "main/quota_json.c",
+                "main/quota_logic.c",
+                "tests/host_sdk/host_sdk_embedded.c",
+                "tests/cjson/cJSON.c",
+                "tests/host_sdk/host_sdk_defaults.c",
+                "tests/host_sdk/module_defaults.c",
+            )
+            subprocess.run(
+                [os.environ.get("CC", "cc"), "-std=c11", "-D_DEFAULT_SOURCE", "-Wall", "-Wextra",
+                 "-Werror", "-DQUOTA_HOST_TEST", "-I" + str(ROOT / "tests/host_sdk"),
+                 "-I" + str(ROOT / "tests/bsp_stubs"), "-I" + str(ROOT / "components/bsp/include"),
+                 "-I" + str(ROOT / "main"), "-I" + str(ROOT / "tests/cjson"),
+                 str(path / "test.c"), *(str(ROOT / name) for name in sources), "-lm",
+                 "-o", str(path / "test")],
+                check=True,
+            )
+            page = ROOT / "main/setup_page.html"
+            result = subprocess.run(
+                [str(path / "test"), str(page)], check=True, capture_output=True, text=True
+            )
+        meta = re.search(
+            r'http-equiv="Content-Security-Policy" content="([^"]+)"', page.read_text()
+        )
+        self.assertEqual(result.stdout.strip(), meta[1] + "; frame-ancestors 'none'")
+        self.assertIn("script-src 'sha256-", result.stdout)
+        self.assertIn("style-src 'sha256-", result.stdout)
 
     def test_atomic_credential_record_and_cache_identity(self):
         harness = r'''

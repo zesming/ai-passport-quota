@@ -43,7 +43,7 @@ def compile_and_run(harness, prefix, sources=(), flags=(), host_sdk=False):
     with tempfile.TemporaryDirectory(prefix=prefix) as directory:
         path = Path(directory)
         (path / "test.c").write_text(harness)
-        subprocess.run(
+        compiled = subprocess.run(
             [
                 os.environ.get("CC", "cc"),
                 "-std=c11",
@@ -60,6 +60,9 @@ def compile_and_run(harness, prefix, sources=(), flags=(), host_sdk=False):
                 "-o",
                 str(path / "test"),
             ],
-            check=True,
+            capture_output=True,
+            text=True,
         )
+        if compiled.returncode != 0:
+            raise AssertionError("compile failed:\n" + compiled.stderr)
         subprocess.run([str(path / "test")], check=True)

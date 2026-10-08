@@ -395,7 +395,7 @@ static void create_qr_page(bool auth)
     if (!auth) {
         s_ui.manual_address = create_label(s_page, 12, 78, 216, 22, &lv_font_montserrat_12, UI_INK,
                                            LV_TEXT_ALIGN_CENTER, "http://192.168.4.1");
-        const char *caption = "设置密钥 · 输入全部四行";
+        const char *caption = "设置密钥 · 完整输入";
         s_ui.manual_caption = create_label(s_page, 12, 108, 216, 22, &quota_font_12, UI_MUTED,
                                            LV_TEXT_ALIGN_CENTER, caption);
         s_ui.manual_secret = create_label(s_page, 12, 136, 216, 88, &lv_font_montserrat_14, UI_INK,
@@ -928,9 +928,9 @@ static const char *portable_error_text(const char *code)
         return "请求过多 · 稍后重试";
     if (strcmp(code, "login_disabled") == 0)
         return "请开启设备码授权";
-    if (strcmp(code, "auth_expired") == 0 || strcmp(code, "auth_required") == 0)
+    if (strcmp(code, "codex_expired") == 0 || strcmp(code, "auth_required") == 0)
         return "需要重新授权";
-    if (strcmp(code, "invalid_key") == 0)
+    if (strcmp(code, "deepseek_invalid_key") == 0)
         return "密钥无效 · 请更换密钥";
     if (strcmp(code, "time_required") == 0)
         return "时间待同步";
@@ -1090,10 +1090,10 @@ static void render_phone(const quota_navigation_t *navigation,
         return;
     }
     if (manual) {
-        char grouped[48];
-        snprintf(grouped, sizeof(grouped), "%.11s\n%.11s\n%.11s\n%.10s", portable->setup_secret,
-                 portable->setup_secret + 11, portable->setup_secret + 22,
-                 portable->setup_secret + 33);
+        /* XXXX-XXXX-XXXX-XXXX on two lines of 9 characters. */
+        char grouped[24];
+        snprintf(grouped, sizeof(grouped), "%.9s\n%.9s", portable->setup_secret,
+                 portable->setup_secret + 10);
         set_label_text(s_ui.manual_secret, grouped);
         set_label_text(s_ui.qr_title, "手动打开设置");
         const char *manual_hint = "手机或电脑连接设备热点\n在网页输入完整密钥";

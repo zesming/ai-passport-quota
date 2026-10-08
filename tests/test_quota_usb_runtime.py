@@ -1,4 +1,4 @@
-"""Exercise the USB v2 parser and real serial-frame dispatcher on the host."""
+"""Exercise the USB v3 parser and real serial-frame dispatcher on the host."""
 
 import unittest
 
@@ -25,6 +25,7 @@ class UsbRuntime(unittest.TestCase):
 
 extern atomic_bool s_usb_requested;
 extern atomic_uint_fast64_t s_usb_deadline;
+extern int64_t s_usb_opened_at_ms;
 extern quota_frame_decoder_t *s_usb_decoder;
 extern char s_usb_session[QUOTA_USB_SESSION_BYTES + 1];
 extern char s_usb_opener[9];
@@ -139,6 +140,7 @@ static void active_session(void)
 {
     atomic_store(&s_usb_requested, true);
     now_ms = 1000;
+    s_usb_opened_at_ms = (int64_t)now_ms;
     atomic_store(&s_usb_deadline, now_ms + QUOTA_USB_WINDOW_MS);
     memcpy(s_usb_session, "0123456789abcdef0123456789abcdef", 33);
     s_usb_opener[0] = '\0';
@@ -159,13 +161,13 @@ static bool parse(const char *json, quota_usb_request_t *request, const char **e
 }
 static void make_open(char frame[160], const char *request_id)
 {
-    snprintf(frame, 160, "@AIQ:{\"v\":2,\"op\":\"session_open\",\"request_id\":\"%s\"}",
+    snprintf(frame, 160, "@AIQ:{\"v\":3,\"op\":\"session_open\",\"request_id\":\"%s\"}",
              request_id);
 }
 static void make_state(char frame[256], const char *request_id, const char *session)
 {
     snprintf(frame, 256,
-             "@AIQ:{\"v\":2,\"op\":\"state_get\",\"request_id\":\"%s\",\"session_id\":\"%s\"}",
+             "@AIQ:{\"v\":3,\"op\":\"state_get\",\"request_id\":\"%s\",\"session_id\":\"%s\"}",
              request_id, session);
 }
 static void make_command(char frame[512], const char *request_id, const char *session,
@@ -173,7 +175,7 @@ static void make_command(char frame[512], const char *request_id, const char *se
 {
     snprintf(
         frame, 512,
-        "@AIQ:{\"v\":2,\"op\":\"command\",\"request_id\":\"%s\",\"session_id\":\"%s\",\"body\":%s}",
+        "@AIQ:{\"v\":3,\"op\":\"command\",\"request_id\":\"%s\",\"session_id\":\"%s\",\"body\":%s}",
         request_id, session, body);
 }
 
@@ -182,19 +184,19 @@ static void test_parser_bounds_and_shapes(void)
     quota_usb_request_t request;
     const char *error = NULL;
     assert(
-        parse("{\"v\":2,\"op\":\"session_open\",\"request_id\":\"a1b2c3d4\"}", &request, &error));
+        parse("{\"v\":3,\"op\":\"session_open\",\"request_id\":\"a1b2c3d4\"}", &request, &error));
     assert(request.op == QUOTA_USB_OPEN && !strcmp(request.request_id, "a1b2c3d4") &&
            error == NULL);
-    assert(parse("{\"v\":2,\"op\":\"state_get\",\"request_id\":\"a1b2c3d4\",\"session_id\":"
+    assert(parse("{\"v\":3,\"op\":\"state_get\",\"request_id\":\"a1b2c3d4\",\"session_id\":"
                  "\"0123456789abcdef0123456789abcdef\"}",
                  &request, &error));
     assert(request.op == QUOTA_USB_STATE);
-    assert(parse("{\"v\":2,\"op\":\"command\",\"request_id\":\"a1b2c3d4\",\"session_id\":"
-                 "\"0123456789abcdef0123456789abcdef\",\"body\":{\"v\":1,\"op\":\"refresh\","
+    assert(parse("{\"v\":3,\"op\":\"command\",\"request_id\":\"a1b2c3d4\",\"session_id\":"
+                 "\"0123456789abcdef0123456789abcdef\",\"body\":{\"v\":3,\"op\":\"refresh\","
                  "\"request_id\":\"a1b2c3d4\"}}",
                  &request, &error));
     assert(request.op == QUOTA_USB_COMMAND && request.command.op == QUOTA_PORTABLE_OP_REFRESH);
-    /* The version 1 frame and the operations of removed features are refused. */
+    /* Frames of other protocol versions and the operations of removed features are refused. */
     char old_frame[1024];
     int old_length =
         snprintf(old_frame, sizeof(old_frame),
@@ -203,30 +205,37 @@ static void test_parser_bounds_and_shapes(void)
     assert(old_length > 0 && (size_t)old_length < sizeof(old_frame));
     assert(!quota_usb_parse(old_frame, (size_t)old_length, &request, &error));
     assert(!strcmp(error, "unsupported_version") && !strcmp(request.request_id, "a1b2c3d4"));
-    assert(!parse("{\"v\":2,\"op\":\"removed_operation\",\"request_id\":\"a1b2c3d4\",\"session_"
+    for (const char *other = "0124"; *other; other++) {
+        char frame[128];
+        snprintf(frame, sizeof(frame),
+                 "@AIQ:{\"v\":%c,\"op\":\"session_open\",\"request_id\":\"a1b2c3d4\"}", *other);
+        assert(!quota_usb_parse(frame, strlen(frame), &request, &error));
+        assert(!strcmp(error, "unsupported_version"));
+    }
+    assert(!parse("{\"v\":3,\"op\":\"removed_operation\",\"request_id\":\"a1b2c3d4\",\"session_"
                   "id\":\"0123456789abcdef0123456789abcdef\",\"endpoint\":{}}",
                   &request, &error));
     assert(!strcmp(error, "unsupported_operation"));
     quota_portable_clear_secret(&request, sizeof(request));
 
     const char *invalid[] = {
-        "{\"v\":2,\"op\":\"session_open\",\"request_id\":\"a1b2c3d4\",\"extra\":0}",
-        "{\"v\":2,\"op\":\"session_open\",\"request_id\":\"a1b2c3d4\",\"request_id\":\"a1b2c3d4\"}",
+        "{\"v\":3,\"op\":\"session_open\",\"request_id\":\"a1b2c3d4\",\"extra\":0}",
+        "{\"v\":3,\"op\":\"session_open\",\"request_id\":\"a1b2c3d4\",\"request_id\":\"a1b2c3d4\"}",
         "{\"v\":\"2\",\"op\":\"session_open\",\"request_id\":\"a1b2c3d4\"}",
-        "{\"v\":2,\"op\":\"session_open\",\"request_id\":\"A1b2c3d4\"}",
-        "{\"v\":2,\"op\":\"mystery\",\"request_id\":\"a1b2c3d4\"}",
-        "{\"v\":2,\"op\":\"command\",\"request_id\":\"a1b2c3d4\",\"session_id\":"
-        "\"0123456789abcdef0123456789abcdef\",\"body\":{\"v\":1,\"op\":\"refresh\",\"request_id\":"
+        "{\"v\":3,\"op\":\"session_open\",\"request_id\":\"A1b2c3d4\"}",
+        "{\"v\":3,\"op\":\"mystery\",\"request_id\":\"a1b2c3d4\"}",
+        "{\"v\":3,\"op\":\"command\",\"request_id\":\"a1b2c3d4\",\"session_id\":"
+        "\"0123456789abcdef0123456789abcdef\",\"body\":{\"v\":3,\"op\":\"refresh\",\"request_id\":"
         "\"deadbeef\"}}",
-        "{\"v\":2,\"op\":\"command\",\"request_id\":\"a1b2c3d4\",\"session_id\":"
-        "\"0123456789abcdef0123456789abcdef\",\"body\":{\"v\":1,\"op\":\"refresh\",\"request_id\":"
+        "{\"v\":3,\"op\":\"command\",\"request_id\":\"a1b2c3d4\",\"session_id\":"
+        "\"0123456789abcdef0123456789abcdef\",\"body\":{\"v\":3,\"op\":\"refresh\",\"request_id\":"
         "\"a1b2c3d4\",\"unknown\":true}}",
-        "{\"v\":2,\"op\":\"command\",\"request_id\":\"a1b2c3d4\",\"session_id\":"
+        "{\"v\":3,\"op\":\"command\",\"request_id\":\"a1b2c3d4\",\"session_id\":"
         "\"0123456789abcdef0123456789abcdef\",\"body\":[]}",
-        "{\"v\":2,\"op\":\"command\",\"request_id\":\"a1b2c3d4\",\"session_id\":"
-        "\"0123456789abcdef0123456789abcdef\",\"body\":{\"v\":1,\"op\":\"refresh\",\"request_id\":"
+        "{\"v\":3,\"op\":\"command\",\"request_id\":\"a1b2c3d4\",\"session_id\":"
+        "\"0123456789abcdef0123456789abcdef\",\"body\":{\"v\":3,\"op\":\"refresh\",\"request_id\":"
         "\"a1b2c3d4\",\"extra\":{\"nested\":{}}}}",
-        "{\"v\":2,\"op\":\"session_open\",\"request_id\":\"a1b2\\u0000c3d4\"}",
+        "{\"v\":3,\"op\":\"session_open\",\"request_id\":\"a1b2\\u0000c3d4\"}",
     };
     for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
         assert(!parse(invalid[i], &request, &error));
@@ -246,7 +255,7 @@ static void test_parser_bounds_and_shapes(void)
     memcpy(too_long, "@AIQ:", 5);
     assert(!quota_usb_parse(too_long, sizeof(too_long), &request, &error));
 
-    puts("USB v2 parser bounds and operation checks passed");
+    puts("USB v3 parser bounds and operation checks passed");
 }
 
 static void test_session_state_and_expiry(void)
@@ -381,7 +390,7 @@ static void test_command_dedup_delegation_and_version_gate(void)
     strcpy(s_usb_opener, "01020304");
     char frame[512];
     char *response;
-    const char *body = "{\"v\":1,\"op\":\"refresh\",\"request_id\":\"aabbccdd\"}";
+    const char *body = "{\"v\":3,\"op\":\"refresh\",\"request_id\":\"aabbccdd\"}";
     make_command(frame, "aabbccdd", s_usb_session, body);
     response = dispatch(frame);
     assert_contains(response, "\"accepted\":true");
@@ -393,7 +402,7 @@ static void test_command_dedup_delegation_and_version_gate(void)
     assert(command_calls == 2 && !strcmp(last_command_id, "aabbccdd"));
 
     next_submit_result = QUOTA_PORTABLE_SUBMIT_CONFLICT;
-    body = "{\"v\":1,\"op\":\"reconnect\",\"request_id\":\"aabbccdd\"}";
+    body = "{\"v\":3,\"op\":\"reconnect\",\"request_id\":\"aabbccdd\"}";
     make_command(frame, "aabbccdd", s_usb_session, body);
     response = dispatch(frame);
     assert_contains(response, "\"error_code\":\"request_conflict\"");
@@ -414,6 +423,120 @@ static void test_command_dedup_delegation_and_version_gate(void)
     puts("USB command handoff, request receipt delegation and version checks passed");
 }
 
+static char *command_with(const char *id, const char *op, const char *fields)
+{
+    char body[256], frame[512];
+    snprintf(body, sizeof(body), "{\"v\":3,\"op\":\"%s\",\"request_id\":\"%s\"%s}", op, id,
+             fields);
+    make_command(frame, id, s_usb_session, body);
+    return dispatch(frame);
+}
+#define SETTINGS ",\"refresh_seconds\":300,\"auto_refresh\":true,\"screen_timeout_seconds\":120"
+
+static void test_protocol_identity_and_session_top_up(void)
+{
+    active_session();
+    char frame[512];
+    char *response;
+    /* Every result names the protocol and the firmware. */
+    make_open(frame, "01020304");
+    response = dispatch(frame);
+    assert_contains(response, "\"v\":3");
+    assert_contains(response, "\"protocol\":3,\"firmware\":\"3.0.0-test\"");
+    assert_contains(response, "\"remaining_seconds\":120");
+    free(response);
+    response = dispatch("@AIQ:{\"v\":2,\"op\":\"session_open\",\"request_id\":\"05060708\"}");
+    assert_contains(response, "\"error_code\":\"unsupported_version\"");
+    assert_contains(response, "\"protocol\":3,\"firmware\":\"3.0.0-test\"");
+    free(response);
+    make_state(frame, "a0a0a0a0", "ffffffffffffffffffffffffffffffff");
+    response = dispatch(frame);
+    assert_contains(response, "\"error_code\":\"invalid_session\"");
+    assert_contains(response, "\"protocol\":3");
+    free(response);
+
+    /* The base window is two minutes. Reading state and commands that change nothing never
+     * extend it. */
+    uint64_t opened = (uint64_t)s_usb_opened_at_ms;
+    assert(atomic_load(&s_usb_deadline) == opened + QUOTA_USB_WINDOW_MS);
+    now_ms += 60000;
+    make_state(frame, "11111111", s_usb_session);
+    response = dispatch(frame);
+    assert_contains(response, "\"op\":\"state\"");
+    free(response);
+    response = command_with("22222222", "refresh", "");
+    assert_contains(response, "\"accepted\":true");
+    free(response);
+    assert(atomic_load(&s_usb_deadline) == opened + QUOTA_USB_WINDOW_MS);
+
+    /* A rejected change does not extend it either. */
+    next_submit_result = QUOTA_PORTABLE_SUBMIT_BUSY;
+    response = command_with("33333333", "settings_save", SETTINGS);
+    assert_contains(response, "\"error_code\":\"busy\"");
+    free(response);
+    assert(atomic_load(&s_usb_deadline) == opened + QUOTA_USB_WINDOW_MS);
+    next_submit_result = QUOTA_PORTABLE_SUBMIT_ACCEPTED;
+
+    /* A change keeps at least five minutes: the remaining time is topped up, never shortened. */
+    response = command_with("44444444", "settings_save", SETTINGS);
+    assert_contains(response, "\"accepted\":true");
+    free(response);
+    assert(atomic_load(&s_usb_deadline) == now_ms + QUOTA_SESSION_TOPUP_MS);
+    uint64_t topped = atomic_load(&s_usb_deadline);
+    now_ms += 10000; /* 290 s left: topped up again */
+    response = command_with("55555555", "validate", "");
+    free(response);
+    assert(atomic_load(&s_usb_deadline) == now_ms + QUOTA_SESSION_TOPUP_MS &&
+           atomic_load(&s_usb_deadline) > topped);
+    topped = atomic_load(&s_usb_deadline);
+    response = command_with("66666666", "network_remove", ",\"network_index\":0");
+    free(response);
+    assert(atomic_load(&s_usb_deadline) == topped); /* already five minutes: unchanged */
+    response = command_with("77777777", "refresh", "");
+    free(response);
+    make_state(frame, "88888888", s_usb_session);
+    response = dispatch(frame);
+    free(response);
+    assert(atomic_load(&s_usb_deadline) == topped);
+
+    /* Steady use keeps the window open. Twenty minutes after it opened is the end, however much
+     * is asked. */
+    for (unsigned minutes = 4; minutes <= 12; minutes += 4) {
+        now_ms = opened + (uint64_t)minutes * 60000;
+        char id[9];
+        snprintf(id, sizeof(id), "e%07u", minutes);
+        response = command_with(id, "settings_save", SETTINGS);
+        assert_contains(response, "\"accepted\":true");
+        free(response);
+        assert(atomic_load(&s_usb_deadline) == now_ms + QUOTA_SESSION_TOPUP_MS);
+    }
+    now_ms = opened + 16 * 60000; /* the last change reached 17 minutes */
+    response = command_with("98989898", "settings_save", SETTINGS);
+    free(response);
+    assert(atomic_load(&s_usb_deadline) == opened + QUOTA_SESSION_MAX_MS);
+    now_ms = opened + 19 * 60000;
+    response = command_with("99999999", "settings_save", SETTINGS);
+    assert_contains(response, "\"accepted\":true");
+    free(response);
+    assert(atomic_load(&s_usb_deadline) == opened + QUOTA_SESSION_MAX_MS);
+    now_ms = opened + QUOTA_SESSION_MAX_MS - 1;
+    response = command_with("aaaaaaaa", "settings_save", SETTINGS);
+    assert_contains(response, "\"accepted\":true");
+    free(response);
+    assert(atomic_load(&s_usb_deadline) == opened + QUOTA_SESSION_MAX_MS);
+    unsigned calls = command_calls;
+    now_ms = opened + QUOTA_SESSION_MAX_MS;
+    response = command_with("bbbbbbbb", "settings_save", SETTINGS);
+    assert_contains(response, "\"error_code\":\"session_expired\"");
+    free(response);
+    assert(command_calls == calls);
+    make_state(frame, "cccccccc", s_usb_session);
+    response = dispatch(frame);
+    assert_contains(response, "\"error_code\":\"session_expired\"");
+    free(response);
+    puts("USB protocol identity and session top-up checks passed");
+}
+
 int main(void)
 {
     test_parser_bounds_and_shapes();
@@ -421,6 +544,7 @@ int main(void)
     test_session_state_and_expiry();
     test_opener_idle_takeover();
     test_command_dedup_delegation_and_version_gate();
+    test_protocol_identity_and_session_top_up();
     puts("USB runtime tests passed");
 }
 '''
