@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Check the repository guards with small synthetic fixtures."""
+
 import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-SPEC = importlib.util.spec_from_file_location('check_repo', Path(__file__).resolve().parents[1] / 'tools/check_repo.py')
+SPEC = importlib.util.spec_from_file_location(
+    'check_repo', Path(__file__).resolve().parents[1] / 'tools/check_repo.py'
+)
 CHECKS = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CHECKS)
 
@@ -27,8 +30,18 @@ class RepositoryChecks(unittest.TestCase):
         return path
 
     def test_local_assets_and_anchors(self):
-        files = [self.write('guide.md', '# 指南\n[图](image.svg) [章节](other.md#刷新显示与验证) [重复](other.md#重复-1) [本页](#指南)\n'),
-                 self.write('other.md', '# 其他\n## 刷新、显示与验证\n## 重复\n## 重复\n[回](guide.md#指南)\n')]
+        files = [
+            self.write(
+                'guide.md',
+                '# 指南\n[图](image.svg) [章节](other.md#刷新显示与验证) '
+                '[重复](other.md#重复-1) [本页](#指南)\n',
+            ),
+            self.write(
+                'other.md',
+                '# 其他\n## 刷新、显示与验证\n## 重复\n## 重复\n'
+                '[回](guide.md#指南)\n',
+            ),
+        ]
         self.write('image.svg', '<svg/>')
         errors = []
         CHECKS.check_markdown_links(files, errors)
@@ -44,17 +57,23 @@ class RepositoryChecks(unittest.TestCase):
         self.assertIn('missing anchor', errors[1])
 
     def test_language_peers_and_links_are_rejected(self):
-        files = [self.write('guide.md', '[简体中文](guide.zh_CN.md) · English\n# 指南\n'),
-                 self.write('guide.zh_CN.md', '[English](guide.md)\n# 指南\n'),
-                 self.write('html.md', '<p><a href="html.zh_CN.md">x</a></p>\n'),
-                 self.write('clean.md', '# 指南\n正文提到 guide.zh_CN.md 的历史。\n' * 1)]
+        files = [
+            self.write('guide.md', '[简体中文](guide.zh_CN.md) · English\n# 指南\n'),
+            self.write('guide.zh_CN.md', '[English](guide.md)\n# 指南\n'),
+            self.write('html.md', '<p><a href="html.zh_CN.md">x</a></p>\n'),
+            self.write('clean.md', '# 指南\n正文提到 guide.zh_CN.md 的历史。\n' * 1),
+        ]
         errors = []
         CHECKS.check_chinese_only_documents(files, errors)
-        self.assertEqual(sorted(errors), [
-            'guide.md: remove the top language link',
-            'guide.zh_CN.md: language-specific Markdown files are not allowed',
-            'guide.zh_CN.md: remove the top language link',
-            'html.md: remove the top language link'])
+        self.assertEqual(
+            sorted(errors),
+            [
+                'guide.md: remove the top language link',
+                'guide.zh_CN.md: language-specific Markdown files are not allowed',
+                'guide.zh_CN.md: remove the top language link',
+                'html.md: remove the top language link',
+            ],
+        )
 
     def test_chinese_only_documents_pass(self):
         files = [self.write('guide.md', '# 指南\n只有中文。\n')]
@@ -63,8 +82,12 @@ class RepositoryChecks(unittest.TestCase):
         self.assertEqual(errors, [])
 
     def test_sensitive_content_and_conflicts(self):
-        samples = ['ghp_' + 'x' * 24, 'AKIA' + '0' * 16,
-                   '-----BEGIN ' + 'PRIVATE KEY-----', '<' * 7 + ' HEAD\n']
+        samples = [
+            'ghp_' + 'x' * 24,
+            'AKIA' + '0' * 16,
+            '-----BEGIN ' + 'PRIVATE KEY-----',
+            '<' * 7 + ' HEAD\n',
+        ]
         files = [self.write(f'sample{index}.txt', value) for index, value in enumerate(samples)]
         errors = []
         CHECKS.check_sensitive_content(files, errors)
@@ -77,15 +100,44 @@ class RepositoryChecks(unittest.TestCase):
         self.assertEqual(errors, [])
 
     def test_action_pins(self):
-        self.write('.github/workflows/check.yml', '\n'.join([
-            'uses: actions/checkout@v6', 'uses: docker://alpine:3',
-            'uses: actions/checkout@' + 'a' * 40,
-            'uses: docker://alpine@sha256:' + 'b' * 64, 'uses: ./local-action']))
+        self.write(
+            '.github/workflows/check.yml',
+            '\n'.join(
+                [
+                    'uses: actions/checkout@v6',
+                    'uses: docker://alpine:3',
+                    'uses: actions/checkout@' + 'a' * 40,
+                    'uses: docker://alpine@sha256:' + 'b' * 64,
+                    'uses: ./local-action',
+                ]
+            ),
+        )
         errors = []
         CHECKS.check_action_pins(errors)
         self.assertEqual(len(errors), 2)
         self.assertIn('full commit SHA', errors[0])
         self.assertIn('unpinned Docker', errors[1])
+
+    def test_line_length_counts_wide_characters_and_honours_exemptions(self):
+        long_ascii = 'x' * 101
+        wide = '汉' * 51  # 102 columns, 51 characters
+        files = [
+            self.write('main/ok.c', 'x' * 100 + '\n' + '汉' * 50 + '\n'),
+            self.write('main/long.c', long_ascii + '\n'),
+            self.write('tests/wide.py', wide + '\n'),
+            self.write('tests/cjson/cJSON.c', long_ascii + '\n'),
+            self.write('main/quota_brand_assets.c', long_ascii + '\n'),
+            self.write('docs/long.md', long_ascii + '\n'),
+        ]
+        errors = []
+        CHECKS.check_line_length(files, errors)
+        self.assertEqual(
+            errors,
+            [
+                'main/long.c:1: longer than 100 columns',
+                'tests/wide.py:1: longer than 100 columns',
+            ],
+        )
 
 
 if __name__ == '__main__':

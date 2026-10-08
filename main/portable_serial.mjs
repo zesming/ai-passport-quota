@@ -16,23 +16,35 @@ export function makeUsbRequestId() {
   const bytes = new Uint8Array(4);
   if (!globalThis.crypto?.getRandomValues) throw new DeviceSerialError('serial_crypto_unavailable');
   crypto.getRandomValues(bytes);
-  return Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('');
+  return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
 }
 
 function startReader(port, { maxLineBytes = DEFAULT_LINE_BYTES } = {}) {
   if (!port.readable || !port.writable) throw new DeviceSerialError('serial_unavailable');
   const reader = port.readable.getReader();
   let writer;
-  try { writer = port.writable.getWriter(); } catch (error) { reader.releaseLock(); throw error; }
+  try {
+    writer = port.writable.getWriter();
+  } catch (error) {
+    reader.releaseLock();
+    throw error;
+  }
 
-  const diagnostics = { received_data: false, ready_seen: false, result_seen: false, matching_result_seen: false };
+  const diagnostics = {
+    received_data: false,
+    ready_seen: false,
+    result_seen: false,
+    matching_result_seen: false,
+  };
   const pending = new Map();
   let resolveReady;
   let stopped = false;
   let terminalError = null;
-  const ready = new Promise(resolve => { resolveReady = resolve; });
+  const ready = new Promise((resolve) => {
+    resolveReady = resolve;
+  });
 
-  const fail = code => {
+  const fail = (code) => {
     terminalError ??= new DeviceSerialError(code, diagnostics);
     for (const request of pending.values()) {
       clearTimeout(request.timer);
@@ -41,7 +53,7 @@ function startReader(port, { maxLineBytes = DEFAULT_LINE_BYTES } = {}) {
     pending.clear();
   };
 
-  const consumeLine = line => {
+  const consumeLine = (line) => {
     const normalized = line.endsWith('\r') ? line.slice(0, -1) : line;
     if (normalized.includes('ai_quota: ready')) {
       diagnostics.ready_seen = true;
@@ -49,7 +61,11 @@ function startReader(port, { maxLineBytes = DEFAULT_LINE_BYTES } = {}) {
     }
     if (!normalized.startsWith('@AIQ:')) return;
     let frame;
-    try { frame = JSON.parse(normalized.slice(5)); } catch { return; }
+    try {
+      frame = JSON.parse(normalized.slice(5));
+    } catch {
+      return;
+    }
     if (!['result', 'state'].includes(frame?.op) || typeof frame.ok !== 'boolean') return;
     diagnostics.result_seen = true;
     const request = pending.get(frame.request_id);
@@ -66,7 +82,10 @@ function startReader(port, { maxLineBytes = DEFAULT_LINE_BYTES } = {}) {
     let discarding = false;
     while (!stopped) {
       const { value, done } = await reader.read();
-      if (done) { if (!stopped) fail('serial_closed'); return; }
+      if (done) {
+        if (!stopped) fail('serial_closed');
+        return;
+      }
       if (value?.byteLength) diagnostics.received_data = true;
       const text = decoder.decode(value, { stream: true });
       let start = 0;
@@ -80,63 +99,102 @@ function startReader(port, { maxLineBytes = DEFAULT_LINE_BYTES } = {}) {
             discarding = true;
           } else {
             line += fragment;
-            if (ended) { consumeLine(line); line = ''; }
+            if (ended) {
+              consumeLine(line);
+              line = '';
+            }
           }
         }
         if (ended) discarding = false;
         start = index + 1;
       }
     }
-  })().catch(() => { if (!stopped) fail('serial_read_error'); });
+  })().catch(() => {
+    if (!stopped) fail('serial_read_error');
+  });
 
   return {
     async send(frameBytes, requestId, { timeoutMs = 15000, bootWaitMs = 1500, onWritten } = {}) {
       if (!(frameBytes instanceof Uint8Array)) frameBytes = new Uint8Array(frameBytes);
       if (frameBytes.byteLength > 4096) throw new DeviceSerialError('frame_too_long', diagnostics);
-      if (!REQUEST_ID.test(requestId ?? '')) throw new DeviceSerialError('serial_invalid_request_id', diagnostics);
+      if (!REQUEST_ID.test(requestId ?? ''))
+        throw new DeviceSerialError('serial_invalid_request_id', diagnostics);
       if (terminalError) throw terminalError;
       if (pending.has(requestId)) throw new DeviceSerialError('serial_request_busy', diagnostics);
 
       let resolve;
       let reject;
-      const response = new Promise((res, rej) => { resolve = res; reject = rej; });
+      const response = new Promise((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
       const current = { resolve, reject, timer: null, writePending: true };
       pending.set(requestId, current);
 
       let bootTimer;
       try {
-        await Promise.race([ready, new Promise(done => { bootTimer = setTimeout(done, bootWaitMs); })]);
-      } finally { clearTimeout(bootTimer); }
-      if (terminalError) { pending.delete(requestId); throw terminalError; }
+        await Promise.race([
+          ready,
+          new Promise((done) => {
+            bootTimer = setTimeout(done, bootWaitMs);
+          }),
+        ]);
+      } finally {
+        clearTimeout(bootTimer);
+      }
+      if (terminalError) {
+        pending.delete(requestId);
+        throw terminalError;
+      }
 
       current.timer = setTimeout(() => {
         pending.delete(requestId);
-        const error = new DeviceSerialError(current.writePending ? 'serial_write_timeout' : 'serial_timeout', diagnostics);
+        const error = new DeviceSerialError(
+          current.writePending ? 'serial_write_timeout' : 'serial_timeout',
+          diagnostics,
+        );
         if (current.writePending) terminalError ??= error;
         reject(error);
       }, timeoutMs);
-      const write = writer.write(frameBytes).then(() => {
-        current.writePending = false;
-        onWritten?.();
-        return response;
-      }, () => {
-        current.writePending = false;
-        pending.delete(requestId);
-        clearTimeout(current.timer);
-        throw new DeviceSerialError('serial_write_error', diagnostics);
-      });
+      const write = writer.write(frameBytes).then(
+        () => {
+          current.writePending = false;
+          onWritten?.();
+          return response;
+        },
+        () => {
+          current.writePending = false;
+          pending.delete(requestId);
+          clearTimeout(current.timer);
+          throw new DeviceSerialError('serial_write_error', diagnostics);
+        },
+      );
       return Promise.race([write, response]);
     },
     async close() {
       stopped = true;
       fail('serial_closed');
-      try { await reader.cancel(); } catch { /* the device may have disconnected */ }
-      await pump;
-      try { reader.releaseLock(); } catch { /* already released */ }
       try {
-        await Promise.race([writer.abort(), new Promise(resolve => setTimeout(resolve, 250))]);
-      } catch { /* the device may have disconnected */ }
-      try { writer.releaseLock(); } catch { /* already released */ }
+        await reader.cancel();
+      } catch {
+        /* the device may have disconnected */
+      }
+      await pump;
+      try {
+        reader.releaseLock();
+      } catch {
+        /* already released */
+      }
+      try {
+        await Promise.race([writer.abort(), new Promise((resolve) => setTimeout(resolve, 250))]);
+      } catch {
+        /* the device may have disconnected */
+      }
+      try {
+        writer.releaseLock();
+      } catch {
+        /* already released */
+      }
     },
   };
 }
@@ -145,13 +203,18 @@ async function openPort(port) {
   let readerSession;
   let opened = false;
   let closePromise;
-  const close = () => closePromise ??= (async () => {
-    await readerSession?.close();
-    if (opened) {
-      opened = false;
-      try { await port.close(); } catch { /* disconnected already */ }
-    }
-  })();
+  const close = () =>
+    (closePromise ??= (async () => {
+      await readerSession?.close();
+      if (opened) {
+        opened = false;
+        try {
+          await port.close();
+        } catch {
+          /* disconnected already */
+        }
+      }
+    })());
   try {
     await port.open({ baudRate: 115200, bufferSize: 4096, flowControl: 'none' });
     opened = true;
@@ -159,8 +222,12 @@ async function openPort(port) {
     await port.setSignals({ dataTerminalReady: false, requestToSend: false });
     return {
       async send(frameBytes, requestId, options) {
-        try { return await readerSession.send(frameBytes, requestId, options); }
-        catch (error) { if (error?.code === 'serial_write_timeout') void close(); throw error; }
+        try {
+          return await readerSession.send(frameBytes, requestId, options);
+        } catch (error) {
+          if (error?.code === 'serial_write_timeout') void close();
+          throw error;
+        }
       },
       close,
     };
@@ -173,7 +240,10 @@ async function openPort(port) {
 export function startDeviceSerial(port, requestId) {
   if (!REQUEST_ID.test(requestId ?? '')) throw new DeviceSerialError('serial_invalid_request_id');
   const session = startReader(port);
-  return { send: (frameBytes, options) => session.send(frameBytes, requestId, options), close: session.close };
+  return {
+    send: (frameBytes, options) => session.send(frameBytes, requestId, options),
+    close: session.close,
+  };
 }
 
 // The primary settings page opens this once before the user starts the device's
@@ -205,11 +275,17 @@ export class UsbDeviceSession {
     this.pendingMutation = null;
   }
 
-  async exchange(frame, { timeoutMs = 15000, retryOnce = false, maxFrameBytes = 4096, onWritten } = {}) {
+  async exchange(
+    frame,
+    { timeoutMs = 15000, retryOnce = false, maxFrameBytes = 4096, onWritten } = {},
+  ) {
     const encoded = encoder.encode(`@AIQ:${JSON.stringify(frame)}\n`);
     if (encoded.byteLength > maxFrameBytes) throw new DeviceSerialError('frame_too_long');
-    const send = () => this.serial.send(encoded, frame.request_id, { timeoutMs, bootWaitMs: 0, onWritten });
-    try { return await send(); } catch (error) {
+    const send = () =>
+      this.serial.send(encoded, frame.request_id, { timeoutMs, bootWaitMs: 0, onWritten });
+    try {
+      return await send();
+    } catch (error) {
       if (!retryOnce || error?.code !== 'serial_timeout' || this.closed) throw error;
       return send();
     }
@@ -218,12 +294,20 @@ export class UsbDeviceSession {
   async openSession() {
     if (this.closed) throw new DeviceSerialError('serial_closed');
     if (this.sessionId) return { session_id: this.sessionId, ...this.limits };
-    const result = await this.exchange({ v: 2, op: 'session_open', request_id: this.openerId }, { retryOnce: true });
-    if (!result.ok) throw new DeviceSerialError(`device_${result.error_code ?? result.error ?? 'rejected'}`);
-    if (!SESSION_ID.test(result.session_id ?? '')
-      || !Number.isInteger(result.remaining_seconds) || result.remaining_seconds <= 0
-      || !Number.isInteger(result.max_command_bytes) || !Number.isInteger(result.max_frame_bytes)
-      || !Number.isInteger(result.max_state_bytes)) {
+    const result = await this.exchange(
+      { v: 2, op: 'session_open', request_id: this.openerId },
+      { retryOnce: true },
+    );
+    if (!result.ok)
+      throw new DeviceSerialError(`device_${result.error_code ?? result.error ?? 'rejected'}`);
+    if (
+      !SESSION_ID.test(result.session_id ?? '') ||
+      !Number.isInteger(result.remaining_seconds) ||
+      result.remaining_seconds <= 0 ||
+      !Number.isInteger(result.max_command_bytes) ||
+      !Number.isInteger(result.max_frame_bytes) ||
+      !Number.isInteger(result.max_state_bytes)
+    ) {
       throw new DeviceSerialError('usb_invalid_session_response');
     }
     this.sessionId = result.session_id;
@@ -238,33 +322,49 @@ export class UsbDeviceSession {
   }
 
   assertSession(result) {
-    if (result.session_id !== this.sessionId) throw new DeviceSerialError('usb_invalid_session_response');
+    if (result.session_id !== this.sessionId)
+      throw new DeviceSerialError('usb_invalid_session_response');
   }
 
   assertSessionNotExpired() {
-    if (this.sessionId && this.now() >= this.sessionExpiresAt) throw new DeviceSerialError('device_session_expired');
+    if (this.sessionId && this.now() >= this.sessionExpiresAt)
+      throw new DeviceSerialError('device_session_expired');
   }
 
   async stateGet() {
     if (!this.sessionId) throw new DeviceSerialError('usb_session_not_open');
     this.assertSessionNotExpired();
-    const result = await this.exchange({ v: 2, op: 'state_get', request_id: this.requestId(), session_id: this.sessionId }, {
-      timeoutMs: 15000, maxFrameBytes: this.limits.max_frame_bytes,
-    });
-    if (!result.ok) throw new DeviceSerialError(`device_${result.error_code ?? result.error ?? 'rejected'}`);
+    const result = await this.exchange(
+      { v: 2, op: 'state_get', request_id: this.requestId(), session_id: this.sessionId },
+      {
+        timeoutMs: 15000,
+        maxFrameBytes: this.limits.max_frame_bytes,
+      },
+    );
+    if (!result.ok)
+      throw new DeviceSerialError(`device_${result.error_code ?? result.error ?? 'rejected'}`);
     this.assertSession(result);
-    if (!result.state || typeof result.state !== 'object' || Array.isArray(result.state)) throw new DeviceSerialError('usb_invalid_state');
+    if (!result.state || typeof result.state !== 'object' || Array.isArray(result.state))
+      throw new DeviceSerialError('usb_invalid_state');
     const stateBytes = encoder.encode(JSON.stringify(result.state)).byteLength;
-    if (stateBytes > this.limits.max_state_bytes) throw new DeviceSerialError('usb_state_too_large');
+    if (stateBytes > this.limits.max_state_bytes)
+      throw new DeviceSerialError('usb_state_too_large');
     const seconds = result.state.session?.remaining_seconds;
-    if (Number.isInteger(seconds) && seconds >= 0) this.sessionExpiresAt = this.now() + seconds * 1000;
-    if (this.pendingMutation && this.jobProvesAdmission(result.state, this.pendingMutation.requestId)) this.pendingMutation = null;
+    if (Number.isInteger(seconds) && seconds >= 0)
+      this.sessionExpiresAt = this.now() + seconds * 1000;
+    if (
+      this.pendingMutation &&
+      this.jobProvesAdmission(result.state, this.pendingMutation.requestId)
+    )
+      this.pendingMutation = null;
     return result.state;
   }
 
   jobProvesAdmission(state, requestId) {
-    return (state.jobs ?? []).some(job => job.request_id === requestId)
-      || state.operation?.request_id === requestId;
+    return (
+      (state.jobs ?? []).some((job) => job.request_id === requestId) ||
+      state.operation?.request_id === requestId
+    );
   }
 
   async mutation(frame) {
@@ -272,21 +372,40 @@ export class UsbDeviceSession {
     if (!this.sessionId) throw new DeviceSerialError('usb_session_not_open');
     this.assertSessionNotExpired();
     if (this.pendingMutation) throw new DeviceSerialError('usb_mutation_unresolved');
-    if (!REQUEST_ID.test(frame.request_id ?? '')) throw new DeviceSerialError('serial_invalid_request_id');
+    if (!REQUEST_ID.test(frame.request_id ?? ''))
+      throw new DeviceSerialError('serial_invalid_request_id');
     const bodyBytes = encoder.encode(JSON.stringify(frame.body)).byteLength;
-    if (bodyBytes > this.limits.max_command_bytes) throw new DeviceSerialError('usb_command_too_large');
-    const packet = { v: 2, op: frame.op, request_id: frame.request_id, session_id: this.sessionId, body: frame.body };
+    if (bodyBytes > this.limits.max_command_bytes)
+      throw new DeviceSerialError('usb_command_too_large');
+    const packet = {
+      v: 2,
+      op: frame.op,
+      request_id: frame.request_id,
+      session_id: this.sessionId,
+      body: frame.body,
+    };
     const pending = { requestId: frame.request_id, sessionId: this.sessionId };
     this.pendingMutation = pending;
     const remainingMs = () => Math.max(0, this.sessionExpiresAt - this.now());
-    // onTransmit fires only once a frame has been written to the port; a rejection before that never reached the device.
-    const send = timeoutMs => this.exchange(packet, { timeoutMs, maxFrameBytes: this.limits.max_frame_bytes, onWritten: frame.onTransmit });
+    // onTransmit fires only once a frame has been written to the port; a rejection before that
+    // never reached the device.
+    const send = (timeoutMs) =>
+      this.exchange(packet, {
+        timeoutMs,
+        maxFrameBytes: this.limits.max_frame_bytes,
+        onWritten: frame.onTransmit,
+      });
     let result;
     let retried = false;
     try {
       result = await send(Math.min(90000, remainingMs()));
     } catch (error) {
-      if (error?.code !== 'serial_timeout' || this.closed || pending.sessionId !== this.sessionId || remainingMs() <= 0) {
+      if (
+        error?.code !== 'serial_timeout' ||
+        this.closed ||
+        pending.sessionId !== this.sessionId ||
+        remainingMs() <= 0
+      ) {
         throw error;
       }
       retried = true;
@@ -298,8 +417,11 @@ export class UsbDeviceSession {
     }
     if (!result.ok) {
       this.pendingMutation = null;
-      // retry_used: a rejection after a resend may answer the resend while the first write was already processed.
-      throw new DeviceSerialError(`device_${result.error_code ?? result.error ?? 'rejected'}`, { retry_used: retried });
+      // retry_used: a rejection after a resend may answer the resend while the first write was
+      // already processed.
+      throw new DeviceSerialError(`device_${result.error_code ?? result.error ?? 'rejected'}`, {
+        retry_used: retried,
+      });
     }
     this.assertSession(result);
     if (result.accepted !== true || result.request_id !== frame.request_id) {
@@ -323,24 +445,35 @@ export class UsbDeviceSession {
 }
 
 export function serialErrorMessage(error) {
-  if (['serial_timeout', 'usb_uncertain_receipt', 'usb_mutation_unresolved'].includes(error?.code)) {
+  if (
+    ['serial_timeout', 'usb_uncertain_receipt', 'usb_mutation_unresolved'].includes(error?.code)
+  ) {
     if (error.code === 'serial_timeout') {
       const flags = error.diagnostics;
-      if (!flags?.received_data) return '未收到设备回应。请确认 USB 已连接，再打开「设备设置 → USB 设置」窗口后重试。';
+      if (!flags?.received_data)
+        return '未收到设备回应。请确认 USB 已连接，再打开「设备设置 → USB 设置」窗口后重试。';
       if (flags.result_seen) return '已收到设备回复，但没有匹配的确认。请重新读取设备状态。';
       if (flags.ready_seen) return '设备已启动，但没有确认操作。请检查 USB 设置窗口是否仍打开。';
       return '已收到 USB 信息，但没有确认。请重新读取设备状态。';
     }
-    return '设备是否收到这次操作尚未确认。页面不会再次发送新的修改；请重新读取设备状态，或断开 USB 后重新打开「USB 设置」窗口。';
+    return (
+      '设备是否收到这次操作尚未确认。页面不会再次发送新的修改；请重新读取设备' +
+      '状态，或断开 USB 后重新打开「USB 设置」窗口。'
+    );
   }
-  if (['serial_read_error', 'serial_write_error', 'serial_closed'].includes(error?.code)) return 'USB 连接中断。请关闭占用设备的串口工具，重新插拔 USB 线后重试。';
+  if (['serial_read_error', 'serial_write_error', 'serial_closed'].includes(error?.code))
+    return 'USB 连接中断。请关闭占用设备的串口工具，重新插拔 USB 线后重试。';
   const rejected = {
     frame_too_long: '配置内容超过设备协议允许的大小。',
     unsupported_version: '网页与设备固件版本不匹配。请更新到配套版本。',
     session_busy: '设备刚刚由另一个 USB 设置页面连接。请关闭另一个页面，或等待数秒后重试。',
-    invalid_session: '已在另一个页面继续设置，或设备窗口已重新打开。如需在此页面继续，请重新连接设备状态。',
+    invalid_session:
+      '已在另一个页面继续设置，或设备窗口已重新打开。如需在此页面继续，请重新连接设备状态。',
     session_expired: 'USB 设置窗口已过期。请重新打开窗口并连接设备状态。',
   };
-  if (error?.code?.startsWith('device_')) return rejected[error.code.slice(7)] ?? '设备收到配置，但拒绝了此次请求。请重新打开 USB 设置后重试。';
+  if (error?.code?.startsWith('device_'))
+    return (
+      rejected[error.code.slice(7)] ?? '设备收到配置，但拒绝了此次请求。请重新打开 USB 设置后重试。'
+    );
   return null;
 }

@@ -12,7 +12,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
     "verify_firmware", ROOT / "tools" / "verify_firmware.py"
@@ -60,9 +59,7 @@ def merged_with_table(
     app_offset: int = DEFAULT_APP_OFFSET,
 ) -> bytearray:
     merged = bytearray(b"\xff" * (max(table_offset + VERIFY.PARTITION_TABLE_SIZE, app_offset) + 1))
-    merged[
-        table_offset : table_offset + VERIFY.PARTITION_TABLE_SIZE
-    ] = table or sample_table()
+    merged[table_offset : table_offset + VERIFY.PARTITION_TABLE_SIZE] = table or sample_table()
     merged[app_offset] = 0xE9
     return merged
 
@@ -206,7 +203,7 @@ class FirmwareCliTest(unittest.TestCase):
             if 0 <= offset < VERIFY.FLASH_SIZE:
                 end = min(offset + len(data), VERIFY.FLASH_SIZE)
                 merged.extend(b"\xff" * max(0, end - len(merged)))
-                merged[offset:end] = data[:end - offset]
+                merged[offset:end] = data[: end - offset]
         (self.build_dir / "FoloToy-AI-Passport-full.bin").write_bytes(merged)
         (self.build_dir / "flash_args").write_text("\n".join(flash_args) + "\n")
 
@@ -323,7 +320,9 @@ class FirmwareCliTest(unittest.TestCase):
         self.create_build()
         args_path = self.build_dir / "flash_args"
         args = args_path.read_text()
-        args_path.write_text("\n".join(line for line in args.splitlines() if "bootloader/" not in line))
+        args_path.write_text(
+            "\n".join(line for line in args.splitlines() if "bootloader/" not in line)
+        )
         self.run_verifier("missing required images")
 
     def test_rejects_empty_required_image(self) -> None:

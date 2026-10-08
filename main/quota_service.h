@@ -6,13 +6,15 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/task.h"
+#include "esp_timer.h"
 
 typedef enum {
     QUOTA_APP_EVENT_BUTTON = 0,
     QUOTA_APP_EVENT_SNAPSHOT,
     QUOTA_APP_EVENT_CONNECTION,
     QUOTA_APP_EVENT_SETTINGS_RESULT,
-    QUOTA_APP_EVENT_PAIRING_TICK,
+    QUOTA_APP_EVENT_USB_WINDOW,
 } quota_app_event_kind_t;
 
 typedef struct {
@@ -32,9 +34,9 @@ typedef struct {
     bool connected;
     bool refreshing;
     bool request_failed;
-    bool pairing_active;
-    bool pairing_preparing;
-    uint32_t pairing_seconds_left;
+    bool usb_window_active;
+    bool usb_window_preparing;
+    uint32_t usb_window_seconds_left;
     uint64_t now_epoch;
     bool clock_synchronized;
     uint16_t refresh_seconds;
@@ -54,11 +56,24 @@ void quota_service_request_refresh(void);
 void quota_service_request_settings(uint16_t refresh_seconds, bool auto_refresh,
                                     uint16_t screen_timeout_seconds);
 void quota_service_select_account(const char *account_id);
-void quota_service_open_pairing_window(void);
-void quota_service_close_pairing_window(void);
 
 void quota_service_open_phone(void);
 void quota_service_close_phone(void);
 void quota_service_renew_phone(void);
 void quota_service_cancel_auth(void);
 void quota_service_reconnect(void);
+
+/* Internals shared with quota_wifi.c and quota_usb.c. The lock guards the view. */
+void quota_service_lock(void);
+void quota_service_unlock(void);
+bool quota_service_try_lock(void);
+quota_service_view_t *quota_service_view(void); /* caller holds the lock */
+bool quota_service_display_sleeping(void);
+TaskHandle_t quota_service_network_task(void); /* NULL before quota_service_start() */
+void quota_service_post(quota_app_event_kind_t kind);
+void quota_service_wake_network(void);
+
+static inline uint64_t quota_monotonic_ms(void)
+{
+    return (uint64_t)(esp_timer_get_time() / 1000);
+}

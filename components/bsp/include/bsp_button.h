@@ -13,10 +13,10 @@ typedef enum {
 } bsp_btn_t;
 
 typedef enum {
-    BSP_BTN_PRESS = 0,   // 按下瞬间(低延迟,适合游戏类即时响应)
-    BSP_BTN_CLICK,       // 去抖松手立即触发；长按松手不触发
-    BSP_BTN_DOUBLE,      // 保留枚举兼容；当前三键不合并双击
-    BSP_BTN_LONG,        // 长按
+    BSP_BTN_PRESS = 0, // 按下瞬间(低延迟,适合游戏类即时响应)
+    BSP_BTN_CLICK,     // 去抖松手立即触发；长按松手不触发
+    BSP_BTN_DOUBLE,    // 保留枚举兼容；当前三键不合并双击
+    BSP_BTN_LONG,      // 长按
 } bsp_btn_ev_t;
 
 // 按键事件回调。运行于 button 组件使用的共享 esp_timer 任务,只能入队或执行同等级

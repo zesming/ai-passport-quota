@@ -27,16 +27,15 @@ static void rounded_flush_event(lv_event_t *event)
     }
 
     const int32_t width = lv_area_get_width(area);
-    if (draw_buf->header.stride < (uint32_t)width * sizeof(uint16_t)) return;
+    if (draw_buf->header.stride < (uint32_t)width * sizeof(uint16_t))
+        return;
 
     for (int32_t y = area->y1; y <= area->y2; ++y) {
-        uint16_t *row = (uint16_t *)(draw_buf->data +
-                                     (y - area->y1) * draw_buf->header.stride);
+        uint16_t *row = (uint16_t *)(draw_buf->data + (y - area->y1) * draw_buf->header.stride);
         int32_t visible_x1;
         int32_t visible_x2;
-        if (!bsp_display_rounded_row_span(y, BSP_LCD_W, BSP_LCD_H,
-                                          BSP_LVGL_SCREEN_RADIUS, &visible_x1,
-                                          &visible_x2)) {
+        if (!bsp_display_rounded_row_span(y, BSP_LCD_W, BSP_LCD_H, BSP_LVGL_SCREEN_RADIUS,
+                                          &visible_x1, &visible_x2)) {
             memset(row, 0, (size_t)width * sizeof(uint16_t));
             continue;
         }
@@ -51,11 +50,12 @@ static void rounded_flush_event(lv_event_t *event)
             row[x - area->x1] = 0;
         }
     }
-
 }
 
-lv_display_t *bsp_lvgl_init(void) {
-    if (s_disp) return s_disp;
+lv_display_t *bsp_lvgl_init(void)
+{
+    if (s_disp)
+        return s_disp;
     if (!bsp_display_panel()) {
         ESP_LOGE(TAG, "请先成功调用 bsp_display_init()");
         return NULL;
@@ -80,17 +80,18 @@ lv_display_t *bsp_lvgl_init(void) {
 
     const lvgl_port_display_cfg_t dc = {
         .panel_handle = bsp_display_panel(),
-        .io_handle    = bsp_display_io(),
+        .io_handle = bsp_display_io(),
         // ⚠ C3 无 PSRAM,DMA 只能用内部 RAM。20 行单缓冲约 9.6KB，
         // 可减少窗口命令和队列提交次数；仍保留单缓冲，避免双缓冲挤压音频/Wi-Fi。
-        .buffer_size   = (uint32_t)BSP_LCD_W * BSP_LVGL_DRAW_BUFFER_LINES,
+        .buffer_size = (uint32_t)BSP_LCD_W * BSP_LVGL_DRAW_BUFFER_LINES,
         .double_buffer = false,
-        .hres = BSP_LCD_W, .vres = BSP_LCD_H,
+        .hres = BSP_LCD_W,
+        .vres = BSP_LCD_H,
         // 旋转/镜像必须在这里配:esp_lvgl_port 注册显示时会重新下发 MADCTL,
         // 覆盖 bsp_display.c 里 esp_lcd_panel_mirror() 的设置。
-        .rotation = { .swap_xy = false, .mirror_x = false, .mirror_y = false },
+        .rotation = {.swap_xy = false, .mirror_x = false, .mirror_y = false},
         // swap_bytes:LVGL 输出小端 RGB565,ST7789 走 SPI 要大端 → 需交换高低字节。
-        .flags = { .buff_dma = true, .swap_bytes = true },
+        .flags = {.buff_dma = true, .swap_bytes = true},
     };
     // The port mutex is recursive. Keep registration and the mask callback in
     // one critical section, before the new display can produce its first flush.
@@ -108,7 +109,8 @@ lv_display_t *bsp_lvgl_init(void) {
     }
     if (!mask_registered) {
         ESP_LOGE(TAG, "LVGL display 或圆角回调注册失败");
-        if (disp) lvgl_port_remove_disp(disp);
+        if (disp)
+            lvgl_port_remove_disp(disp);
         lvgl_port_unlock();
         // Retain the initialized port for retry. Deinit is asynchronous and can
         // race the next init (or even run before the task sets running=true).
@@ -125,16 +127,22 @@ lv_display_t *bsp_lvgl_init(void) {
     return s_disp;
 }
 
-bool bsp_lvgl_lock(int timeout_ms) {
-    if (!s_disp) return false;
+bool bsp_lvgl_lock(int timeout_ms)
+{
+    if (!s_disp)
+        return false;
     return lvgl_port_lock(timeout_ms);
 }
-void bsp_lvgl_unlock(void) {
-    if (s_disp) lvgl_port_unlock();
+void bsp_lvgl_unlock(void)
+{
+    if (s_disp)
+        lvgl_port_unlock();
 }
 
-bool bsp_lvgl_set_sleeping(bool sleeping) {
-    if (!bsp_lvgl_lock(500)) return false;
+bool bsp_lvgl_set_sleeping(bool sleeping)
+{
+    if (!bsp_lvgl_lock(500))
+        return false;
     lv_timer_t *refresh = lv_display_get_refr_timer(s_disp);
     esp_lcd_panel_handle_t panel = bsp_display_panel();
     if (!refresh || !panel) {
@@ -163,8 +171,10 @@ bool bsp_lvgl_set_sleeping(bool sleeping) {
     return first == ESP_OK && second == ESP_OK;
 }
 
-bool bsp_lvgl_refresh(void) {
-    if (!bsp_lvgl_lock(500)) return false;
+bool bsp_lvgl_refresh(void)
+{
+    if (!bsp_lvgl_lock(500))
+        return false;
     lv_refr_now(s_disp);
     /* SPI parameter commands drain queued color transfers before returning. */
     esp_err_t err = esp_lcd_panel_disp_on_off(bsp_display_panel(), true);

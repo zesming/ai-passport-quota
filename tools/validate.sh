@@ -8,11 +8,37 @@ usage() {
     echo "Usage: $0 [--all|--static|--firmware]" >&2
 }
 
+# Formatter output differs between clang-format majors, so the version is pinned.
+CLANG_FORMAT_VERSION="23.1.3"
+
+run_format_checks() {
+    local clang_format="${CLANG_FORMAT:-clang-format}"
+    local locked_prettier
+
+    if ! command -v "${clang_format}" >/dev/null 2>&1; then
+        echo "ERROR: clang-format ${CLANG_FORMAT_VERSION} is required (pipx install clang-format==${CLANG_FORMAT_VERSION})." >&2
+        return 1
+    fi
+    if [[ "$("${clang_format}" --version)" != *"version ${CLANG_FORMAT_VERSION}"* ]]; then
+        echo "ERROR: expected clang-format ${CLANG_FORMAT_VERSION}, found: $("${clang_format}" --version)" >&2
+        return 1
+    fi
+    find main components tests -path tests/cjson -prune -o \( -name '*.c' -o -name '*.h' \) -print0 |
+        xargs -0 "${clang_format}" --dry-run -Werror
+    locked_prettier="$(node -p "require('./package-lock.json').packages['node_modules/prettier'].version")"
+    if [[ "$(node_modules/.bin/prettier --version 2>/dev/null || true)" != "${locked_prettier}" ]]; then
+        npm ci --no-audit --no-fund
+    fi
+    npm run --silent format:check
+    echo "Format checks: PASS"
+}
+
 run_static_checks() {
     local actionlint_bin
     local test_dir
 
     python3 tools/check_repo.py
+    run_format_checks
     node tests/test_portable_phone.mjs
 
     actionlint_bin="${ACTIONLINT_BIN:-}"
@@ -42,7 +68,7 @@ run_static_checks() {
         tests/test_bsp_lvgl_init.c components/bsp/src/bsp_display_rounding.c \
         -o "${test_dir}/test_bsp_lvgl_init"
     "${test_dir}/test_bsp_lvgl_init"
-    for suite in quota_fonts quota_ui_runtime quota_refresh_runtime quota_power_runtime quota_usb_runtime quota_storage_runtime quota_catalog_runtime quota_portable_runtime quota_direct_runtime quota_portable_service_runtime check_repo verify_firmware archive_firmware; do
+    for suite in quota_fonts quota_ui_runtime quota_refresh_runtime quota_power_runtime quota_usb_runtime quota_wifi_runtime quota_storage_runtime quota_catalog_runtime quota_portable_runtime quota_direct_runtime quota_portable_service_runtime check_repo verify_firmware archive_firmware; do
         PYTHONDONTWRITEBYTECODE=1 python3 "tests/test_${suite}.py"
     done
     rm -rf "${test_dir}"

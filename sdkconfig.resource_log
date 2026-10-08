@@ -1,0 +1,2 @@
+# Overlay for hardware resource checks: SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.resource_log"
+CONFIG_QUOTA_RESOURCE_LOG=y

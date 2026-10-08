@@ -51,11 +51,9 @@ static void test_serial_framing_recovers_after_overlong_line(void)
     const char *frame = NULL;
     size_t length = 0;
     for (size_t i = 0; i < QUOTA_MAX_PROVISION_FRAME_BYTES + 1; i++) {
-        assert(quota_frame_decoder_feed(&decoder, 'x', &frame, &length) ==
-               QUOTA_FRAME_PENDING);
+        assert(quota_frame_decoder_feed(&decoder, 'x', &frame, &length) == QUOTA_FRAME_PENDING);
     }
-    assert(quota_frame_decoder_feed(&decoder, '\n', &frame, &length) ==
-           QUOTA_FRAME_TOO_LONG);
+    assert(quota_frame_decoder_feed(&decoder, '\n', &frame, &length) == QUOTA_FRAME_TOO_LONG);
     static const char next_frame[] = "@AIQ:{}\r\n";
     quota_frame_result_t result = QUOTA_FRAME_PENDING;
     for (size_t i = 0; i < sizeof(next_frame) - 1; i++) {
@@ -74,13 +72,13 @@ static void test_freshness_and_reset_states(void)
     assert(!quota_data_is_stale(4599, true, 1000, 1800));
     assert(quota_data_is_stale(4601, true, 1000, 1800));
     assert(quota_data_is_stale(999, true, 1000, 300));
-    assert(quota_pairing_window_active(true, 1000, 1000));
-    assert(quota_pairing_window_active(true, 120999, 1000));
-    assert(!quota_pairing_window_active(true, 121000, 1000));
-    assert(!quota_pairing_window_active(false, 2000, 1000));
+    assert(quota_usb_window_active(true, 1000, 1000));
+    assert(quota_usb_window_active(true, 120999, 1000));
+    assert(!quota_usb_window_active(true, 121000, 1000));
+    assert(!quota_usb_window_active(false, 2000, 1000));
 
-    quota_window_t window = {.present = true, .remaining_percent = 0,
-                             .has_resets_at = true, .resets_at = 1500};
+    quota_window_t window = {
+        .present = true, .remaining_percent = 0, .has_resets_at = true, .resets_at = 1500};
     assert(quota_metric_state(&window, 1499) == QUOTA_METRIC_VALUE);
     assert(quota_metric_state(&window, 1500) == QUOTA_METRIC_WAITING_FOR_SOURCE);
     window.present = false;
@@ -98,10 +96,8 @@ static void test_navigation(void)
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_DOWN, 3) ==
            QUOTA_ACTION_PERSIST_SELECTION);
     assert(navigation.selected_account == 0);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 3) ==
-           QUOTA_ACTION_REFRESH);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 3) ==
-           QUOTA_ACTION_NONE);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 3) == QUOTA_ACTION_REFRESH);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 3) == QUOTA_ACTION_NONE);
     assert(navigation.screen == QUOTA_SCREEN_SETTINGS);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_UP, 3) == QUOTA_ACTION_NONE);
     assert(navigation.settings_focus == 5);
@@ -116,9 +112,11 @@ static void test_navigation(void)
     assert(navigation.screen == QUOTA_SCREEN_ACCOUNTS);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_UP, 3) == QUOTA_ACTION_NONE);
     assert(navigation.account_focus == 3);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 3) == QUOTA_ACTION_OPEN_PHONE);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 3) ==
+           QUOTA_ACTION_OPEN_PHONE);
     assert(navigation.screen == QUOTA_SCREEN_PHONE);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 3) == QUOTA_ACTION_CLOSE_PHONE);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 3) ==
+           QUOTA_ACTION_CLOSE_PHONE);
     assert(navigation.screen == QUOTA_SCREEN_ACCOUNTS);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 3) == QUOTA_ACTION_NONE);
     assert(navigation.screen == QUOTA_SCREEN_SETTINGS);
@@ -164,7 +162,8 @@ static void test_navigation(void)
 
     quota_navigation_init(&navigation, false, 300, true, 120, 0);
     assert(navigation.screen == QUOTA_SCREEN_PHONE);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 0) == QUOTA_ACTION_CLOSE_PHONE);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 0) ==
+           QUOTA_ACTION_CLOSE_PHONE);
     assert(navigation.screen == QUOTA_SCREEN_HOME);
 }
 
@@ -194,17 +193,21 @@ static void test_portable_navigation(void)
            QUOTA_ACTION_OPEN_PHONE);
     assert(navigation.screen == QUOTA_SCREEN_PHONE && navigation.phone_step == 0);
     assert(navigation.setup_return_screen == QUOTA_SCREEN_DEVICE_SETTINGS);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_RENEW_PHONE);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) ==
+           QUOTA_ACTION_RENEW_PHONE);
     assert(navigation.phone_step == 1);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_RENEW_PHONE);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) ==
+           QUOTA_ACTION_RENEW_PHONE);
     assert(navigation.phone_step == 2); /* Manual address and full session secret. */
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_RENEW_PHONE);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) ==
+           QUOTA_ACTION_RENEW_PHONE);
     assert(navigation.phone_step == 0);
     quota_navigation_handle(&navigation, QUOTA_INPUT_UP, 2);
     assert(navigation.phone_step == 2);
     quota_navigation_handle(&navigation, QUOTA_INPUT_DOWN, 2);
     assert(navigation.phone_step == 0);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 2) == QUOTA_ACTION_CLOSE_PHONE);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 2) ==
+           QUOTA_ACTION_CLOSE_PHONE);
     assert(navigation.screen == QUOTA_SCREEN_DEVICE_SETTINGS);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 2) == QUOTA_ACTION_NONE);
     assert(navigation.screen == QUOTA_SCREEN_SETTINGS);
@@ -226,15 +229,17 @@ static void test_portable_navigation(void)
 
     navigation.screen = QUOTA_SCREEN_AUTH;
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 0) == QUOTA_ACTION_NONE);
-    assert(navigation.screen == QUOTA_SCREEN_SETUP && navigation.setup_return_screen == QUOTA_SCREEN_AUTH);
+    assert(navigation.screen == QUOTA_SCREEN_SETUP &&
+           navigation.setup_return_screen == QUOTA_SCREEN_AUTH);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 0) == QUOTA_ACTION_NONE);
     assert(navigation.screen == QUOTA_SCREEN_AUTH);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 2) == QUOTA_ACTION_CANCEL_AUTH);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 2) ==
+           QUOTA_ACTION_CANCEL_AUTH);
     assert(navigation.screen == QUOTA_SCREEN_ACCOUNTS);
     /* Appended screens/actions must not renumber the legacy USB state contract. */
-    assert(QUOTA_SCREEN_SETUP == 5 && QUOTA_SCREEN_NETWORK == 6 &&
-           QUOTA_SCREEN_PHONE == 7 && QUOTA_SCREEN_AUTH == 8 &&
-           QUOTA_SCREEN_DEVICE_SETTINGS == 9 && QUOTA_ACTION_PERSIST_SELECTION == 3);
+    assert(QUOTA_SCREEN_SETUP == 5 && QUOTA_SCREEN_NETWORK == 6 && QUOTA_SCREEN_PHONE == 7 &&
+           QUOTA_SCREEN_AUTH == 8 && QUOTA_SCREEN_DEVICE_SETTINGS == 9 &&
+           QUOTA_ACTION_PERSIST_SELECTION == 3);
 }
 
 static void test_navigation_after_external_settings_change(void)
@@ -318,8 +323,10 @@ static void test_screen_timeout_settings(void)
     assert(navigation.screen == QUOTA_SCREEN_SLEEP && navigation.sleep_focus == 3);
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_UP, 1) == QUOTA_ACTION_NONE);
     quota_navigation_sync_settings(&navigation, 900, true, 120);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 1) == QUOTA_ACTION_APPLY_SETTINGS);
-    assert(navigation.screen_timeout_seconds == 60 && navigation.refresh_seconds == 900 && navigation.auto_refresh);
+    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 1) ==
+           QUOTA_ACTION_APPLY_SETTINGS);
+    assert(navigation.screen_timeout_seconds == 60 && navigation.refresh_seconds == 900 &&
+           navigation.auto_refresh);
     navigation.screen = QUOTA_SCREEN_SLEEP;
     navigation.sleep_focus = 0;
     assert(quota_navigation_handle(&navigation, QUOTA_INPUT_UP, 1) == QUOTA_ACTION_NONE);
@@ -344,7 +351,7 @@ static void test_deepseek_balance_contract(void)
     reordered.balance_infos[0] = balance.balance_infos[1];
     reordered.balance_infos[1] = balance.balance_infos[0];
     assert(quota_balance_cny(&reordered) == &reordered.balance_infos[1]);
-    reordered.currency_count = 1;  /* USD alone must not become an RMB amount. */
+    reordered.currency_count = 1; /* USD alone must not become an RMB amount. */
     assert(quota_balance_cny(&reordered) == NULL);
     assert(quota_balance_cny(NULL) == NULL);
     quota_balance_t invalid = balance;
@@ -354,7 +361,8 @@ static void test_deepseek_balance_contract(void)
     strcpy(invalid.balance_infos[0].total_balance, "NaN");
     assert(!quota_balance_is_valid(&invalid));
     invalid = balance;
-    memset(invalid.balance_infos[0].total_balance, '1', sizeof(invalid.balance_infos[0].total_balance));
+    memset(invalid.balance_infos[0].total_balance, '1',
+           sizeof(invalid.balance_infos[0].total_balance));
     assert(!quota_balance_is_valid(&invalid));
     quota_balance_t unknown = {0};
     assert(quota_balance_is_valid(&unknown) && quota_balance_cny(&unknown) == NULL);
@@ -362,10 +370,12 @@ static void test_deepseek_balance_contract(void)
 
 static void test_remaining_duration(void)
 {
-    const struct { uint64_t seconds; const char *text; } cases[] = {
-        {1, "<1h"}, {3599, "<1h"}, {3600, "0d 1h"},
-        {8100, "0d 2h"}, {86399, "0d 23h"}, {86400, "1d 0h"},
-        {97200, "1d 3h"}, {604800, "7d 0h"},
+    const struct {
+        uint64_t seconds;
+        const char *text;
+    } cases[] = {
+        {1, "<1h"},        {3599, "<1h"},    {3600, "0d 1h"},  {8100, "0d 2h"},
+        {86399, "0d 23h"}, {86400, "1d 0h"}, {97200, "1d 3h"}, {604800, "7d 0h"},
     };
     char output[48], expected[48];
     quota_window_t window = {.present = true, .has_resets_at = true};

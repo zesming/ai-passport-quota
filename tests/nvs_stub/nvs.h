@@ -6,9 +6,14 @@
 typedef int nvs_handle_t;
 typedef int esp_err_t;
 enum {
-    ESP_OK = 0, ESP_FAIL = 1, ESP_ERR_NVS_NOT_FOUND = 2, ESP_ERR_NO_MEM = 3,
-    ESP_ERR_NVS_TYPE_MISMATCH = 4, ESP_ERR_NVS_PART_NOT_FOUND = 5,
-    NVS_READONLY = 0, NVS_READWRITE = 1,
+    ESP_OK = 0,
+    ESP_FAIL = 1,
+    ESP_ERR_NVS_NOT_FOUND = 2,
+    ESP_ERR_NO_MEM = 3,
+    ESP_ERR_NVS_TYPE_MISMATCH = 4,
+    ESP_ERR_NVS_PART_NOT_FOUND = 5,
+    NVS_READONLY = 0,
+    NVS_READWRITE = 1,
 };
 
 esp_err_t nvs_open(const char *name_space, int mode, nvs_handle_t *handle);
@@ -33,12 +38,13 @@ typedef struct {
     nvs_stub_item_t items[NVS_STUB_ITEMS];
     char spaces[8][2][16]; /* partition, namespace pairs that exist */
     unsigned space_count;
-    unsigned mutations;   /* applied set/erase operations */
-    long cut_after;       /* >= 0: operations beyond this many fail, as after a power cut */
+    unsigned mutations; /* applied set/erase operations */
+    long cut_after;     /* >= 0: operations beyond this many fail, as after a power cut */
 } nvs_stub_state_t;
 
 extern nvs_stub_state_t nvs_stub;
-void nvs_stub_put(const char *partition, const char *name_space, const char *key,
-                  const void *bytes, size_t length);
-const nvs_stub_item_t *nvs_stub_find(const char *partition, const char *name_space, const char *key);
+void nvs_stub_put(const char *partition, const char *name_space, const char *key, const void *bytes,
+                  size_t length);
+const nvs_stub_item_t *nvs_stub_find(const char *partition, const char *name_space,
+                                     const char *key);
 unsigned nvs_stub_count(const char *partition, const char *name_space);

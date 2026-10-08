@@ -33,8 +33,11 @@ typedef struct {
     quota_account_binding_t binding;
 } quota_catalog_entry_t;
 
-typedef enum { QUOTA_INTENT_NONE, QUOTA_INTENT_UPSERT_NATIVE,
-               QUOTA_INTENT_DELETE_NATIVE } quota_intent_kind_t;
+typedef enum {
+    QUOTA_INTENT_NONE,
+    QUOTA_INTENT_UPSERT_NATIVE,
+    QUOTA_INTENT_DELETE_NATIVE
+} quota_intent_kind_t;
 typedef struct {
     quota_intent_kind_t kind;
     char request_id[9];
@@ -102,10 +105,9 @@ bool quota_catalog_valid(const quota_model_t *model);
  * legacy endpoint. Returns true when anything changed. Idempotent. */
 bool quota_catalog_scrub_removed(quota_model_t *model, quota_catalog_removed_t *removed);
 int quota_catalog_find(const quota_model_t *model, const char *logical_id);
-bool quota_catalog_binding_equal(const quota_catalog_entry_t *a,
-                                 const quota_catalog_entry_t *b);
+bool quota_catalog_binding_equal(const quota_catalog_entry_t *a, const quota_catalog_entry_t *b);
 bool quota_catalog_native_matches(const quota_catalog_entry_t *entry,
                                   const quota_portable_credential_t *credential);
 /* Preserve identity/alias; only attach source observations to the active row. */
 void quota_catalog_copy_observation(quota_snapshot_t *target, size_t target_index,
-                                   const quota_snapshot_t *source, size_t source_index);
+                                    const quota_snapshot_t *source, size_t source_index);

@@ -44,23 +44,20 @@ typedef struct quota_direct_tokens quota_direct_tokens_t;
  * Destroy wipes every detached secret, including after failed validation. */
 bool quota_direct_tokens_prepare(const char *body, size_t length, quota_direct_tokens_t **tokens);
 bool quota_direct_tokens_finish(const quota_direct_tokens_t *tokens,
-                               const quota_direct_identity_t *expected,
-                               char *access, size_t access_capacity,
-                               char *refresh, size_t refresh_capacity,
-                               quota_direct_identity_t *identity);
+                                const quota_direct_identity_t *expected, char *access,
+                                size_t access_capacity, char *refresh, size_t refresh_capacity,
+                                quota_direct_identity_t *identity);
 void quota_direct_tokens_destroy(quota_direct_tokens_t *tokens);
 bool quota_direct_parse_device_code(const char *body, size_t length,
                                     quota_direct_device_code_t *code);
 bool quota_direct_parse_authorization(const char *body, size_t length,
                                       quota_direct_authorization_t *code);
 bool quota_direct_parse_codex_usage(const char *body, size_t length,
-                                    const char *expected_account_id,
-                                    quota_account_t *account,
+                                    const char *expected_account_id, quota_account_t *account,
                                     quota_codex_extras_t *extras);
 bool quota_direct_parse_reset_details(const char *body, size_t length,
                                       quota_codex_extras_t *extras);
-bool quota_direct_parse_deepseek(const char *body, size_t length,
-                                quota_balance_t *balance);
+bool quota_direct_parse_deepseek(const char *body, size_t length, quota_balance_t *balance);
 bool quota_direct_form_encode(const char *value, char *output, size_t capacity);
 uint64_t quota_direct_parse_date(const char *date);
 uint32_t quota_direct_retry_after(const char *header, uint64_t now);

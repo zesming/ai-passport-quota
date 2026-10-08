@@ -4,7 +4,9 @@
 #include "bsp_i2c.h"
 #include "bsp_pins.h"
 #include "quota_service.h"
+#include "quota_testable.h"
 #include "quota_ui.h"
+#include "quota_usb.h"
 
 #include "esp_log.h"
 #include "esp_pm.h"
@@ -18,22 +20,23 @@
 
 static const char *TAG = "ai_quota";
 
-static quota_navigation_t s_navigation;
-static quota_service_view_t s_view_work;
+QUOTA_TESTABLE quota_navigation_t s_navigation;
+QUOTA_TESTABLE quota_service_view_t s_view_work;
 static TaskHandle_t s_application_task;
-static quota_display_state_t s_display;
-static uint8_t s_backlight_percent = 100;
-static int s_battery_percent = -1;
-static uint64_t s_battery_read_ms;
-static esp_pm_lock_handle_t s_cpu_lock;
-static bool s_cpu_lock_held;
-static bool s_display_power_sleeping;
-static bool s_display_power_pending;
+QUOTA_TESTABLE quota_display_state_t s_display;
+QUOTA_TESTABLE uint8_t s_backlight_percent = 100;
+QUOTA_TESTABLE int s_battery_percent = -1;
+QUOTA_TESTABLE uint64_t s_battery_read_ms;
+QUOTA_TESTABLE esp_pm_lock_handle_t s_cpu_lock;
+QUOTA_TESTABLE bool s_cpu_lock_held;
+QUOTA_TESTABLE bool s_display_power_sleeping;
+QUOTA_TESTABLE bool s_display_power_pending;
 
-static void configure_cpu_power_management(void)
+QUOTA_TESTABLE void configure_cpu_power_management(void)
 {
     esp_err_t err = esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "quota_awake", &s_cpu_lock);
-    if (err != ESP_OK) goto failed;
+    if (err != ESP_OK)
+        goto failed;
     const esp_pm_config_t config = {
         .max_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
         .min_freq_mhz = 40,
@@ -41,7 +44,8 @@ static void configure_cpu_power_management(void)
         .light_sleep_enable = false,
     };
     err = esp_pm_configure(&config);
-    if (err == ESP_OK) err = esp_pm_lock_acquire(s_cpu_lock);
+    if (err == ESP_OK)
+        err = esp_pm_lock_acquire(s_cpu_lock);
     if (err == ESP_OK) {
         s_cpu_lock_held = true;
         return;
@@ -52,9 +56,10 @@ failed:
     ESP_LOGW(TAG, "CPU power management unavailable (%s)", esp_err_to_name(err));
 }
 
-static bool set_display_power(bool sleeping)
+QUOTA_TESTABLE bool set_display_power(bool sleeping)
 {
-    if (sleeping == s_display_power_sleeping && !s_display_power_pending) return true;
+    if (sleeping == s_display_power_sleeping && !s_display_power_pending)
+        return true;
     s_display_power_pending = true;
     bsp_display_backlight(0);
     s_backlight_percent = 0;
@@ -66,7 +71,8 @@ static bool set_display_power(bool sleeping)
         s_cpu_lock_held = false;
     }
     ready = ready && (s_cpu_lock == NULL || s_cpu_lock_held == !sleeping);
-    if (!ready) ESP_LOGW(TAG, "display power transition failed");
+    if (!ready)
+        ESP_LOGW(TAG, "display power transition failed");
     if (ready) {
         s_display_power_sleeping = sleeping;
         s_display_power_pending = false;
@@ -74,27 +80,35 @@ static bool set_display_power(bool sleeping)
     return ready;
 }
 
-static quota_input_t map_input(bsp_btn_t button, bsp_btn_ev_t event)
+QUOTA_TESTABLE quota_input_t map_input(bsp_btn_t button, bsp_btn_ev_t event)
 {
-    if (button == BSP_BTN_OK && event == BSP_BTN_LONG) return QUOTA_INPUT_OK_LONG;
-    if (event != BSP_BTN_CLICK) return QUOTA_INPUT_OTHER;
-    if (button == BSP_BTN_UP) return QUOTA_INPUT_UP;
-    if (button == BSP_BTN_DOWN) return QUOTA_INPUT_DOWN;
-    if (button == BSP_BTN_OK) return QUOTA_INPUT_OK_SHORT;
+    if (button == BSP_BTN_OK && event == BSP_BTN_LONG)
+        return QUOTA_INPUT_OK_LONG;
+    if (event != BSP_BTN_CLICK)
+        return QUOTA_INPUT_OTHER;
+    if (button == BSP_BTN_UP)
+        return QUOTA_INPUT_UP;
+    if (button == BSP_BTN_DOWN)
+        return QUOTA_INPUT_DOWN;
+    if (button == BSP_BTN_OK)
+        return QUOTA_INPUT_OK_SHORT;
     return QUOTA_INPUT_OTHER;
 }
 
 static void persist_current_selection(const quota_service_view_t *view)
 {
-    if (view == NULL || view->snapshot.account_count == 0) return;
+    if (view == NULL || view->snapshot.account_count == 0)
+        return;
     size_t selected = s_navigation.selected_account;
-    if (selected >= view->snapshot.account_count) selected = 0;
+    if (selected >= view->snapshot.account_count)
+        selected = 0;
     quota_service_select_account(view->snapshot.accounts[selected].id);
 }
 
 static void reconcile_account_selection(const quota_service_view_t *view)
 {
-    if (view == NULL || !view->snapshot_valid) return;
+    if (view == NULL || !view->snapshot_valid)
+        return;
     uint8_t count = view->snapshot.account_count;
     if (count == 0) {
         s_navigation.selected_account = 0;
@@ -110,16 +124,18 @@ static void reconcile_account_selection(const quota_service_view_t *view)
             return;
         }
     }
-    if (s_navigation.selected_account >= count) s_navigation.selected_account = 0;
+    if (s_navigation.selected_account >= count)
+        s_navigation.selected_account = 0;
     persist_current_selection(view);
 }
 
-static void observe_login_navigation(quota_portable_login_state_t login, bool navigate)
+QUOTA_TESTABLE void observe_login_navigation(quota_portable_login_state_t login, bool navigate)
 {
     static quota_portable_login_state_t previous = QUOTA_PORTABLE_LOGIN_IDLE;
     bool changed = login != previous;
     previous = login;
-    if (!navigate || !changed) return;
+    if (!navigate || !changed)
+        return;
     if ((login >= QUOTA_PORTABLE_LOGIN_CONNECTING && login <= QUOTA_PORTABLE_LOGIN_EXCHANGING) ||
         (s_navigation.screen == QUOTA_SCREEN_PHONE &&
          (login == QUOTA_PORTABLE_LOGIN_ERROR || login == QUOTA_PORTABLE_LOGIN_EXPIRED))) {
@@ -131,7 +147,7 @@ static void observe_login_navigation(quota_portable_login_state_t login, bool na
     }
 }
 
-static void render_application(void)
+QUOTA_TESTABLE void render_application(void)
 {
     quota_service_get_view(&s_view_work);
     uint64_t now_ms = (uint64_t)(esp_timer_get_time() / 1000);
@@ -139,64 +155,82 @@ static void render_application(void)
     quota_navigation_sync_settings(&s_navigation, s_view_work.refresh_seconds,
                                    s_view_work.auto_refresh, s_view_work.screen_timeout_seconds);
     quota_display_tick(&s_display, now_ms, s_view_work.screen_timeout_seconds,
-                        s_view_work.pairing_active || s_view_work.pairing_preparing || s_view_work.portable.setup_active ||
-                        s_view_work.portable.auth_hold_awake);
+                       s_view_work.usb_window_active || s_view_work.usb_window_preparing ||
+                           s_view_work.portable.setup_active ||
+                           s_view_work.portable.auth_hold_awake);
     quota_service_set_display_sleeping(s_display.sleeping);
     bool display_ready = set_display_power(s_display.sleeping);
-    if (s_display.sleeping || !display_ready) return;
+    if (s_display.sleeping || !display_ready)
+        return;
     if (now_ms - s_battery_read_ms >= 30000) {
         s_battery_percent = bsp_battery_soc();
         s_battery_read_ms = now_ms;
     }
-    if (!bsp_lvgl_lock(500)) return;
+    if (!bsp_lvgl_lock(500))
+        return;
     quota_ui_render(&s_navigation, &s_view_work, s_battery_percent);
     bsp_lvgl_unlock();
     if (s_backlight_percent != 100) {
-        if (!bsp_lvgl_refresh()) return;
+        if (!bsp_lvgl_refresh())
+            return;
         bsp_display_backlight(100);
         s_backlight_percent = 100;
     }
 }
 
-static void process_button(const quota_app_event_t *event, quota_service_view_t *view)
+QUOTA_TESTABLE void process_button(const quota_app_event_t *event, quota_service_view_t *view)
 {
     quota_key_event_t key_event;
     switch (event->button_event) {
-        case BSP_BTN_PRESS: key_event = QUOTA_KEY_PRESS; break;
-        case BSP_BTN_CLICK: key_event = QUOTA_KEY_CLICK; break;
-        case BSP_BTN_DOUBLE: key_event = QUOTA_KEY_DOUBLE; break;
-        case BSP_BTN_LONG: key_event = QUOTA_KEY_LONG; break;
-        default: return;
+    case BSP_BTN_PRESS:
+        key_event = QUOTA_KEY_PRESS;
+        break;
+    case BSP_BTN_CLICK:
+        key_event = QUOTA_KEY_CLICK;
+        break;
+    case BSP_BTN_DOUBLE:
+        key_event = QUOTA_KEY_DOUBLE;
+        break;
+    case BSP_BTN_LONG:
+        key_event = QUOTA_KEY_LONG;
+        break;
+    default:
+        return;
     }
-    if (!quota_display_handle_key(&s_display, (uint64_t)(esp_timer_get_time() / 1000),
-                                  key_event, event->button == BSP_BTN_DOWN)) return;
+    if (!quota_display_handle_key(&s_display, (uint64_t)(esp_timer_get_time() / 1000), key_event,
+                                  event->button == BSP_BTN_DOWN))
+        return;
     /* Consume the latest service edge before a manual screen change. */
     observe_login_navigation(view->portable.login_state, true);
-    quota_navigation_sync_settings(&s_navigation, view->refresh_seconds,
-                                   view->auto_refresh, view->screen_timeout_seconds);
+    quota_navigation_sync_settings(&s_navigation, view->refresh_seconds, view->auto_refresh,
+                                   view->screen_timeout_seconds);
     quota_screen_t previous_screen = s_navigation.screen;
-    quota_action_t action = quota_navigation_handle(&s_navigation,
-        map_input(event->button, event->button_event), view->snapshot.account_count);
+    quota_action_t action = quota_navigation_handle(
+        &s_navigation, map_input(event->button, event->button_event), view->snapshot.account_count);
 
     if (previous_screen != QUOTA_SCREEN_PHONE && s_navigation.screen == QUOTA_SCREEN_PHONE &&
-        action != QUOTA_ACTION_OPEN_PHONE) { s_navigation.phone_step = 0; quota_service_open_phone(); }
-    if (previous_screen != QUOTA_SCREEN_SETUP &&
-        s_navigation.screen == QUOTA_SCREEN_SETUP) {
-        quota_service_open_pairing_window();
-    } else if (previous_screen == QUOTA_SCREEN_SETUP &&
-               s_navigation.screen != QUOTA_SCREEN_SETUP) {
-        quota_service_close_pairing_window();
+        action != QUOTA_ACTION_OPEN_PHONE) {
+        s_navigation.phone_step = 0;
+        quota_service_open_phone();
+    }
+    if (previous_screen != QUOTA_SCREEN_SETUP && s_navigation.screen == QUOTA_SCREEN_SETUP) {
+        quota_usb_open_window();
+    } else if (previous_screen == QUOTA_SCREEN_SETUP && s_navigation.screen != QUOTA_SCREEN_SETUP) {
+        quota_usb_close_window();
     }
 
     if (action == QUOTA_ACTION_OPEN_PHONE) {
         s_navigation.phone_step = 0;
         quota_service_open_phone();
     } else if (action == QUOTA_ACTION_RENEW_PHONE) {
-        if (!view->portable.setup_active) { s_navigation.phone_step = 0; quota_service_renew_phone(); }
+        if (!view->portable.setup_active) {
+            s_navigation.phone_step = 0;
+            quota_service_renew_phone();
+        }
     } else if (action == QUOTA_ACTION_CLOSE_PHONE) {
         quota_service_close_phone();
     } else if (action == QUOTA_ACTION_CANCEL_AUTH) {
-        quota_service_close_pairing_window();
+        quota_usb_close_window();
         quota_service_cancel_auth();
     } else if (action == QUOTA_ACTION_RECONNECT) {
         quota_service_reconnect();
@@ -204,8 +238,7 @@ static void process_button(const quota_app_event_t *event, quota_service_view_t 
         quota_service_request_refresh();
     } else if (action == QUOTA_ACTION_APPLY_SETTINGS) {
         if (view->configured) {
-            quota_service_request_settings(s_navigation.refresh_seconds,
-                                           s_navigation.auto_refresh,
+            quota_service_request_settings(s_navigation.refresh_seconds, s_navigation.auto_refresh,
                                            s_navigation.screen_timeout_seconds);
         } else {
             s_navigation.refresh_seconds = view->refresh_seconds;
@@ -217,7 +250,7 @@ static void process_button(const quota_app_event_t *event, quota_service_view_t 
     }
 }
 
-static void process_event(const quota_app_event_t *event)
+QUOTA_TESTABLE void process_event(const quota_app_event_t *event)
 {
     if (event->kind == QUOTA_APP_EVENT_BUTTON && event->button_event == BSP_BTN_PRESS &&
         !s_display.sleeping && !s_display_power_pending) {
@@ -227,33 +260,33 @@ static void process_event(const quota_app_event_t *event)
     }
     quota_service_get_view(&s_view_work);
     switch (event->kind) {
-        case QUOTA_APP_EVENT_BUTTON:
-            process_button(event, &s_view_work);
-            break;
-        case QUOTA_APP_EVENT_SNAPSHOT:
-            reconcile_account_selection(&s_view_work);
-            break;
-        case QUOTA_APP_EVENT_SETTINGS_RESULT:
-            s_navigation.refresh_seconds = event->refresh_seconds;
-            s_navigation.auto_refresh = event->auto_refresh;
-            s_navigation.screen_timeout_seconds = event->screen_timeout_seconds;
-            break;
-        case QUOTA_APP_EVENT_CONNECTION:
-        case QUOTA_APP_EVENT_PAIRING_TICK:
-        default:
-            break;
+    case QUOTA_APP_EVENT_BUTTON:
+        process_button(event, &s_view_work);
+        break;
+    case QUOTA_APP_EVENT_SNAPSHOT:
+        reconcile_account_selection(&s_view_work);
+        break;
+    case QUOTA_APP_EVENT_SETTINGS_RESULT:
+        s_navigation.refresh_seconds = event->refresh_seconds;
+        s_navigation.auto_refresh = event->auto_refresh;
+        s_navigation.screen_timeout_seconds = event->screen_timeout_seconds;
+        break;
+    case QUOTA_APP_EVENT_CONNECTION:
+    case QUOTA_APP_EVENT_USB_WINDOW:
+    default:
+        break;
     }
     render_application();
 }
 
-static void application_task(void *arg)
+QUOTA_TESTABLE void application_task(void *arg)
 {
     (void)arg;
     QueueHandle_t events = quota_service_event_queue();
     quota_app_event_t event;
     for (;;) {
-        TickType_t wait = s_display.sleeping && !s_display_power_pending
-                        ? portMAX_DELAY : pdMS_TO_TICKS(1000);
+        TickType_t wait =
+            s_display.sleeping && !s_display_power_pending ? portMAX_DELAY : pdMS_TO_TICKS(1000);
         if (xQueueReceive(events, &event, wait) == pdTRUE) {
             process_event(&event);
         } else {
@@ -261,6 +294,36 @@ static void application_task(void *arg)
         }
     }
 }
+
+#ifdef CONFIG_QUOTA_RESOURCE_LOG
+#include "esp_system.h"
+
+/* Debug builds report task stack and heap headroom so hardware runs can be checked against the
+ * limits in docs/development/README.md. Water marks are bytes still unused at the deepest point. */
+#define RESOURCE_LOG_PERIOD_US (30LL * 1000 * 1000)
+
+static void log_resources(void *arg)
+{
+    (void)arg;
+    TaskHandle_t network = quota_service_network_task();
+    ESP_LOGI(TAG,
+             "resources: quota_app_stack_free_min=%u quota_network_stack_free_min=%u "
+             "heap_free=%u heap_free_min=%u",
+             (unsigned)uxTaskGetStackHighWaterMark(s_application_task),
+             network ? (unsigned)uxTaskGetStackHighWaterMark(network) : 0,
+             (unsigned)esp_get_free_heap_size(), (unsigned)esp_get_minimum_free_heap_size());
+}
+
+static void start_resource_log(void)
+{
+    static esp_timer_handle_t timer;
+    const esp_timer_create_args_t args = {.callback = log_resources, .name = "quota_resources"};
+    if (esp_timer_create(&args, &timer) != ESP_OK ||
+        esp_timer_start_periodic(timer, RESOURCE_LOG_PERIOD_US) != ESP_OK) {
+        ESP_LOGW(TAG, "resource log unavailable");
+    }
+}
+#endif
 
 static void on_button(bsp_btn_t button, bsp_btn_ev_t event, void *user)
 {
@@ -291,10 +354,9 @@ void app_main(void)
         return;
     }
     quota_service_get_view(&s_view_work);
-    quota_navigation_init(&s_navigation, s_view_work.configured,
-                         s_view_work.refresh_seconds, s_view_work.auto_refresh,
-                         s_view_work.screen_timeout_seconds,
-                         s_view_work.snapshot.account_count);
+    quota_navigation_init(&s_navigation, s_view_work.configured, s_view_work.refresh_seconds,
+                          s_view_work.auto_refresh, s_view_work.screen_timeout_seconds,
+                          s_view_work.snapshot.account_count);
     reconcile_account_selection(&s_view_work);
     observe_login_navigation(s_view_work.portable.login_state, false);
 
@@ -310,8 +372,7 @@ void app_main(void)
     if (button_result != ESP_OK) {
         ESP_LOGE(TAG, "button initialization failed (%s)", esp_err_to_name(button_result));
     }
-    if (xTaskCreate(application_task, "quota_app", 6144, NULL, 5,
-                    &s_application_task) != pdPASS) {
+    if (xTaskCreate(application_task, "quota_app", 6144, NULL, 5, &s_application_task) != pdPASS) {
         ESP_LOGE(TAG, "application event task creation failed");
         return;
     }
@@ -323,5 +384,8 @@ void app_main(void)
         ESP_LOGE(TAG, "quota service task creation failed");
         return;
     }
+#ifdef CONFIG_QUOTA_RESOURCE_LOG
+    start_resource_log();
+#endif
     ESP_LOGI(TAG, "ready");
 }

@@ -14,7 +14,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 import archive_firmware as ARCHIVE  # noqa: E402
@@ -58,8 +57,16 @@ class FirmwareArchiveTest(unittest.TestCase):
 
         table = bytearray(b"\xff" * 0xC00)
         struct.pack_into(
-            "<HBBII16sI", table, 0, 0x50AA, 0, 0, 0x10000, 0x7F0000,
-            b"factory".ljust(16, b"\x00"), 0,
+            "<HBBII16sI",
+            table,
+            0,
+            0x50AA,
+            0,
+            0,
+            0x10000,
+            0x7F0000,
+            b"factory".ljust(16, b"\x00"),
+            0,
         )
         struct.pack_into("<H", table, 32, 0xEBEB)
         table[48:64] = hashlib.md5(table[:32]).digest()
@@ -118,22 +125,33 @@ class FirmwareArchiveTest(unittest.TestCase):
         self.assertEqual(manifest["app_descriptor"]["version"], "fixture-version")
         self.assertEqual(manifest["app_descriptor"]["idf_version"], "v5.5.3")
         self.assertEqual(manifest["app_descriptor"]["project_name"], "FoloToy-AI-Passport")
-        self.assertEqual(manifest["app_elf_sha256"], manifest["app_descriptor"]["embedded_elf_sha256"])
+        self.assertEqual(
+            manifest["app_elf_sha256"], manifest["app_descriptor"]["embedded_elf_sha256"]
+        )
         self.assertEqual(set(manifest["files"]), set(ARCHIVE.ARTIFACTS))
         for name in ARCHIVE.ARTIFACTS:
             data = (self.build / name).read_bytes()
             self.assertEqual((directory / name).read_bytes(), data)
-            self.assertEqual(manifest["files"][name], {
-                "sha256": hashlib.sha256(data).hexdigest(), "size": len(data),
-            })
+            self.assertEqual(
+                manifest["files"][name],
+                {
+                    "sha256": hashlib.sha256(data).hexdigest(),
+                    "size": len(data),
+                },
+            )
         self.assertFalse((directory / "sdkconfig").exists())
         self.assertFalse((directory / "build.log").exists())
 
     def test_repeat_verifies_without_rewriting_existing_archive(self) -> None:
         directory = self.create()
-        before = {path: (path.stat().st_ino, path.stat().st_mtime_ns) for path in directory.rglob("*")}
+        before = {
+            path: (path.stat().st_ino, path.stat().st_mtime_ns) for path in directory.rglob("*")
+        }
         self.assertEqual(self.create(), directory)
-        self.assertEqual(before, {path: (path.stat().st_ino, path.stat().st_mtime_ns) for path in directory.rglob("*")})
+        self.assertEqual(
+            before,
+            {path: (path.stat().st_ino, path.stat().st_mtime_ns) for path in directory.rglob("*")},
+        )
 
     def test_dedicated_archive_subdirectory_inside_build_is_supported(self) -> None:
         directory = ARCHIVE.create_archive(self.build, self.build / "firmware")
@@ -212,13 +230,23 @@ class FirmwareArchiveTest(unittest.TestCase):
         payload = b"synthetic private user partition"
         self.write("data.bin", payload)
         table = bytearray(b"\xff" * 0xC00)
-        for index, (kind, subtype, offset, size, label) in enumerate((
-            (0, 0, 0x10000, 0x10000, b"factory"),
-            (1, 0x40, data_offset, 0x1000, b"user_data"),
-        )):
+        for index, (kind, subtype, offset, size, label) in enumerate(
+            (
+                (0, 0, 0x10000, 0x10000, b"factory"),
+                (1, 0x40, data_offset, 0x1000, b"user_data"),
+            )
+        ):
             struct.pack_into(
-                "<HBBII16sI", table, index * 32, 0x50AA, kind, subtype,
-                offset, size, label.ljust(16, b"\x00"), 0,
+                "<HBBII16sI",
+                table,
+                index * 32,
+                0x50AA,
+                kind,
+                subtype,
+                offset,
+                size,
+                label.ljust(16, b"\x00"),
+                0,
             )
         struct.pack_into("<H", table, 64, 0xEBEB)
         table[80:96] = hashlib.md5(table[:64]).digest()
@@ -241,11 +269,21 @@ class FirmwareArchiveTest(unittest.TestCase):
         original = (self.build / "flash_args").read_bytes()
         marker = self.root / "must-not-exist"
         for line in (
-            "0x1000 ../outside.bin", "0x1000 /outside.bin", "0x1000 C:/outside.bin",
-            "0x1000 a/../outside.bin", "0x1000 './outside.bin'", "0x1000 'a\\b.bin'",
-            "0x1000 FoloToy-AI-Passport.bin", "-1 outside.bin", "0x800000 outside.bin",
-            f"$(touch {marker})", f"0x1000 '$(touch {marker}).bin'", "--flash_size 4MB",
-            "--unknown value", "--flash_freq '80m;exit'", "0x1000 x.bin; exit 1",
+            "0x1000 ../outside.bin",
+            "0x1000 /outside.bin",
+            "0x1000 C:/outside.bin",
+            "0x1000 a/../outside.bin",
+            "0x1000 './outside.bin'",
+            "0x1000 'a\\b.bin'",
+            "0x1000 FoloToy-AI-Passport.bin",
+            "-1 outside.bin",
+            "0x800000 outside.bin",
+            f"$(touch {marker})",
+            f"0x1000 '$(touch {marker}).bin'",
+            "--flash_size 4MB",
+            "--unknown value",
+            "--flash_freq '80m;exit'",
+            "0x1000 x.bin; exit 1",
         ):
             with self.subTest(line=line):
                 self.write("flash_args", original + line.encode() + b"\n")
@@ -364,9 +402,18 @@ class FirmwareArchiveTest(unittest.TestCase):
             ARCHIVE.verify_archive(directory)
 
     def test_dangerous_archive_roots_and_traversal_are_rejected(self) -> None:
-        for destination in (Path("/"), Path.home(), ROOT, Path.cwd(), self.build, self.root,
-                            self.root / "missing" / ".." / "output"):
-            with self.subTest(destination=destination), self.assertRaisesRegex(ValueError, "unsafe"):
+        for destination in (
+            Path("/"),
+            Path.home(),
+            ROOT,
+            Path.cwd(),
+            self.build,
+            self.root,
+            self.root / "missing" / ".." / "output",
+        ):
+            with self.subTest(destination=destination), self.assertRaisesRegex(
+                ValueError, "unsafe"
+            ):
                 ARCHIVE.create_archive(self.build, destination)
 
     def test_interrupted_copy_does_not_publish_manifest_or_delete_unrelated_file(self) -> None:
@@ -401,7 +448,9 @@ class FirmwareArchiveTest(unittest.TestCase):
         self.assertFalse(self.destination().exists())
 
     def test_cli_create_verify_and_failed_verification(self) -> None:
-        self.assertEqual(ARCHIVE.main(["create", str(self.build), "--archive-root", str(self.output)]), 0)
+        self.assertEqual(
+            ARCHIVE.main(["create", str(self.build), "--archive-root", str(self.output)]), 0
+        )
         self.assertEqual(ARCHIVE.main(["verify", str(self.destination())]), 0)
         (self.destination() / self.map_name).write_bytes(b"tampered")
         with contextlib.redirect_stderr(io.StringIO()) as output:

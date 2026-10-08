@@ -9,24 +9,27 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 
+#include <stddef.h>
+
 static const char *TAG = "bsp_btn";
 
 static const uint16_t BTN_MV[BSP_BTN_COUNT][2] = BSP_BTN_MV_TABLE;
 
 static button_handle_t s_btn[BSP_BTN_COUNT];
-static bsp_btn_cb_t    s_cb;
-static void           *s_user;
-static volatile bool   s_ready;
+static bsp_btn_cb_t s_cb;
+static void *s_user;
+static volatile bool s_ready;
 static bool s_long_pressed[BSP_BTN_COUNT];
 
-_Static_assert(CONFIG_BUTTON_DEBOUNCE_TICKS >= 2, "release navigation needs at least two debounce ticks");
+_Static_assert(CONFIG_BUTTON_DEBOUNCE_TICKS >= 2,
+               "release navigation needs at least two debounce ticks");
 
 // ADC1 是 unit 级独占资源:iot_button 与 bsp_button_read_mv() 必须共用同一个 oneshot
 // 句柄。谁第二个调 adc_oneshot_new_unit() 谁就拿到 "adc1 is already in use"。
 static adc_oneshot_unit_handle_t s_adc;
-static adc_cali_handle_t         s_cali;
+static adc_cali_handle_t s_cali;
 
-#define BSP_BTN_ATTEN  ADC_ATTEN_DB_12       // 量程约 0~3100mV,覆盖松开态
+#define BSP_BTN_ATTEN ADC_ATTEN_DB_12 // 量程约 0~3100mV,覆盖松开态
 
 // Use the public button-driver interface, not button_adc's global registry:
 // button 4.2.0 leaves an occupied index behind when its core allocation fails.
@@ -40,8 +43,10 @@ static int64_t s_sample_time;
 static int s_sample_mv = -1;
 static bool s_sample_valid;
 
-static uint8_t button_level(button_driver_t *driver) {
-    if (!s_ready) return BUTTON_INACTIVE;
+static uint8_t button_level(button_driver_t *driver)
+{
+    if (!s_ready)
+        return BUTTON_INACTIVE;
     const bsp_adc_button_t *button = (const bsp_adc_button_t *)driver;
     const int64_t now = esp_timer_get_time();
     // Share one averaged reading across the three keys in a polling cycle.
@@ -57,53 +62,66 @@ static uint8_t button_level(button_driver_t *driver) {
             }
             sum += raw;
         }
-        if (adc_cali_raw_to_voltage(s_cali, sum / CONFIG_ADC_BUTTON_SAMPLE_TIMES,
-                                   &s_sample_mv) != ESP_OK) {
+        if (adc_cali_raw_to_voltage(s_cali, sum / CONFIG_ADC_BUTTON_SAMPLE_TIMES, &s_sample_mv) !=
+            ESP_OK) {
             s_sample_mv = -1;
         }
     }
     // Half-open windows prevent two keys from matching a shared boundary.
-    return s_sample_mv >= BTN_MV[button->index][0] &&
-           s_sample_mv < BTN_MV[button->index][1] ? BUTTON_ACTIVE : BUTTON_INACTIVE;
+    return s_sample_mv >= BTN_MV[button->index][0] && s_sample_mv < BTN_MV[button->index][1]
+               ? BUTTON_ACTIVE
+               : BUTTON_INACTIVE;
 }
 
-static esp_err_t button_driver_delete(button_driver_t *driver) {
+static esp_err_t button_driver_delete(button_driver_t *driver)
+{
     (void)driver; // Static storage; shared ADC is released after all buttons.
     return ESP_OK;
 }
 
 // 每个按键把"哪个键"随回调带回来。button 组件的回调签名固定,故用 usr_data 传索引。
-static void on_event(void *arg, void *usr_data, bsp_btn_ev_t ev) {
+static void on_event(void *arg, void *usr_data, bsp_btn_ev_t ev)
+{
     (void)arg;
-    if (!s_ready || !s_cb) return;
+    if (!s_ready || !s_cb)
+        return;
     s_cb((bsp_btn_t)(intptr_t)usr_data, ev, s_user);
 }
-static void cb_press(void *a, void *u) {
+static void cb_press(void *a, void *u)
+{
     s_long_pressed[(intptr_t)u] = false;
     on_event(a, u, BSP_BTN_PRESS);
 }
-static void cb_long(void *a, void *u) {
-    if (!s_ready || s_long_pressed[(intptr_t)u]) return;
+static void cb_long(void *a, void *u)
+{
+    if (!s_ready || s_long_pressed[(intptr_t)u])
+        return;
     s_long_pressed[(intptr_t)u] = true;
     on_event(a, u, BSP_BTN_LONG);
 }
-static void cb_release(void *a, void *u) {
-    if (!s_ready || s_long_pressed[(intptr_t)u]) return;
+static void cb_release(void *a, void *u)
+{
+    if (!s_ready || s_long_pressed[(intptr_t)u])
+        return;
     /* A release can precede the first HOLD tick after the long threshold. */
-    if (iot_button_get_pressed_time(a) >= BSP_BTN_LONG_PRESS_MS) cb_long(a, u);
-    else on_event(a, u, BSP_BTN_CLICK);
+    if (iot_button_get_pressed_time(a) >= BSP_BTN_LONG_PRESS_MS)
+        cb_long(a, u);
+    else
+        on_event(a, u, BSP_BTN_CLICK);
 }
 
 // 初始化中途失败时先停掉所有 button driver，再释放本文件持有的校准与 ADC unit。
 // button driver 仍在轮询时不能先删 ADC，否则 timer callback 会访问失效句柄。
-static void button_cleanup(void) {
+static void button_cleanup(void)
+{
     s_cb = NULL;
     s_user = NULL;
     s_ready = false;
     s_sample_valid = false;
 
     for (int i = BSP_BTN_COUNT - 1; i >= 0; i--) {
-        if (!s_btn[i]) continue;
+        if (!s_btn[i])
+            continue;
         esp_err_t e = iot_button_delete(s_btn[i]);
         if (e != ESP_OK) {
             ESP_LOGE(TAG, "按键 %d 回滚失败: %s", i, esp_err_to_name(e));
@@ -114,31 +132,40 @@ static void button_cleanup(void) {
 
     // Never free the ADC beneath a driver whose deletion failed.
     for (int i = 0; i < BSP_BTN_COUNT; ++i) {
-        if (s_btn[i]) return;
+        if (s_btn[i])
+            return;
     }
 
     if (s_cali) {
         esp_err_t e = adc_cali_delete_scheme_curve_fitting(s_cali);
-        if (e != ESP_OK) ESP_LOGE(TAG, "ADC 校准回滚失败: %s", esp_err_to_name(e));
-        else s_cali = NULL;
+        if (e != ESP_OK)
+            ESP_LOGE(TAG, "ADC 校准回滚失败: %s", esp_err_to_name(e));
+        else
+            s_cali = NULL;
     }
     if (s_adc) {
         esp_err_t e = adc_oneshot_del_unit(s_adc);
-        if (e != ESP_OK) ESP_LOGE(TAG, "ADC unit 回滚失败: %s", esp_err_to_name(e));
-        else s_adc = NULL;
+        if (e != ESP_OK)
+            ESP_LOGE(TAG, "ADC unit 回滚失败: %s", esp_err_to_name(e));
+        else
+            s_adc = NULL;
     }
 }
 
-static esp_err_t register_callbacks(button_handle_t button, void *index) {
+static esp_err_t register_callbacks(button_handle_t button, void *index)
+{
     esp_err_t e = iot_button_register_cb(button, BUTTON_PRESS_DOWN, NULL, cb_press, index);
-    if (e == ESP_OK) e = iot_button_register_cb(button, BUTTON_PRESS_UP, NULL, cb_release, index);
+    if (e == ESP_OK)
+        e = iot_button_register_cb(button, BUTTON_PRESS_UP, NULL, cb_release, index);
     /* v4.2.0 reads past the START callback array while a key remains held.
      * HOLD avoids that path; the per-key flag keeps one LONG per gesture. */
-    if (e == ESP_OK) e = iot_button_register_cb(button, BUTTON_LONG_PRESS_HOLD, NULL, cb_long, index);
+    if (e == ESP_OK)
+        e = iot_button_register_cb(button, BUTTON_LONG_PRESS_HOLD, NULL, cb_long, index);
     return e;
 }
 
-esp_err_t bsp_button_init(bsp_btn_cb_t cb, void *user) {
+esp_err_t bsp_button_init(bsp_btn_cb_t cb, void *user)
+{
     if (s_ready) {
         s_cb = cb;
         s_user = user;
@@ -155,10 +182,11 @@ esp_err_t bsp_button_init(bsp_btn_cb_t cb, void *user) {
         }
     }
 
-    s_cb = cb; s_user = user;
+    s_cb = cb;
+    s_user = user;
 
     // BSP owns one ADC unit and one calibration handle for polling and reads.
-    const adc_oneshot_unit_init_cfg_t ucfg = { .unit_id = BSP_BTN_ADC_UNIT };
+    const adc_oneshot_unit_init_cfg_t ucfg = {.unit_id = BSP_BTN_ADC_UNIT};
     esp_err_t ae = adc_oneshot_new_unit(&ucfg, &s_adc);
     if (ae != ESP_OK) {
         ESP_LOGE(TAG, "ADC unit 创建失败 (%s)", esp_err_to_name(ae));
@@ -172,7 +200,10 @@ esp_err_t bsp_button_init(bsp_btn_cb_t cb, void *user) {
         .bitwidth = ADC_BITWIDTH_DEFAULT,
     };
     ae = adc_oneshot_config_channel(s_adc, BSP_BTN_ADC_CHANNEL, &channel);
-    if (ae != ESP_OK) { button_cleanup(); return ae; }
+    if (ae != ESP_OK) {
+        button_cleanup();
+        return ae;
+    }
     const adc_cali_curve_fitting_config_t cal = {
         .unit_id = BSP_BTN_ADC_UNIT,
         .chan = BSP_BTN_ADC_CHANNEL,
@@ -188,18 +219,18 @@ esp_err_t bsp_button_init(bsp_btn_cb_t cb, void *user) {
 
     for (int i = 0; i < BSP_BTN_COUNT; i++) {
         s_drivers[i] = (bsp_adc_button_t){
-            .base = { .get_key_level = button_level, .del = button_driver_delete },
+            .base = {.get_key_level = button_level, .del = button_driver_delete},
             .index = (unsigned)i,
         };
         // 判定门限由 BSP 显式下发(见 bsp_pins.h):组件 Kconfig 默认的长按 1500ms 偏迟钝。
         const button_config_t bc = {
             .short_press_time = BSP_BTN_SHORT_PRESS_MS,
-            .long_press_time  = BSP_BTN_LONG_PRESS_MS,
+            .long_press_time = BSP_BTN_LONG_PRESS_MS,
         };
         esp_err_t e = iot_button_create(&bc, &s_drivers[i].base, &s_btn[i]);
         if (e != ESP_OK || !s_btn[i]) {
-            ESP_LOGE(TAG, "按键 %d 创建失败 (%s) —— 检查 GPIO%d 的 ADC 配置与分压电阻",
-                     i, esp_err_to_name(e), BSP_BTN_ADC_CHANNEL);
+            ESP_LOGE(TAG, "按键 %d 创建失败 (%s) —— 检查 GPIO%d 的 ADC 配置与分压电阻", i,
+                     esp_err_to_name(e), BSP_BTN_ADC_CHANNEL);
             e = e == ESP_OK ? ESP_FAIL : e;
             button_cleanup();
             return e;
@@ -207,7 +238,10 @@ esp_err_t bsp_button_init(bsp_btn_cb_t cb, void *user) {
         /* v4.2.0: drain the repeat wait on the next tick, before another
          * debounced press. A repeat-up state would otherwise miss LONG. */
         e = iot_button_set_param(s_btn[i], BUTTON_SHORT_PRESS_TIME_MS, NULL);
-        if (e != ESP_OK) { button_cleanup(); return e; }
+        if (e != ESP_OK) {
+            button_cleanup();
+            return e;
+        }
         void *idx = (void *)(intptr_t)i;
         e = register_callbacks(s_btn[i], idx);
         if (e != ESP_OK) {
@@ -219,18 +253,22 @@ esp_err_t bsp_button_init(bsp_btn_cb_t cb, void *user) {
 
     s_sample_valid = false;
     s_ready = true;
-    ESP_LOGI(TAG, "按键就绪:ADC1_CH%d 三键分压,松手响应 长按 %dms",
-             BSP_BTN_ADC_CHANNEL, BSP_BTN_LONG_PRESS_MS);
+    ESP_LOGI(TAG, "按键就绪:ADC1_CH%d 三键分压,松手响应 长按 %dms", BSP_BTN_ADC_CHANNEL,
+             BSP_BTN_LONG_PRESS_MS);
     return ESP_OK;
 }
 
-int bsp_button_read_mv(void) {
+int bsp_button_read_mv(void)
+{
     // 读的是 bsp_button_init() 建好、并与 iot_button 共用的那一路 ADC。
     // 单次采样与组件的按键轮询互不干扰(oneshot 内部自带锁)。
-    if (!s_adc || !s_cali) return -1;
+    if (!s_adc || !s_cali)
+        return -1;
 
     int raw = 0, mv = 0;
-    if (adc_oneshot_read(s_adc, BSP_BTN_ADC_CHANNEL, &raw) != ESP_OK) return -1;
-    if (adc_cali_raw_to_voltage(s_cali, raw, &mv) != ESP_OK) return -1;
+    if (adc_oneshot_read(s_adc, BSP_BTN_ADC_CHANNEL, &raw) != ESP_OK)
+        return -1;
+    if (adc_cali_raw_to_voltage(s_cali, raw, &mv) != ESP_OK)
+        return -1;
     return mv;
 }

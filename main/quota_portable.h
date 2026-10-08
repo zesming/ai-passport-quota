@@ -161,5 +161,6 @@ typedef enum {
 static inline void quota_portable_clear_secret(void *memory, size_t length)
 {
     volatile unsigned char *bytes = (volatile unsigned char *)memory;
-    while (length-- != 0) *bytes++ = 0;
+    while (length-- != 0)
+        *bytes++ = 0;
 }

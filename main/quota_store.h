@@ -24,27 +24,29 @@ bool quota_store_erase_retired(bool default_partition_ready);
  * External pointers use a temporary record and fail while one is acquired. */
 quota_portable_credential_t *quota_store_credential_acquire(void);
 void quota_store_credential_release(quota_portable_credential_t *credential);
-quota_store_read_result_t quota_store_load_credential_result(
-    uint8_t slot, quota_portable_credential_t *credential);
+quota_store_read_result_t
+quota_store_load_credential_result(uint8_t slot, quota_portable_credential_t *credential);
 bool quota_store_save_credential(uint8_t slot, const quota_portable_credential_t *credential);
 bool quota_store_remove_credential(uint8_t slot, const char *id, uint32_t generation);
 
 /* One complete model blob, verified after every attempted write. Loading a catalog that still
- * holds content the product dropped (other providers, rows of a removed source, pending rows, pending
- * network, legacy endpoint) first frees their credential slots and cached observations, then
- * commits the cleaned catalog at sequence + 1. A failed step returns an error and repeats on
+ * holds content the product dropped (other providers, rows of a removed source, pending rows,
+ * pending network, legacy endpoint) first frees their credential slots and cached observations,
+ * then commits the cleaned catalog at sequence + 1. A failed step returns an error and repeats on
  * the next load. */
-typedef enum { QUOTA_MODEL_APPLIED, QUOTA_MODEL_NOT_APPLIED,
-               QUOTA_MODEL_WRITE_UNKNOWN } quota_model_write_result_t;
-quota_store_read_result_t quota_store_load_model_result(quota_model_t *model,
-                                                       uint64_t *sequence);
-quota_model_write_result_t quota_store_save_model_verified(
-    uint64_t expected_previous_sequence, const quota_model_t *candidate,
-    uint64_t candidate_sequence);
+typedef enum {
+    QUOTA_MODEL_APPLIED,
+    QUOTA_MODEL_NOT_APPLIED,
+    QUOTA_MODEL_WRITE_UNKNOWN
+} quota_model_write_result_t;
+quota_store_read_result_t quota_store_load_model_result(quota_model_t *model, uint64_t *sequence);
+quota_model_write_result_t quota_store_save_model_verified(uint64_t expected_previous_sequence,
+                                                           const quota_model_t *candidate,
+                                                           uint64_t candidate_sequence);
 /* Free every credential slot (tombstones); used when no catalog exists. */
 quota_store_read_result_t quota_store_release_orphan_credentials(void);
 /* Observation cache never supplies identity, aliases, settings or authority. */
-bool quota_store_save_observations(const quota_model_t *model,
-                                   const quota_snapshot_t *snapshot, uint64_t stored_at);
-quota_store_read_result_t quota_store_load_observations(
-    const quota_model_t *model, uint64_t now, quota_snapshot_t *snapshot);
+bool quota_store_save_observations(const quota_model_t *model, const quota_snapshot_t *snapshot,
+                                   uint64_t stored_at);
+quota_store_read_result_t quota_store_load_observations(const quota_model_t *model, uint64_t now,
+                                                        quota_snapshot_t *snapshot);

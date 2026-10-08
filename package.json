@@ -1,0 +1,15 @@
+{
+  "name": "ai-passport-quota",
+  "private": true,
+  "description": "Development checks only; the firmware build does not need Node.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "format": "prettier --write \"main/*.mjs\" \"tools/*.mjs\" \"tests/*.mjs\" package.json .prettierrc.json",
+    "format:check": "prettier --check \"main/*.mjs\" \"tools/*.mjs\" \"tests/*.mjs\" package.json .prettierrc.json"
+  },
+  "devDependencies": {
+    "prettier": "3.9.9"
+  }
+}

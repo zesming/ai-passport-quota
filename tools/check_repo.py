@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+import unicodedata
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -15,6 +16,14 @@ FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 HEADING_RE = re.compile(r"^ {0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", re.M)
 LANGUAGE_LINK_RE = re.compile(r"\]\([^)]*\.(?:zh_CN|en_US)\.md|href=\"[^\"]*\.(?:zh_CN|en_US)\.md|\[English\]|\[简体中文\]", re.I)
+LINE_LIMIT = 100
+LINE_LIMIT_ROOTS = ("main/", "components/", "tests/")
+# Third-party code, generated data and pages that the single-page setup rework replaces.
+LINE_LIMIT_EXEMPT = (
+    "tests/cjson/",
+    "main/quota_brand_assets.c",
+    "main/portable_setup.html",
+)
 SECRET_PATTERNS = {
     "GitHub token": re.compile(r"(?:ghp_|github_pat_)[A-Za-z0-9_]{20,}"),
     "AWS access key": re.compile(r"AKIA[0-9A-Z]{16}"),
@@ -134,6 +143,21 @@ def check_conflict_markers(files: list[Path], errors: list[str]) -> None:
             errors.append(f"{path.relative_to(ROOT)}: unresolved merge conflict marker")
 
 
+def display_width(line: str) -> int:
+    """Columns as clang-format counts them: wide East Asian characters take two."""
+    return sum(2 if unicodedata.east_asian_width(character) in "WF" else 1 for character in line)
+
+
+def check_line_length(files: list[Path], errors: list[str]) -> None:
+    for path in files:
+        name = path.relative_to(ROOT).as_posix()
+        if not name.startswith(LINE_LIMIT_ROOTS) or name.startswith(LINE_LIMIT_EXEMPT):
+            continue
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if display_width(line) > LINE_LIMIT:
+                errors.append(f"{name}:{number}: longer than {LINE_LIMIT} columns")
+
+
 def main() -> int:
     errors: list[str] = []
     files = text_files()
@@ -143,6 +167,7 @@ def main() -> int:
     check_action_pins(errors)
     check_sensitive_content(files, errors)
     check_conflict_markers(files, errors)
+    check_line_length(files, errors)
 
     if errors:
         for error in errors:

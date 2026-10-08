@@ -6,7 +6,9 @@
 | --- | --- |
 | 固件输入与显示生命周期 | `main/main.c` |
 | 纯状态、解析与时序 | `main/quota_logic.c`、`main/quota_logic.h` |
-| 网络/USB 执行者与帧解析 | `main/quota_service.c`、`main/quota_usb.c` |
+| 网络任务、事件与视图 | `main/quota_service.c` |
+| Wi-Fi 驱动 | `main/quota_wifi.c` |
+| USB 设置窗口、会话与帧解析 | `main/quota_usb.c`、`main/quota_json.c` |
 | 账户目录、控制器、授权/查询与存储 | `main/quota_catalog.c`、`main/quota_portable_service.c`、`main/quota_direct*.c`、`main/quota_store.c` |
 | 热点设置页 | `main/quota_portal.c`、`main/portable_setup.html`、`main/portable_setup.mjs`、`main/portable_serial.mjs` |
 | 看板与显示资源 | `main/quota_ui.c`、`main/quota_brand_assets.c`、`assets/` |
@@ -27,6 +29,22 @@ idf.py --version
 ./tools/validate.sh --firmware  # 隔离构建和镜像/归档检查
 ./tools/validate.sh             # 两项固件门禁
 ```
+
+## 格式与测试结构
+
+C 用 `.clang-format`（LLVM 基础，4 空格，100 列），JS 用根目录 `package.json` 锁定的 prettier，二者随 `--static` 检查。clang-format 固定为 23.1.3（`pipx install clang-format==23.1.3`）。数据数组用 `// clang-format off` 包住。`tools/check_repo.py` 另检查 `main/`、`components/`、`tests/` 的行宽，豁免项写在该脚本里。
+
+主机测试把固件源文件整体编译并链接，不再从源码中抽取函数。固件内部需要给测试看的符号用 `QUOTA_TESTABLE`（`main/quota_testable.h`）标记：固件里是 `static`，测试以 `-DQUOTA_HOST_TEST` 构建时对外可见。`tests/host_sdk/` 提供 ESP-IDF、FreeRTOS 和 LVGL 的主机替身，以及可被测试覆盖的弱默认实现。`tests/runtime_helpers.py` 的 `compile_and_run(..., host_sdk=True)` 负责接线。仅两项 SDK 测试仍从第三方源码（IDF 的 USB 控制台、按键组件）截取函数，用 `vendor_function`。
+
+## 资源余量
+
+调试构建加 `sdkconfig.resource_log` 覆盖层，每 30 秒记录一次 `quota_app`、`quota_network` 的栈剩余最小值和堆的当前与历史最小空闲值：
+
+```bash
+SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.resource_log" idf.py -B <临时目录> build
+```
+
+门限：`quota_app` 与 `quota_network` 栈剩余不少于 1024 B，最小空闲堆不少于 16 KB。测量场景为热点会话中有待保存的 TLS、8 个账户连续刷新、ChatGPT 授权全过程。日志数值只有真机才有意义；主机测试构建该路径并检查两个任务和堆都被读取。
 
 迭代时运行聚焦检查。固件交付使用完整门禁。CI 调用同一门禁，不另维护竞争的构建命令序列。仅文档修改需要文档检查，无需刷写无关固件。
 
