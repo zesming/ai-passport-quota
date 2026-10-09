@@ -383,6 +383,8 @@ static void log_resources(void *arg)
 {
     (void)arg;
     TaskHandle_t network = quota_service_network_task();
+    unsigned app_stack = (unsigned)uxTaskGetStackHighWaterMark(s_application_task);
+    unsigned network_stack = network ? (unsigned)uxTaskGetStackHighWaterMark(network) : 0;
     /* The LVGL pool is read under the LVGL lock: its peak is the number the 24 KB pool is judged
      * by (docs/development/README.md). */
     lv_mem_monitor_t pool = {0};
@@ -396,9 +398,8 @@ static void log_resources(void *arg)
     ESP_LOGI(TAG,
              "resources: quota_app_stack_free_min=%u quota_network_stack_free_min=%u "
              "heap_free=%u heap_free_min=%u",
-             (unsigned)uxTaskGetStackHighWaterMark(s_application_task),
-             network ? (unsigned)uxTaskGetStackHighWaterMark(network) : 0,
-             (unsigned)esp_get_free_heap_size(), (unsigned)esp_get_minimum_free_heap_size());
+             app_stack, network_stack, (unsigned)esp_get_free_heap_size(),
+             (unsigned)esp_get_minimum_free_heap_size());
 }
 
 static void start_resource_log(void)
