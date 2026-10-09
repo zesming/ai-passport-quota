@@ -485,7 +485,7 @@ static void render_wifi(const quota_service_view_t *service)
                         s_ui.wifi_icon);
     s_ui.wifi_icon = icon;
     bool signal = icon >= QUOTA_WIFI_ICON_SIGNAL_1;
-    int lit = signal ? icon - QUOTA_WIFI_ICON_SIGNAL_1 : -1;
+    int lit = signal ? (int)icon - (int)QUOTA_WIFI_ICON_SIGNAL_1 : -1;
     if (icon == QUOTA_WIFI_ICON_HIDDEN || (signal && lit == 2)) {
         show(s_ui.wifi_dim, false);
     } else {
