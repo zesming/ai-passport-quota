@@ -81,7 +81,7 @@ run_static_checks() {
         -Itests/bsp_stubs -Icomponents/bsp/include -Icomponents/bsp/src \
         tests/test_bsp_power.c -o "${test_dir}/test_bsp_power"
     "${test_dir}/test_bsp_power"
-    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -DCONFIG_BSP_SLEEP_PROFILE \
+    "${CC:-cc}" -std=c11 -D_DEFAULT_SOURCE -Wall -Wextra -Werror -DCONFIG_BSP_SLEEP_PROFILE \
         -Itests/bsp_stubs -Icomponents/bsp/include -Icomponents/bsp/src \
         tests/test_bsp_power.c -o "${test_dir}/test_bsp_power_profile"
     "${test_dir}/test_bsp_power_profile"
