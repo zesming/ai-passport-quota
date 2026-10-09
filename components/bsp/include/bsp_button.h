@@ -31,3 +31,9 @@ esp_err_t bsp_button_init(bsp_btn_cb_t cb, void *user);
 // ★ 换了分压/上拉阻值后,用它测出自己的三档电压,再改 bsp_pins.h 的 BSP_BTN_MV_TABLE。
 // 读取失败返回 -1。
 int bsp_button_read_mv(void);
+
+// 息屏：停止/恢复 button 组件的 5 ms 轮询定时器（iot_button_stop/resume），两者幂等。
+// 停止期间不产生任何按键事件；恢复时若按键仍按着，状态机从停止前的状态继续。
+// 按键未就绪（bsp_button_init 失败）时返回 ESP_ERR_INVALID_STATE。
+esp_err_t bsp_button_suspend(void);
+esp_err_t bsp_button_resume(void);

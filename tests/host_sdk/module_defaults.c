@@ -4,6 +4,7 @@
 #include "bsp_button.h"
 #include "bsp_display.h"
 #include "bsp_i2c.h"
+#include "bsp_power.h"
 #include "quota_portable_service.h"
 #include "quota_store.h"
 #include "quota_ui.h"
@@ -158,6 +159,29 @@ WEAK bool bsp_lvgl_set_sleeping(bool sleeping)
 WEAK bool bsp_lvgl_refresh(void)
 {
     return true;
+}
+WEAK void bsp_power_set_wake_callback(bsp_power_wake_cb_t cb, void *user)
+{
+    (void)cb;
+    (void)user;
+}
+WEAK esp_err_t bsp_power_enter_screen_off(void)
+{
+    return ESP_OK;
+}
+WEAK esp_err_t bsp_power_exit_screen_off(void)
+{
+    return ESP_OK;
+}
+WEAK bool bsp_power_screen_off(void)
+{
+    return false;
+}
+WEAK bool bsp_power_wake_gesture_drop(bsp_btn_t button, bsp_btn_ev_t event)
+{
+    (void)button;
+    (void)event;
+    return false;
 }
 WEAK esp_err_t bsp_battery_init(void)
 {

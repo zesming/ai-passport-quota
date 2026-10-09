@@ -70,6 +70,20 @@ enum { STUB_PRESS_DOWN = 0, STUB_PRESS_UP = 1, STUB_LONG_PRESS_HOLD = 5 };
 static button_dev_t devs[BSP_BTN_COUNT];
 static button_cb_info_t infos[BSP_BTN_COUNT][BUTTON_EVENT_MAX];
 static unsigned created;
+/* The vendor timer is driven by the harness, so stop/resume only track the running flag here. */
+static int timer_running = 1;
+int iot_button_stop(void)
+{
+    assert(timer_running);
+    timer_running = 0;
+    return 0;
+}
+int iot_button_resume(void)
+{
+    assert(!timer_running);
+    timer_running = 1;
+    return 0;
+}
 uint32_t iot_button_get_pressed_time(button_dev_t *b)
 {
     return b->ticks * TICKS_INTERVAL;
@@ -218,6 +232,8 @@ static void run(bsp_btn_t key) {
 int main(void) {
     assert(bsp_button_init(receive,NULL)==0 && created==BSP_BTN_COUNT);
     run(BSP_BTN_UP); run(BSP_BTN_DOWN); run(BSP_BTN_OK);
+    assert(bsp_button_suspend()==0 && !timer_running && bsp_button_suspend()==0);
+    assert(bsp_button_resume()==0 && timer_running && bsp_button_resume()==0);
     puts("locked button rapid taps, second hold, sleep/wake and bounce passed");
 }
 """

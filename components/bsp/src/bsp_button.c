@@ -19,6 +19,7 @@ static button_handle_t s_btn[BSP_BTN_COUNT];
 static bsp_btn_cb_t s_cb;
 static void *s_user;
 static volatile bool s_ready;
+static bool s_suspended;
 static bool s_long_pressed[BSP_BTN_COUNT];
 
 _Static_assert(CONFIG_BUTTON_DEBOUNCE_TICKS >= 2,
@@ -117,6 +118,7 @@ static void button_cleanup(void)
     s_cb = NULL;
     s_user = NULL;
     s_ready = false;
+    s_suspended = false;
     s_sample_valid = false;
 
     for (int i = BSP_BTN_COUNT - 1; i >= 0; i--) {
@@ -271,4 +273,31 @@ int bsp_button_read_mv(void)
     if (adc_cali_raw_to_voltage(s_cali, raw, &mv) != ESP_OK)
         return -1;
     return mv;
+}
+
+// 息屏期间停掉 5 ms 的按键轮询定时器,由 bsp_power 的 50 ms 采样接管唤醒检测。
+// 两个调用都幂等；按键未就绪（初始化失败）时返回错误，调用方据此不进入深度息屏。
+esp_err_t bsp_button_suspend(void)
+{
+    if (!s_ready)
+        return ESP_ERR_INVALID_STATE;
+    if (s_suspended)
+        return ESP_OK;
+    esp_err_t e = iot_button_stop();
+    if (e == ESP_OK)
+        s_suspended = true;
+    return e;
+}
+
+esp_err_t bsp_button_resume(void)
+{
+    if (!s_ready)
+        return ESP_ERR_INVALID_STATE;
+    if (!s_suspended)
+        return ESP_OK;
+    s_sample_valid = false; // The cached shared sample is stale after the sleep.
+    esp_err_t e = iot_button_resume();
+    if (e == ESP_OK)
+        s_suspended = false;
+    return e;
 }

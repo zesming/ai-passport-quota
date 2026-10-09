@@ -162,13 +162,91 @@ bool bsp_lvgl_set_sleeping(bool sleeping)
             lv_obj_invalidate(lv_display_get_screen_active(s_disp));
         }
     }
-    /* Keep the port task/tick alive: lvgl_port_stop disables the timer handler,
-       whose LVGL 9.5 disabled path returns 1 and makes this port poll every 2ms. */
+    /* Keep the port task/tick alive here: lvgl_port_stop alone disables the timer handler,
+       whose LVGL 9.5 disabled path returns 1 and makes this port poll every 2ms.
+       bsp_lvgl_suspend() stops the tick safely by pausing every timer first. */
     bsp_lvgl_unlock();
     if (!sleeping && first == ESP_OK && second == ESP_OK) {
         lvgl_port_task_wake(LVGL_PORT_EVENT_DISPLAY, s_disp);
     }
     return first == ESP_OK && second == ESP_OK;
+}
+
+// Screen-off quiet: LVGL timers (animations, UI timers) would otherwise wake the port task, and the
+// 2 ms tick timer would keep the chip out of light sleep. Pause what is running, stop the tick,
+// then re-enable the timer handler: with every timer paused it returns LV_NO_TIMER_READY and the
+// port task blocks for task_max_sleep_ms instead of polling (see bsp_lvgl_set_sleeping).
+#define BSP_LVGL_SUSPEND_MAX_TIMERS 16
+
+static lv_timer_t *s_suspended_timers[BSP_LVGL_SUSPEND_MAX_TIMERS];
+static uint8_t s_suspended_count;
+static bool s_suspended;
+
+// Caller holds the LVGL lock. A recorded timer deleted in the meantime is skipped.
+static void resume_recorded_timers(void)
+{
+    for (uint8_t i = 0; i < s_suspended_count; ++i) {
+        for (lv_timer_t *timer = lv_timer_get_next(NULL); timer; timer = lv_timer_get_next(timer)) {
+            if (timer == s_suspended_timers[i]) {
+                lv_timer_resume(timer);
+                break;
+            }
+        }
+    }
+    s_suspended_count = 0;
+}
+
+bool bsp_lvgl_suspend(void)
+{
+    if (!bsp_lvgl_lock(500))
+        return false;
+    if (s_suspended) {
+        bsp_lvgl_unlock();
+        return true;
+    }
+    s_suspended_count = 0;
+    bool overflow = false;
+    for (lv_timer_t *timer = lv_timer_get_next(NULL); timer; timer = lv_timer_get_next(timer)) {
+        if (lv_timer_get_paused(timer))
+            continue;
+        if (s_suspended_count == BSP_LVGL_SUSPEND_MAX_TIMERS) {
+            overflow = true; // Left running: the port task wakes more often but stays correct.
+            continue;
+        }
+        lv_timer_pause(timer);
+        s_suspended_timers[s_suspended_count++] = timer;
+    }
+    if (overflow)
+        ESP_LOGW(TAG, "运行中的 LVGL 定时器超过 %d 个，多出的未暂停", BSP_LVGL_SUSPEND_MAX_TIMERS);
+    if (lvgl_port_stop() != ESP_OK) {
+        resume_recorded_timers();
+        bsp_lvgl_unlock();
+        return false;
+    }
+    lv_timer_enable(true);
+    s_suspended = true;
+    bsp_lvgl_unlock();
+    return true;
+}
+
+bool bsp_lvgl_resume(void)
+{
+    if (!bsp_lvgl_lock(500))
+        return false;
+    if (!s_suspended) {
+        bsp_lvgl_unlock();
+        return true;
+    }
+    if (lvgl_port_resume() != ESP_OK) {
+        bsp_lvgl_unlock();
+        return false;
+    }
+    resume_recorded_timers();
+    s_suspended = false;
+    bsp_lvgl_unlock();
+    // The port task may be blocked for task_max_sleep_ms; rerun the handler now.
+    lvgl_port_task_wake(LVGL_PORT_EVENT_DISPLAY, s_disp);
+    return true;
 }
 
 bool bsp_lvgl_refresh(void)

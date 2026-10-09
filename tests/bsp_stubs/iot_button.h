@@ -36,3 +36,5 @@ esp_err_t iot_button_register_cb(button_handle_t, button_event_t, button_event_a
                                  button_cb_t, void *);
 esp_err_t iot_button_set_param(button_handle_t, button_param_t, void *);
 uint32_t iot_button_get_pressed_time(button_handle_t);
+esp_err_t iot_button_stop(void);
+esp_err_t iot_button_resume(void);

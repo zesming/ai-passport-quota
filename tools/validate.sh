@@ -72,6 +72,15 @@ run_static_checks() {
         tests/test_bsp_lvgl_init.c components/bsp/src/bsp_display_rounding.c \
         -o "${test_dir}/test_bsp_lvgl_init"
     "${test_dir}/test_bsp_lvgl_init"
+    # The screen-off power sequence is built plain and with the profiling hooks enabled.
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror \
+        -Itests/bsp_stubs -Icomponents/bsp/include \
+        tests/test_bsp_power.c -o "${test_dir}/test_bsp_power"
+    "${test_dir}/test_bsp_power"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -DCONFIG_BSP_SLEEP_PROFILE \
+        -Itests/bsp_stubs -Icomponents/bsp/include \
+        tests/test_bsp_power.c -o "${test_dir}/test_bsp_power_profile"
+    "${test_dir}/test_bsp_power_profile"
     for suite in quota_fonts quota_ui_runtime quota_refresh_runtime quota_power_runtime quota_usb_runtime quota_wifi_runtime quota_storage_runtime quota_catalog_runtime quota_portable_runtime quota_direct_runtime quota_portable_service_runtime check_repo publish_setup_page verify_firmware archive_firmware; do
         PYTHONDONTWRITEBYTECODE=1 python3 "tests/test_${suite}.py"
     done

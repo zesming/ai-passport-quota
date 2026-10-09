@@ -5,7 +5,8 @@ idf_component_register(
          "src/bsp_display_rounding.c"
          "src/bsp_button.c"
          "src/bsp_battery.c"
+         "src/bsp_power.c"
     INCLUDE_DIRS "include"
     REQUIRES driver esp_driver_i2c esp_lcd esp_lvgl_port button esp_adc
-    PRIV_REQUIRES esp_timer
+    PRIV_REQUIRES esp_timer esp_pm
 )

@@ -13,6 +13,7 @@ static int adc_token, cal_token, adc_live, cal_live, live_buttons;
 static int create_calls, callback_calls, param_calls, fail_create, fail_callback, fail_param;
 static int fail_adc, fail_channel, fail_cal, fail_read, fail_convert, fail_delete;
 static int raw_mv, reads, events;
+static int timer_running = 1, fail_stop, fail_resume, stop_calls, resume_calls;
 static int64_t clock_us;
 
 esp_err_t adc_oneshot_new_unit(const adc_oneshot_unit_init_cfg_t *cfg, adc_oneshot_unit_handle_t *h)
@@ -124,6 +125,24 @@ uint32_t iot_button_get_pressed_time(button_handle_t h)
     (void)h;
     return 0;
 }
+esp_err_t iot_button_stop(void)
+{
+    ++stop_calls;
+    if (fail_stop)
+        return ESP_FAIL;
+    assert(timer_running); // The real driver rejects a stop while the timer is not running.
+    timer_running = 0;
+    return ESP_OK;
+}
+esp_err_t iot_button_resume(void)
+{
+    ++resume_calls;
+    if (fail_resume)
+        return ESP_FAIL;
+    assert(!timer_running);
+    timer_running = 1;
+    return ESP_OK;
+}
 static void event_cb(bsp_btn_t btn, bsp_btn_ev_t ev, void *u)
 {
     assert(btn == BSP_BTN_OK && ev == BSP_BTN_CLICK && u == &events);
@@ -219,6 +238,18 @@ int main(void)
     for (int i = 0; i < BSP_BTN_COUNT; ++i)
         assert(!button_level(&s_drivers[i].base));
     assert(bsp_button_read_mv() == -1);
+    /* Screen-off suspend/resume: idempotent, failures keep state so the caller can retry. */
+    s_sample_valid = true;
+    fail_stop = 1;
+    assert(bsp_button_suspend() == ESP_FAIL && !s_suspended && timer_running);
+    fail_stop = 0;
+    assert(bsp_button_suspend() == ESP_OK && s_suspended && !timer_running && stop_calls == 2);
+    assert(bsp_button_suspend() == ESP_OK && stop_calls == 2); /* Already stopped. */
+    fail_resume = 1;
+    assert(bsp_button_resume() == ESP_FAIL && s_suspended && !timer_running);
+    fail_resume = 0;
+    assert(bsp_button_resume() == ESP_OK && !s_suspended && timer_running && !s_sample_valid);
+    assert(bsp_button_resume() == ESP_OK && resume_calls == 2); /* Not suspended: no driver call. */
     fail_delete = 1;
     button_cleanup();
     assert(adc_live && cal_live && live_buttons == BSP_BTN_COUNT);
@@ -226,5 +257,7 @@ int main(void)
     fail_delete = 0;
     button_cleanup();
     retry_success();
+    assert(bsp_button_suspend() == ESP_ERR_INVALID_STATE); /* Buttons never became ready. */
+    assert(bsp_button_resume() == ESP_ERR_INVALID_STATE);
     puts("BSP button fault-injection tests: PASS");
 }
