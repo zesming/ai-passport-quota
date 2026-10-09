@@ -298,8 +298,13 @@ esp_err_t bsp_button_suspend(void)
     if (s_suspended)
         return ESP_OK;
     esp_err_t e = iot_button_stop();
-    if (e == ESP_OK)
+    if (e == ESP_OK) {
         s_suspended = true;
+        // A key held at the stop (its press cut off mid-gesture) never reports a release after
+        // the restart; this flag makes that release inert. A new press clears it (cb_press).
+        for (int i = 0; i < BSP_BTN_COUNT; ++i)
+            s_long_pressed[i] = true;
+    }
     return e;
 }
 

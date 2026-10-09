@@ -15,7 +15,8 @@ START = "=== screen-off profile: start ==="
 LATER = "=== screen-off profile: +60 s ==="
 END = "=== end of screen-off profile ==="
 
-MODE_ROW = re.compile(r"^(SLEEP|APB_MIN|APB_MAX|CPU_MAX)\s+\d+M\s+(\d+)\s", re.M)
+# IDF prints the frequency as "%-3uM": "160M" but "40 M" at 40 MHz.
+MODE_ROW = re.compile(r"^(SLEEP|APB_MIN|APB_MAX|CPU_MAX)\s+\d+\s*M\s+(\d+)\s", re.M)
 SLEEP_COUNTS = re.compile(r"light_sleep_counts:(\d+)\s+light_sleep_reject_counts:(\d+)")
 # esp_timer_dump with profiling: name, period, alarm, armed, triggered, skipped, callback time.
 TIMER_ROW = re.compile(r"^(\S.{0,19}?)\s+(\d+)\s+(-?\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$", re.M)

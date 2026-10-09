@@ -50,7 +50,7 @@ SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.resource_log" idf.py -B <临时
 
 息屏默认是 POLL 模式的自动浅睡眠。电流须用电池供电并把电流计（PPK2 一类）串在电池线上测，连着 USB 主机时不会进入浅睡眠，USB 电流表无效。分别测 30 秒平均电流：亮屏、旧固件息屏、新固件息屏，数值写入 CHANGELOG。
 
-profiling 构建加 `sdkconfig.profiling` 覆盖层（`CONFIG_PM_PROFILING`、`CONFIG_ESP_TIMER_PROFILING`、`CONFIG_BSP_SLEEP_PROFILE`）。固件在息屏开始时和 60 秒后各把 `esp_pm_dump_locks()` 与 `esp_timer_dump()` 的统计存进内存，息屏期间不打印；亮屏后每 15 秒重复打印这一对快照（最多 20 次）。测量时 USB 必须拔掉，唤醒亮屏后再插上 USB 读串口，然后用脚本算两次快照的差值：
+profiling 构建加 `sdkconfig.profiling` 覆盖层（`CONFIG_PM_PROFILING`、`CONFIG_ESP_TIMER_PROFILING`、`CONFIG_BSP_SLEEP_PROFILE`）。固件在息屏开始时和 60 秒后各把 `esp_pm_dump_locks()` 与 `esp_timer_dump()` 的统计存进内存，息屏期间不打印；亮屏后每 15 秒重复打印这一对快照（最多 20 次）。测量时 USB 必须拔掉，唤醒亮屏后再插上 USB，用 `idf.py monitor --no-reset` 读串口（不加 `--no-reset` 会复位设备，丢掉内存里的快照），把输出存成日志，再用脚本算两次快照的差值：
 
 ```bash
 SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.profiling" idf.py -B <临时目录> build

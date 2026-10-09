@@ -353,6 +353,27 @@ static void scenario(int sleeping_long_press_key, int wake_key, int click_key,
     real_click(click_key);
     assert(passed - before == 2); /* PRESS + CLICK: the first real press is not swallowed. */
 }
+/* A key pressed just before the stop stays "pressed" inside the button state machine; its
+ * residual release must neither reach the application nor end the wake gesture early. */
+static void race_scenario(int pre_key, int wake_key, int click_key, int held_at_exit,
+                          unsigned held_ticks) {
+    passed = dropped = woke = 0; adc_mv = 3300; poll_timer.armed = 0; timer_running = 1;
+    fresh_state_machines(); tick(40);
+    adc_mv = key_mv[pre_key]; tick(15);
+    assert(bsp_power_enter_screen_off() == 0 && !timer_running);
+    adc_mv = 3300; now += 2000;
+    fire(); assert(!woke);
+    adc_mv = key_mv[wake_key]; now += 50; fire(); assert(woke == 1);
+    if (!held_at_exit) adc_mv = 3300;
+    assert(bsp_power_exit_screen_off() == 0);
+    unsigned before = passed;
+    tick(held_ticks); adc_mv = 3300; tick(10);
+    assert(passed == before); /* Neither the residual release nor the wake press got through. */
+    now += 1000;
+    before = passed;
+    real_click(click_key);
+    assert(passed - before == 2);
+}
 int main(void) {
     bsp_power_set_wake_callback(on_wake, NULL);
     assert(bsp_button_init(receive, NULL) == 0);
@@ -364,6 +385,10 @@ int main(void) {
     scenario(BSP_BTN_DOWN, BSP_BTN_DOWN, BSP_BTN_UP, 1);
     scenario(BSP_BTN_DOWN, BSP_BTN_UP, BSP_BTN_DOWN, 20);    /* Sleep with DOWN, wake with UP. */
     scenario(BSP_BTN_DOWN, BSP_BTN_OK, BSP_BTN_DOWN, 140);
+    race_scenario(BSP_BTN_OK, BSP_BTN_UP, BSP_BTN_DOWN, 1, 20);   /* Press cut by the stop. */
+    race_scenario(BSP_BTN_OK, BSP_BTN_UP, BSP_BTN_DOWN, 0, 0);    /* Wake tap already released. */
+    race_scenario(BSP_BTN_OK, BSP_BTN_OK, BSP_BTN_DOWN, 1, 20);
+    race_scenario(BSP_BTN_DOWN, BSP_BTN_UP, BSP_BTN_OK, 1, 20);
     puts("wake gesture with the locked state machine passed");
 }
 """

@@ -244,6 +244,8 @@ int main(void)
     assert(bsp_button_suspend() == ESP_FAIL && !s_suspended && timer_running);
     fail_stop = 0;
     assert(bsp_button_suspend() == ESP_OK && s_suspended && !timer_running && stop_calls == 2);
+    for (int i = 0; i < BSP_BTN_COUNT; ++i)
+        assert(s_long_pressed[i]); /* A press cut by the stop must not report a late release. */
     assert(bsp_button_suspend() == ESP_OK && stop_calls == 2); /* Already stopped. */
     fail_resume = 1;
     assert(bsp_button_resume() == ESP_FAIL && s_suspended && !timer_running);
