@@ -177,6 +177,10 @@ WEAK bool bsp_power_screen_off(void)
 {
     return false;
 }
+WEAK bool bsp_power_light_sleep_armed(void)
+{
+    return true;
+}
 WEAK bool bsp_power_wake_gesture_drop(bsp_btn_t button, bsp_btn_ev_t event)
 {
     (void)button;

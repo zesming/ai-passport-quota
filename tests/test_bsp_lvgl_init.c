@@ -143,10 +143,10 @@ void lv_timer_enable(bool enable)
 esp_err_t lvgl_port_stop(void)
 {
     assert(lock_depth);
-    if (fail_port_stop)
-        return ESP_ERR_INVALID_STATE;
     /* The real call disables the handler first, then stops the 2 ms tick timer. */
     handler_enabled = 0;
+    if (fail_port_stop)
+        return ESP_ERR_INVALID_STATE;
     tick_running = 0;
     log_event('S');
     return ESP_OK;
@@ -233,7 +233,7 @@ static void check_suspend_resume_bookkeeping(void)
 
     fail_port_stop = 1; /* Tick stop failure rolls the paused timers back. */
     assert(!bsp_lvgl_suspend() && !s_suspended && tick_running && running_timers() == 3);
-    assert(!s_suspended_count && !lock_depth);
+    assert(!s_suspended_count && !lock_depth && handler_enabled); /* Handler re-enabled. */
     fail_port_stop = 0;
 
     event_log[0] = '\0';

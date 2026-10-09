@@ -7,9 +7,9 @@
 ### 重设计第五阶段：息屏浅睡眠（POLL 模式）
 
 - 息屏进入 MCU 自动浅睡眠：启用 `CONFIG_FREERTOS_USE_TICKLESS_IDLE`、`CONFIG_PM_SLP_DISABLE_GPIO`、`CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION` 并把 `light_sleep_enable` 设为 `true`。亮屏期间仍持有 `quota_awake` 锁，所以只在息屏时才会睡。
-- 息屏顺序：面板 Sleep In → 停按键轮询、暂停并停掉 LVGL 定时器与 tick、背光/LCD CS 睡眠电平 → 释放锁；唤醒顺序相反（先取锁）。息屏期间只有一个 50 ms 的采样定时器读按键 ADC，三个键都能唤醒；唤醒那次按键只亮屏。息屏不读电量计，亮屏后立即读一次。
+- 息屏顺序：面板 Sleep In → 停按键轮询、暂停并停掉 LVGL 定时器与 tick、背光/LCD CS 睡眠电平 → 释放锁；唤醒顺序相反（先取锁）。息屏期间只有一个 50 ms 的采样定时器读按键 ADC，三个键都能唤醒；唤醒那次按键只亮屏，由 BSP 丢弃事件直到松开（ADC ≥1900 mV 持续 20 ms 也算，覆盖停表时被打断的长按和很短的轻点）。按键初始化失败时息屏降级为只关屏，不进入浅睡眠。息屏不读电量计，亮屏后立即读一次。
 - 息屏时插入 USB 可能无法被识别，需先按键亮屏；USB 主机已连接时不进入浅睡眠。
-- 新增 `sdkconfig.profiling` 覆盖层，息屏 60 秒后打印 PM 锁与 esp_timer 统计。
+- 新增 `sdkconfig.profiling` 覆盖层：息屏开始和 60 秒后各存一份 PM 锁与 esp_timer 统计，亮屏后重复打印，`tools/pm_profile_delta.py` 算差值得到浅睡眠占比（测量时拔掉 USB，唤醒后再插）。唤醒延迟目标 ≤250 ms。
 - 待真机测量：亮屏、旧固件息屏、新固件息屏的 30 秒平均电流，唤醒成功率和延迟（方法见开发指南）。数值测得后补在这里。
 
 ### 重设计第一阶段：删除

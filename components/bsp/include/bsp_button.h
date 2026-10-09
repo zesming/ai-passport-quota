@@ -3,6 +3,7 @@
 #pragma once
 
 #include "esp_err.h"
+#include <stdbool.h>
 
 // 按键索引。数量用 bsp_pins.h 的 BSP_BTN_COUNT(硬件属性,归引脚表管),
 // 这里不再定义尾项计数,避免出现 BSP_BTN_COUNT / BSP_BTN_COUNT_ 两个近似名字。
@@ -37,3 +38,11 @@ int bsp_button_read_mv(void);
 // 按键未就绪（bsp_button_init 失败）时返回 ESP_ERR_INVALID_STATE。
 esp_err_t bsp_button_suspend(void);
 esp_err_t bsp_button_resume(void);
+
+// 按键就绪（bsp_button_init 成功且未回滚）。息屏流程据此判断是否有唤醒来源。
+bool bsp_button_ready(void);
+
+// 每个 5 ms 轮询周期的新 ADC 采样（mV，读取失败为 -1）都会回调一次，运行在 button 定时器任务里，
+// 只能做有界操作。用于在没有按键事件时也能发现"松开"（例如停表期间被中断的长按）。
+typedef void (*bsp_button_sample_cb_t)(int mv);
+void bsp_button_set_sample_callback(bsp_button_sample_cb_t cb);

@@ -78,6 +78,7 @@ int main(void) {
 static jmp_buf done;
 static int cpu_depth, acquires, releases, power_calls, brightness = 100;
 static bool fail_power, fail_refresh, fail_release, fail_enter, fail_exit, sleep_gate;
+static bool fail_acquire, armed = true;
 static unsigned wait_expected, queue_calls;
 static char order[64];
 static void note(char code) {
@@ -101,7 +102,8 @@ esp_err_t esp_pm_configure(const void *config) {
     return ESP_OK;
 }
 esp_err_t esp_pm_lock_acquire(esp_pm_lock_handle_t lock) {
-    assert(lock); ++acquires; note('A'); assert(++cpu_depth == 1); return ESP_OK;
+    assert(lock); if (fail_acquire) return 1;
+    ++acquires; note('A'); assert(++cpu_depth == 1); return ESP_OK;
 }
 esp_err_t esp_pm_lock_release(esp_pm_lock_handle_t lock) {
     assert(lock); ++releases; note('R');
@@ -116,8 +118,9 @@ esp_err_t bsp_power_enter_screen_off(void) {
     assert(cpu_depth == 1); /* The awake lock is still held while the screen-off state is built. */
     note('E'); return fail_enter ? ESP_FAIL : ESP_OK;
 }
+bool bsp_power_light_sleep_armed(void) { return armed; }
 esp_err_t bsp_power_exit_screen_off(void) {
-    assert(cpu_depth == 1); /* The awake lock is taken before anything is restored. */
+    assert(cpu_depth == 1 || fail_acquire); /* The awake lock is taken before restoring. */
     note('X'); return fail_exit ? ESP_FAIL : ESP_OK;
 }
 bool bsp_lvgl_refresh(void) { assert(ui_renders && brightness == 0); return !fail_refresh; }
@@ -192,6 +195,31 @@ int main(void) {
     expect_order("SER");
     assert(!s_display_power_pending && !s_cpu_lock_held && cpu_depth == 0);
     check_wait(portMAX_DELAY);
+
+    /* No buttons (init failed): the BSP only blacks the screen. One attempt, no 1 Hz retry loop,
+     * and the awake lock stays held because nothing could ever wake a sleeping chip. */
+    s_display.sleeping = false; render_application(); order[0] = 0;
+    assert(s_cpu_lock_held && !s_display_power_sleeping);
+    armed = false; releases = 0;
+    s_display.sleeping = true; render_application();
+    expect_order("SE");
+    assert(!s_display_power_pending && s_display_power_sleeping && s_cpu_lock_held);
+    assert(releases == 0 && cpu_depth == 1);
+    check_wait(portMAX_DELAY);
+    s_display.sleeping = false; render_application();
+    expect_order("XW");
+    assert(!s_display_power_pending && !s_display_power_sleeping && s_cpu_lock_held);
+    armed = true;
+
+    /* A wake that cannot take the lock still lights the screen and retries the lock later. */
+    s_display.sleeping = true; render_application(); order[0] = 0;
+    assert(!s_cpu_lock_held && s_display_power_sleeping);
+    fail_acquire = true; s_display.sleeping = false; render_application();
+    expect_order("XW");
+    assert(!s_display_power_pending && !s_display_power_sleeping && !s_cpu_lock_held);
+    fail_acquire = false; render_application();
+    expect_order("A");
+    assert(s_cpu_lock_held && cpu_depth == 1);
     puts("display power and application wait tests passed");
 }
 """
@@ -255,6 +283,18 @@ int main(void) {
                                 .button_event = BSP_BTN_CLICK};
     process_event(&event);
     assert(refreshes == 1);
+
+    /* A key event that raced the button timer stop is dropped while the BSP owns waking. */
+    s_display.sleeping = true; s_display_power_sleeping = true; s_display_power_pending = false;
+    unsigned renders = ui_renders, view_reads = views;
+    event = (quota_app_event_t){.kind = QUOTA_APP_EVENT_BUTTON, .button = BSP_BTN_OK,
+                                .button_event = BSP_BTN_PRESS};
+    process_event(&event);
+    event.button_event = BSP_BTN_CLICK;
+    process_event(&event);
+    assert(s_display.sleeping && !s_display.consume_wake_gesture);
+    assert(ui_renders == renders && views == view_reads && refreshes == 1);
+    s_display.sleeping = false; s_display_power_sleeping = false;
 
     /* A stale wake while the screen is already lit changes nothing and reads no battery. */
     unsigned reads = battery_reads;

@@ -42,7 +42,8 @@ QUOTA_TESTABLE void configure_cpu_power_management(void)
         .max_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
         .min_freq_mhz = 40,
         /* Light sleep only happens with the screen off: the quota_awake lock blocks it while lit,
-         * and a USB host (CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION) or active Wi-Fi blocks it too. */
+         * and a USB host (CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION) blocks it too. Wi-Fi is stopped
+         * while the screen is off; a transfer still in flight holds its own PM locks. */
         .light_sleep_enable = true,
     };
     err = esp_pm_configure(&config);
@@ -61,27 +62,36 @@ failed:
 /* Power order matters. Screen off: panel Sleep In, then bsp_power_enter_screen_off() (button
  * poll, LVGL timers and tick, pins), and only then release quota_awake so nothing sleeps with
  * the pins floating. Wake: take quota_awake first, then undo the screen-off state, then Sleep Out.
- */
+ * If the buttons never came up the BSP only blacks the screen (no light-sleep steps); the lock
+ * then stays held. A lock that cannot be taken on wake is logged and retried on the next call
+ * instead of blocking the wake: the screen works, it just may light-sleep between events. */
 QUOTA_TESTABLE bool set_display_power(bool sleeping)
 {
-    if (sleeping == s_display_power_sleeping && !s_display_power_pending)
+    if (sleeping == s_display_power_sleeping && !s_display_power_pending) {
+        if (!sleeping && s_cpu_lock != NULL && !s_cpu_lock_held)
+            s_cpu_lock_held = esp_pm_lock_acquire(s_cpu_lock) == ESP_OK;
         return true;
+    }
     s_display_power_pending = true;
     bsp_display_backlight(0);
     s_backlight_percent = 0;
     bool ready;
+    bool keep_lock = false;
     if (sleeping) {
         ready = bsp_lvgl_set_sleeping(true) && bsp_power_enter_screen_off() == ESP_OK;
-        if (ready && s_cpu_lock_held && esp_pm_lock_release(s_cpu_lock) == ESP_OK) {
+        keep_lock = ready && !bsp_power_light_sleep_armed();
+        if (ready && !keep_lock && s_cpu_lock_held && esp_pm_lock_release(s_cpu_lock) == ESP_OK) {
             s_cpu_lock_held = false;
         }
+        ready = ready && (s_cpu_lock == NULL || s_cpu_lock_held == keep_lock);
     } else {
         if (s_cpu_lock != NULL && !s_cpu_lock_held) {
             s_cpu_lock_held = esp_pm_lock_acquire(s_cpu_lock) == ESP_OK;
+            if (!s_cpu_lock_held)
+                ESP_LOGW(TAG, "quota_awake lock unavailable on wake");
         }
         ready = bsp_power_exit_screen_off() == ESP_OK && bsp_lvgl_set_sleeping(false);
     }
-    ready = ready && (s_cpu_lock == NULL || s_cpu_lock_held == !sleeping);
     if (!ready)
         ESP_LOGW(TAG, "display power transition failed");
     if (ready) {
@@ -99,6 +109,7 @@ QUOTA_TESTABLE void wake_from_screen_off(void)
         return;
     uint64_t now_ms = (uint64_t)(esp_timer_get_time() / 1000);
     (void)quota_display_handle_key(&s_display, now_ms, QUOTA_KEY_CLICK, false);
+    s_display.consume_wake_gesture = false; /* Only the BSP suppresses the waking press. */
     /* The fuel gauge is not read while the screen is off; refresh it as soon as it lights up. */
     s_battery_percent = bsp_battery_soc();
     s_battery_read_ms = now_ms;
@@ -276,6 +287,12 @@ QUOTA_TESTABLE void process_button(const quota_app_event_t *event, quota_service
 
 QUOTA_TESTABLE void process_event(const quota_app_event_t *event)
 {
+    /* With the screen-off state built the BSP sampler owns waking. A key event that reaches the
+     * queue now was produced just before the button timer stopped (a press racing the screen
+     * timeout); acting on it would arm a second wake suppression the BSP never clears. */
+    if (event->kind == QUOTA_APP_EVENT_BUTTON && s_display_power_sleeping &&
+        !s_display_power_pending)
+        return;
     if (event->kind == QUOTA_APP_EVENT_BUTTON && event->button_event == BSP_BTN_PRESS &&
         !s_display.sleeping && !s_display_power_pending) {
         /* Awake PRESS resets idle time; the debounced release or LONG does the work. */

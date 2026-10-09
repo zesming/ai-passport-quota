@@ -6,9 +6,11 @@
 #include "bsp_pins.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "sdkconfig.h"
 
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #if BSP_BTN_WAKE_MODE != BSP_BTN_WAKE_POLL
 #error "BSP_BTN_WAKE_GPIO (P5b) is not implemented; use BSP_BTN_WAKE_POLL"
@@ -20,20 +22,27 @@
 
 static const char *TAG = "bsp_power";
 
-#define PROFILE_DELAY_US (60LL * 1000 * 1000)
+// "Released" means ADC >= BSP_BTN_PRESSED_MAX_MV. The wake gesture ends once the ADC has stayed
+// released for the debounce time plus one polling period: by then the button state machine has
+// either emitted its release event (dropped like the rest of the gesture) or never will.
+#define RELEASE_SETTLE_US                                                                          \
+    ((int64_t)(CONFIG_BUTTON_DEBOUNCE_TICKS + 2) * CONFIG_BUTTON_PERIOD_TIME_MS * 1000)
 
 static esp_timer_handle_t s_poll_timer;
-#ifdef CONFIG_BSP_SLEEP_PROFILE
-static esp_timer_handle_t s_profile_timer;
-#endif
 static bsp_power_wake_cb_t s_wake_cb;
 static void *s_wake_user;
 static bool s_off;
+static bool
+    s_degraded; // Screen is off but no light-sleep steps were taken (buttons never came up).
+static bool s_degraded_logged;
 // Written by the application task, read by the poll callback in the esp_timer task.
 static volatile bool s_polling;
 static volatile bool s_released_seen;
+// Wake gesture state: written at arm time before the button timer restarts, then only by the
+// button timer task (sample and event callbacks run serially there).
 static volatile bool s_gesture_active;
 static volatile int64_t s_gesture_start_us;
+static volatile int64_t s_release_start_us = -1;
 
 void bsp_power_set_wake_callback(bsp_power_wake_cb_t cb, void *user)
 {
@@ -62,14 +71,112 @@ static void wake_poll(void *arg)
         ESP_LOGE(TAG, "唤醒采样定时器重启失败");
 }
 
+// Runs for every fresh button ADC sample once the button timer is back. It ends the wake gesture
+// when the key is released, including releases the button state machine never reports (a long
+// press interrupted by the stop, a tap shorter than the debounce time).
+static void gesture_sample(int mv)
+{
+    if (!s_gesture_active)
+        return;
+    if (mv < BSP_BTN_PRESSED_MAX_MV) { // Pressed, or an unreadable ADC (-1): not released.
+        s_release_start_us = -1;
+        return;
+    }
+    const int64_t now = esp_timer_get_time();
+    if (s_release_start_us < 0)
+        s_release_start_us = now;
+    else if (now - s_release_start_us >= RELEASE_SETTLE_US)
+        s_gesture_active = false;
+}
+
 #ifdef CONFIG_BSP_SLEEP_PROFILE
-// 息屏 60 秒后打印 PM 锁与 esp_timer 统计，用于确认息屏期间唯一周期性唤醒源是 wake_poll。
-static void profile_dump(void *arg)
+// Light-sleep measurement without a console during the test: the chip is on battery with USB
+// unplugged, so stats are kept in RAM (at screen-off start and 60 s later) and printed
+// repeatedly after the wake; plug USB in after waking to read them (tools/pm_profile_delta.py).
+#define PROFILE_DELAY_US (60LL * 1000 * 1000)
+#define PROFILE_PRINT_PERIOD_US (15LL * 1000 * 1000)
+#define PROFILE_PRINT_COUNT 20
+
+static esp_timer_handle_t s_profile_timer;
+static esp_timer_handle_t s_profile_print_timer;
+static char *s_profile_snap[2];
+static unsigned s_profile_prints;
+
+static char *profile_capture(void)
+{
+    char *text = NULL;
+    size_t size = 0;
+    FILE *stream = open_memstream(&text, &size);
+    if (stream == NULL)
+        return NULL;
+    esp_pm_dump_locks(stream);
+    esp_timer_dump(stream);
+    fclose(stream);
+    return text;
+}
+
+static void profile_store(int slot)
+{
+    free(s_profile_snap[slot]);
+    s_profile_snap[slot] = profile_capture();
+}
+
+static void profile_capture_60s(void *arg)
 {
     (void)arg;
-    printf("=== screen-off profile (60 s) ===\n");
-    esp_pm_dump_locks(stdout);
-    esp_timer_dump(stdout);
+    profile_store(1);
+}
+
+static void profile_print(void *arg)
+{
+    (void)arg;
+    if (s_profile_snap[0] == NULL || s_profile_snap[1] == NULL || s_off ||
+        ++s_profile_prints > PROFILE_PRINT_COUNT) {
+        if (s_profile_print_timer != NULL)
+            (void)esp_timer_stop(s_profile_print_timer);
+        return;
+    }
+    printf("=== screen-off profile: start ===\n%s\n=== screen-off profile: +60 s ===\n%s\n"
+           "=== end of screen-off profile ===\n",
+           s_profile_snap[0], s_profile_snap[1]);
+}
+
+static void profile_enter(void)
+{
+    if (s_profile_timer == NULL) {
+        const esp_timer_create_args_t args = {.callback = profile_capture_60s,
+                                              .name = "bsp_profile"};
+        if (esp_timer_create(&args, &s_profile_timer) != ESP_OK)
+            s_profile_timer = NULL; // Debug aid only: never blocks screen-off.
+    }
+    if (s_profile_print_timer != NULL)
+        (void)esp_timer_stop(s_profile_print_timer);
+    if (s_profile_timer != NULL)
+        (void)esp_timer_stop(s_profile_timer); // Left armed when an earlier exit failed midway.
+    free(s_profile_snap[1]);
+    s_profile_snap[1] = NULL;
+    profile_store(0);
+    s_profile_prints = 0;
+    if (s_profile_timer != NULL)
+        (void)esp_timer_start_once(s_profile_timer, PROFILE_DELAY_US);
+}
+
+static void profile_exit(void)
+{
+    if (s_profile_timer != NULL)
+        (void)esp_timer_stop(s_profile_timer);
+    if (s_profile_snap[1] == NULL)
+        return; // Woken before the 60 s mark: nothing comparable to print.
+    if (s_profile_print_timer == NULL) {
+        const esp_timer_create_args_t args = {.callback = profile_print,
+                                              .name = "bsp_profile_print"};
+        if (esp_timer_create(&args, &s_profile_print_timer) != ESP_OK) {
+            s_profile_print_timer = NULL;
+            return;
+        }
+    }
+    (void)esp_timer_stop(s_profile_print_timer);
+    (void)esp_timer_start_periodic(s_profile_print_timer, PROFILE_PRINT_PERIOD_US);
 }
 #endif
 
@@ -83,13 +190,7 @@ static esp_err_t ensure_timers(void)
             return e;
         }
     }
-#ifdef CONFIG_BSP_SLEEP_PROFILE
-    if (s_profile_timer == NULL) {
-        const esp_timer_create_args_t args = {.callback = profile_dump, .name = "bsp_profile"};
-        if (esp_timer_create(&args, &s_profile_timer) != ESP_OK)
-            s_profile_timer = NULL; // Debug aid only: never blocks screen-off.
-    }
-#endif
+    bsp_button_set_sample_callback(gesture_sample);
     return ESP_OK;
 }
 
@@ -97,6 +198,7 @@ static esp_err_t ensure_timers(void)
 static void rollback_enter(void)
 {
     s_polling = false;
+    s_off = false;
     if (s_poll_timer != NULL)
         (void)esp_timer_stop(s_poll_timer);
     (void)bsp_display_exit_light_sleep();
@@ -106,8 +208,21 @@ static void rollback_enter(void)
 
 esp_err_t bsp_power_enter_screen_off(void)
 {
-    if (s_off)
+    // Already fully armed. After a failed exit s_off is still set but polling is stopped, so the
+    // steps below run again (all of them are idempotent) and re-arm the wake sampler.
+    if (s_off && (s_degraded || s_polling))
         return ESP_OK;
+    if (!bsp_button_ready()) {
+        // No key can ever wake the chip: skip every light-sleep step, report success so the
+        // caller does not retry the panel sleep once a second, and let it keep the awake lock.
+        if (!s_degraded_logged) {
+            s_degraded_logged = true;
+            ESP_LOGW(TAG, "按键未就绪，息屏不进入浅睡眠");
+        }
+        s_degraded = true;
+        s_off = true;
+        return ESP_OK;
+    }
     esp_err_t e = ensure_timers();
     if (e != ESP_OK)
         return e;
@@ -123,7 +238,11 @@ esp_err_t bsp_power_enter_screen_off(void)
         rollback_enter();
         return e;
     }
-    s_released_seen = false;
+    // A key that is already up counts as the required release, so a press within the first
+    // sampling period still wakes. A held key (long-press DOWN) waits for its release.
+    const int mv = bsp_button_read_mv();
+    s_released_seen = mv >= BSP_BTN_PRESSED_MAX_MV;
+    s_gesture_active = false;
     s_polling = true;
     e = esp_timer_start_once(s_poll_timer, (uint64_t)BSP_BTN_WAKE_POLL_MS * 1000);
     if (e != ESP_OK) {
@@ -131,9 +250,9 @@ esp_err_t bsp_power_enter_screen_off(void)
         return e;
     }
 #ifdef CONFIG_BSP_SLEEP_PROFILE
-    if (s_profile_timer != NULL)
-        (void)esp_timer_start_once(s_profile_timer, PROFILE_DELAY_US);
+    profile_enter();
 #endif
+    s_degraded = false;
     s_off = true;
     return ESP_OK;
 }
@@ -142,33 +261,44 @@ esp_err_t bsp_power_exit_screen_off(void)
 {
     if (!s_off)
         return ESP_OK;
+    if (s_degraded) {
+        s_degraded = false;
+        s_off = false;
+        return ESP_OK;
+    }
     s_polling = false;
     (void)esp_timer_stop(s_poll_timer); // INVALID_STATE when it already fired: fine.
-#ifdef CONFIG_BSP_SLEEP_PROFILE
-    if (s_profile_timer != NULL)
-        (void)esp_timer_stop(s_profile_timer);
-#endif
     esp_err_t first = bsp_display_exit_light_sleep();
     if (!bsp_lvgl_resume() && first == ESP_OK)
         first = ESP_FAIL;
-    // The waking press only wakes. If the key is still down, its PRESS/CLICK/LONG are dropped
-    // until the release; the arm happens before the button timer can produce any event.
+    // The waking press only wakes. If the key is still down (or unreadable), its events are
+    // dropped until the ADC shows a release; armed before the button timer can produce any.
     const int mv = bsp_button_read_mv();
     if (mv < 0 || mv < BSP_BTN_PRESSED_MAX_MV) {
         s_gesture_start_us = esp_timer_get_time();
+        s_release_start_us = -1;
         s_gesture_active = true;
     }
     esp_err_t resumed = bsp_button_resume();
     if (first == ESP_OK)
         first = resumed;
-    if (first == ESP_OK)
+    if (first == ESP_OK) {
         s_off = false;
+#ifdef CONFIG_BSP_SLEEP_PROFILE
+        profile_exit();
+#endif
+    }
     return first;
 }
 
 bool bsp_power_screen_off(void)
 {
     return s_off;
+}
+
+bool bsp_power_light_sleep_armed(void)
+{
+    return s_off && !s_degraded;
 }
 
 bool bsp_power_wake_gesture_drop(bsp_btn_t button, bsp_btn_ev_t event)

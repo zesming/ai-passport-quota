@@ -50,13 +50,13 @@ SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.resource_log" idf.py -B <临时
 
 息屏默认是 POLL 模式的自动浅睡眠。电流须用电池供电并把电流计（PPK2 一类）串在电池线上测，连着 USB 主机时不会进入浅睡眠，USB 电流表无效。分别测 30 秒平均电流：亮屏、旧固件息屏、新固件息屏，数值写入 CHANGELOG。
 
-profiling 构建加 `sdkconfig.profiling` 覆盖层（`CONFIG_PM_PROFILING`、`CONFIG_ESP_TIMER_PROFILING`、`CONFIG_BSP_SLEEP_PROFILE`），息屏 60 秒后串口打印 `esp_pm_dump_locks()` 和 `esp_timer_dump()`：
+profiling 构建加 `sdkconfig.profiling` 覆盖层（`CONFIG_PM_PROFILING`、`CONFIG_ESP_TIMER_PROFILING`、`CONFIG_BSP_SLEEP_PROFILE`）。固件在息屏开始时和 60 秒后各把 `esp_pm_dump_locks()` 与 `esp_timer_dump()` 的统计存进内存，息屏期间不打印；亮屏后每 15 秒重复打印这一对快照（最多 20 次）。测量时 USB 必须拔掉，唤醒亮屏后再插上 USB 读串口，然后用脚本算两次快照的差值：
 
 ```bash
 SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.profiling" idf.py -B <临时目录> build
 ```
 
-通过标准：息屏期间唯一的周期性 esp_timer 是 `bsp_wake_poll`（约 20 次/秒），LVGL tick 和按键定时器没有运行，浅睡眠时间占比不低于 90%；上、下、OK 各唤醒 20 次全部成功，唤醒那次按键不执行任何操作，息屏到亮屏不超过 150 ms；连着 USB 主机时不进入浅睡眠且串口不断开；睡眠中背光不漏光、LCD 不闪。主机测试只证明顺序和状态记账，不证明以上任何一项。
+通过标准：用 `python3 tools/pm_profile_delta.py <串口日志>` 得到的差值里，息屏窗口内唯一的周期性 esp_timer 是 `bsp_wake_poll`（约 20 次/秒），LVGL tick 和按键定时器没有触发，浅睡眠时间占比不低于 90%（差值法，不用累计值，开机以来的累计时间会掺入亮屏阶段）；上、下、OK 各唤醒 20 次全部成功，唤醒那次按键不执行任何操作，息屏到亮屏不超过 250 ms（IDF 驱动的 SLPOUT 固定等待 100 ms）；“松开”一律指 ADC ≥1900 mV；连着 USB 主机时不进入浅睡眠且串口不断开；睡眠中背光不漏光、LCD 不闪。主机测试只证明顺序和状态记账，不证明以上任何一项。
 
 迭代时运行聚焦检查。固件交付使用完整门禁。CI 调用同一门禁，不另维护竞争的构建命令序列。仅文档修改需要文档检查，无需刷写无关固件。
 

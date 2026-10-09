@@ -219,6 +219,8 @@ bool bsp_lvgl_suspend(void)
     if (overflow)
         ESP_LOGW(TAG, "运行中的 LVGL 定时器超过 %d 个，多出的未暂停", BSP_LVGL_SUSPEND_MAX_TIMERS);
     if (lvgl_port_stop() != ESP_OK) {
+        // lvgl_port_stop disables the timer handler before it tries to stop the tick timer.
+        lv_timer_enable(true);
         resume_recorded_timers();
         bsp_lvgl_unlock();
         return false;
