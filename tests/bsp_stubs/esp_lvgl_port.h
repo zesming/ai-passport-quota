@@ -25,8 +25,9 @@ typedef struct {
 typedef struct {
     uint32_t task_max_sleep_ms;
 } lvgl_port_cfg_t;
-typedef struct {
+typedef struct lv_timer_t {
     bool paused;
+    struct lv_timer_t *next; // The host fake keeps timers as a plain linked list.
 } lv_timer_t;
 typedef struct {
     int unused;
@@ -60,6 +61,11 @@ lv_timer_t *lv_display_get_refr_timer(lv_display_t *);
 lv_obj_t *lv_display_get_screen_active(lv_display_t *);
 void lv_timer_pause(lv_timer_t *);
 void lv_timer_resume(lv_timer_t *);
+lv_timer_t *lv_timer_get_next(lv_timer_t *);
+bool lv_timer_get_paused(lv_timer_t *);
+void lv_timer_enable(bool);
+esp_err_t lvgl_port_stop(void);
+esp_err_t lvgl_port_resume(void);
 void lv_obj_invalidate(lv_obj_t *);
 void lv_refr_now(lv_display_t *);
 esp_err_t lvgl_port_task_wake(int, lv_display_t *);

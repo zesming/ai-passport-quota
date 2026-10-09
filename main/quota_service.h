@@ -15,6 +15,7 @@ typedef enum {
     QUOTA_APP_EVENT_CONNECTION,
     QUOTA_APP_EVENT_SETTINGS_RESULT,
     QUOTA_APP_EVENT_USB_WINDOW,
+    QUOTA_APP_EVENT_WAKE, /* screen-off key sampled by the BSP */
 } quota_app_event_kind_t;
 
 typedef struct {

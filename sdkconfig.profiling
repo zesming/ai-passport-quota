@@ -1,0 +1,4 @@
+# Overlay for screen-off light sleep profiling: SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.profiling"
+CONFIG_BSP_SLEEP_PROFILE=y
+CONFIG_PM_PROFILING=y
+CONFIG_ESP_TIMER_PROFILING=y

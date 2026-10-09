@@ -1,0 +1,12 @@
+menu "Passport BSP"
+
+    config BSP_SLEEP_PROFILE
+        bool "Dump PM locks and esp_timer statistics 60 s after screen off"
+        default n
+        help
+            Debug aid for the screen-off light sleep measurement: one minute after the screen
+            turns off, print esp_pm_dump_locks() and esp_timer_dump() to the console. Enable it
+            through sdkconfig.profiling (which also turns on CONFIG_PM_PROFILING and
+            CONFIG_ESP_TIMER_PROFILING); release builds leave it off.
+
+endmenu

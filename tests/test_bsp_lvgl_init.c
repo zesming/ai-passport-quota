@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <string.h>
 #include "../components/bsp/src/bsp_display_lvgl.c"
 
 static lv_display_t display;
@@ -92,15 +93,73 @@ lv_obj_t *lv_display_get_screen_active(lv_display_t *disp)
     assert(disp == &display && lock_depth);
     return &screen;
 }
+/* Fake LVGL timer list: refresh is always the head, test timers hang off it. */
+static int handler_enabled = 1, tick_running = 1, fail_port_stop, fail_port_resume;
+static char event_log[64];
+static void log_event(char code)
+{
+    size_t length = strlen(event_log);
+    assert(length + 1 < sizeof(event_log));
+    event_log[length] = code;
+    event_log[length + 1] = '\0';
+}
+static int timer_listed(const lv_timer_t *timer)
+{
+    for (const lv_timer_t *t = &refresh; t; t = t->next) {
+        if (t == timer)
+            return 1;
+    }
+    return 0;
+}
+lv_timer_t *lv_timer_get_next(lv_timer_t *timer)
+{
+    assert(lock_depth);
+    return timer ? timer->next : &refresh;
+}
+bool lv_timer_get_paused(lv_timer_t *timer)
+{
+    assert(lock_depth && timer_listed(timer));
+    return timer->paused;
+}
 void lv_timer_pause(lv_timer_t *timer)
 {
-    assert(timer == &refresh && lock_depth);
+    assert(timer_listed(timer) && lock_depth);
     timer->paused = true;
+    log_event('p');
 }
 void lv_timer_resume(lv_timer_t *timer)
 {
-    assert(timer == &refresh && lock_depth && !panel_sleeping && panel_on);
+    assert(timer_listed(timer) && lock_depth);
+    if (timer == &refresh)
+        assert(!panel_sleeping && panel_on);
     timer->paused = false;
+    log_event('r');
+}
+void lv_timer_enable(bool enable)
+{
+    handler_enabled = enable;
+    log_event(enable ? 'E' : 'D');
+}
+esp_err_t lvgl_port_stop(void)
+{
+    assert(lock_depth);
+    /* The real call disables the handler first, then stops the 2 ms tick timer. */
+    handler_enabled = 0;
+    if (fail_port_stop)
+        return ESP_ERR_INVALID_STATE;
+    tick_running = 0;
+    log_event('S');
+    return ESP_OK;
+}
+esp_err_t lvgl_port_resume(void)
+{
+    assert(lock_depth);
+    if (fail_port_resume)
+        return ESP_ERR_INVALID_STATE;
+    handler_enabled = 1;
+    tick_running = 1;
+    log_event('T');
+    return ESP_OK;
 }
 void lv_obj_invalidate(lv_obj_t *obj)
 {
@@ -143,6 +202,70 @@ static void expect_failure(void)
     assert(bsp_lvgl_init() == NULL);
     assert(!s_disp && !lock_depth && !display_live);
     assert(!bsp_lvgl_lock(0));
+}
+
+static lv_timer_t ui[18];
+static int running_timers(void)
+{
+    int running = 0;
+    for (lv_timer_t *t = &refresh; t; t = t->next)
+        running += !t->paused;
+    return running;
+}
+static void link_timers(int count)
+{
+    refresh.next = count ? &ui[0] : NULL;
+    for (int i = 0; i < count; ++i)
+        ui[i].next = i + 1 < count ? &ui[i + 1] : NULL;
+}
+static void check_suspend_resume_bookkeeping(void)
+{
+    /* Screen-off order: panel Sleep In first (refresh timer paused), then suspend. */
+    assert(bsp_lvgl_set_sleeping(true) && refresh.paused);
+    link_timers(4);
+    ui[2].paused = true; /* Paused by the UI itself: must stay paused after the wake. */
+    wakes = 0;
+    event_log[0] = '\0';
+
+    fail_lock = 1;
+    assert(!bsp_lvgl_suspend() && !s_suspended && tick_running && running_timers() == 3);
+    fail_lock = 0;
+
+    fail_port_stop = 1; /* Tick stop failure rolls the paused timers back. */
+    assert(!bsp_lvgl_suspend() && !s_suspended && tick_running && running_timers() == 3);
+    assert(!s_suspended_count && !lock_depth && handler_enabled); /* Handler re-enabled. */
+    fail_port_stop = 0;
+
+    event_log[0] = '\0';
+    assert(bsp_lvgl_suspend() && s_suspended && !lock_depth);
+    assert(running_timers() == 0 && !tick_running && handler_enabled);
+    /* Pause every running timer, stop the tick, then re-enable the handler (never before). */
+    assert(!strcmp(event_log, "pppSE"));
+    assert(s_suspended_count == 3);
+    assert(bsp_lvgl_suspend() && !strcmp(event_log, "pppSE")); /* Idempotent. */
+
+    /* A recorded timer deleted while suspended is skipped, never touched. */
+    ui[0].next = &ui[2];
+    fail_port_resume = 1;
+    assert(!bsp_lvgl_resume() && s_suspended && !tick_running && wakes == 0);
+    fail_port_resume = 0;
+    event_log[0] = '\0';
+    assert(bsp_lvgl_resume() && !s_suspended && !s_suspended_count && !lock_depth);
+    assert(tick_running && handler_enabled && wakes == 1);
+    /* Tick restarts before any timer runs again; ui[0], ui[3] resumed, ui[1] gone, ui[2] stays. */
+    assert(!strcmp(event_log, "Trr") && ui[2].paused && !ui[0].paused && !ui[3].paused);
+    assert(refresh.paused); /* Only bsp_lvgl_set_sleeping(false) resumes the refresh timer. */
+    assert(bsp_lvgl_resume() && wakes == 1); /* Idempotent. */
+
+    /* More running timers than slots: the surplus keeps running and nothing is lost. */
+    for (int i = 0; i < 18; ++i)
+        ui[i].paused = false;
+    link_timers(18);
+    assert(bsp_lvgl_suspend() && s_suspended_count == BSP_LVGL_SUSPEND_MAX_TIMERS);
+    assert(running_timers() == 2 && !tick_running);
+    assert(bsp_lvgl_resume() && running_timers() == 18);
+    link_timers(0);
+    assert(bsp_lvgl_set_sleeping(false) && !refresh.paused);
 }
 int main(void)
 {
@@ -200,5 +323,6 @@ int main(void)
     fail_on = 1;
     assert(!bsp_lvgl_refresh() && !lock_depth);
     fail_on = 0;
+    check_suspend_resume_bookkeeping();
     puts("BSP LVGL initialization tests: PASS");
 }

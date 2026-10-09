@@ -52,6 +52,18 @@ SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.resource_log" idf.py -B <临时
 
 门限：`quota_app` 与 `quota_network` 栈剩余不少于 1024 B，最小空闲堆不少于 16 KB。测量场景为热点会话中有待保存的 TLS、8 个账户连续刷新、ChatGPT 授权全过程。日志数值只有真机才有意义；主机测试构建该路径并检查两个任务和堆都被读取。
 
+## 息屏浅睡眠测量
+
+息屏默认是 POLL 模式的自动浅睡眠。电流须用电池供电并把电流计（PPK2 一类）串在电池线上测，连着 USB 主机时不会进入浅睡眠，USB 电流表无效。分别测 30 秒平均电流：亮屏、旧固件息屏、新固件息屏，数值写入 CHANGELOG。
+
+profiling 构建加 `sdkconfig.profiling` 覆盖层（`CONFIG_PM_PROFILING`、`CONFIG_ESP_TIMER_PROFILING`、`CONFIG_BSP_SLEEP_PROFILE`）。固件在息屏开始时和 60 秒后各把 `esp_pm_dump_locks()` 与 `esp_timer_dump()` 的统计存进内存，息屏期间不打印；亮屏后每 15 秒重复打印这一对快照（最多 20 次）。测量时 USB 必须拔掉，唤醒亮屏后再插上 USB，用 `idf.py monitor --no-reset` 读串口（不加 `--no-reset` 会复位设备，丢掉内存里的快照），把输出存成日志，再用脚本算两次快照的差值：
+
+```bash
+SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.profiling" idf.py -B <临时目录> build
+```
+
+通过标准：用 `python3 tools/pm_profile_delta.py <串口日志>` 得到的差值里，息屏窗口内唯一的周期性 esp_timer 是 `bsp_wake_poll`（约 20 次/秒），LVGL tick 和按键定时器没有触发，浅睡眠时间占比不低于 90%（差值法，不用累计值，开机以来的累计时间会掺入亮屏阶段）；上、下、OK 各唤醒 20 次全部成功，唤醒那次按键不执行任何操作，息屏到亮屏不超过 250 ms（IDF 驱动的 SLPOUT 固定等待 100 ms）；“松开”一律指 ADC ≥1900 mV；连着 USB 主机时不进入浅睡眠且串口不断开；睡眠中背光不漏光、LCD 不闪。主机测试只证明顺序和状态记账，不证明以上任何一项。
+
 迭代时运行聚焦检查。固件交付使用完整门禁。CI 调用同一门禁，不另维护竞争的构建命令序列。仅文档修改需要文档检查，无需刷写无关固件。
 
 受版本管理的默认值来自 `sdkconfig.defaults`、`partitions.csv` 和 `dependencies.lock`。LVGL 固定为 9.5.0，以 `CONFIG_LV_BUILD_EXAMPLES=n` 和 `CONFIG_LV_BUILD_DEMOS=n` 关闭未使用的 examples/demos。依赖锁变化须与组件 manifest 一起审阅。固件门禁在临时目录生成独立 `sdkconfig` 并构建，被忽略的本地设置不会进入该产物。需要本地变体时明确解决配置差异。已有 ccache 时可用 `IDF_CCACHE_ENABLE=1` 复用编译结果。

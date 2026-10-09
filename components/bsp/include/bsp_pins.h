@@ -61,8 +61,27 @@
 #define BSP_BTN_LONG_PRESS_MS 500  // 长按触发时间
 
 // 每键的电压窗口 {min_mV, max_mV};边界取相邻档中点。
-// 确定键上界留宽到 1900,是为了和松开态的 3300mV 拉开距离。
-#define BSP_BTN_MV_TABLE {{0, 150}, {150, 447}, {447, 1900}}
+// 确定键上界留宽到 BSP_BTN_PRESSED_MAX_MV,是为了和松开态的 3300mV 拉开距离。
+#define BSP_BTN_PRESSED_MAX_MV 1900
+#define BSP_BTN_MV_TABLE                                                                           \
+    {                                                                                              \
+        {0, 150}, {150, 447},                                                                      \
+        {                                                                                          \
+            447, BSP_BTN_PRESSED_MAX_MV                                                            \
+        }                                                                                          \
+    }
+
+// 息屏浅睡眠的唤醒方式(编译期选择)。
+//   BSP_BTN_WAKE_POLL:息屏期间每 BSP_BTN_WAKE_POLL_MS 由一次性 esp_timer 采样 ADC,
+//                     低于 BSP_BTN_PRESSED_MAX_MV 视为按键,三个键都能唤醒(默认)。
+//   BSP_BTN_WAKE_GPIO:预留给 GPIO0 低电平唤醒(P5b),尚未实现,选中会编译失败。
+//                     OK 键最高约 595 mV,与 C3 的 VIL≈825 mV 只有约 180 mV 余量,须实测。
+#define BSP_BTN_WAKE_POLL 0
+#define BSP_BTN_WAKE_GPIO 1
+#define BSP_BTN_WAKE_MODE BSP_BTN_WAKE_POLL
+#define BSP_BTN_WAKE_POLL_MS 50
+// 唤醒那一次按键只负责亮屏:到松开(CLICK/LONG)为止的按键事件丢弃,最长不超过此时间。
+#define BSP_BTN_WAKE_GESTURE_MS 3000
 
 // ============================================================================
 // I2C:ES8311(音频 codec)与 CW2017(电量计)共用一条总线

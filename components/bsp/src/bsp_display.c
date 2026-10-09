@@ -1,6 +1,7 @@
 // components/bsp/src/bsp_display.c
 // 移植自 trae_card/components/platform/platform_esp32/src/disp_st7789.c
 #include "bsp_display.h"
+#include "bsp_display_pins.h"
 #include "bsp_pins.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
@@ -301,6 +302,25 @@ void bsp_display_backlight(uint8_t percent)
     uint32_t duty = (max_duty * percent) / 100u;
     ledc_set_duty(BSP_BL_LEDC_MODE, BSP_BL_LEDC_CHANNEL, duty);
     ledc_update_duty(BSP_BL_LEDC_MODE, BSP_BL_LEDC_CHANNEL);
+}
+
+// 息屏浅睡眠：睡眠态引脚配置只在自动浅睡眠期间生效，亮屏时引脚按原样工作。
+esp_err_t bsp_display_enter_light_sleep(void)
+{
+    if (!s_ready)
+        return ESP_ERR_INVALID_STATE;
+    bsp_display_backlight(0);
+    return bsp_display_sleep_pins_set(s_bl_ready);
+}
+
+esp_err_t bsp_display_exit_light_sleep(void)
+{
+    if (!s_ready)
+        return ESP_ERR_INVALID_STATE;
+    esp_err_t e = bsp_display_sleep_pins_restore();
+    // ledc_stop disabled the PWM output; a duty update (0%) re-enables it.
+    bsp_display_backlight(0);
+    return e;
 }
 
 esp_err_t bsp_display_prepare_deep_sleep(void)

@@ -34,7 +34,7 @@ LVGL 固定为 **9.5.0**。当前 port 使用单个 20 行内部 DMA 缓冲（24
 
 最终 flush 将 30 像素圆角外区域置黑；未经内存检查，不改成全屏中间 ARGB 图层。字体和品牌描述符留在 Flash。无 PSRAM，须同时审查 TLS/Wi-Fi、LVGL、DMA 和任务栈开销，并在真实负载下测量空闲堆、最小堆和最大块。80 MHz SPI 配置不能证明板卡信号裕量。
 
-息屏停止 Wi-Fi，将背光降为零，向 LCD 发送 Sleep In 并暂停刷新定时器。释放亮屏最高频率锁后，CPU DFS 可降至 40 MHz；唤醒重新获取该锁，恢复缓存显示，再重连。应用/网络/串口轮询暂停，但保留 LVGL 5 ms tick 与 ADC 功能键检测。这不是 MCU light/deep sleep 或硬件关机，电流降低和唤醒时序须真机测量。见[应用生命周期契约](../applications/ai-quota-monitor.md#刷新显示与验证)。
+息屏停止 Wi-Fi，将背光降为零，向 LCD 发送 Sleep In 并暂停刷新定时器。随后 `bsp_power_enter_screen_off()` 依次：停 5 ms 按键轮询（`iot_button_stop`）；在 LVGL 锁内暂停所有运行中的定时器（最多记录 16 个）、`lvgl_port_stop()` 停 tick、再 `lv_timer_enable(true)` 让 port 任务按 `task_max_sleep_ms` 阻塞；背光 GPIO21 `ledc_stop(idle 0)` 并设睡眠下拉，LCD CS GPIO1 设睡眠上拉（`CONFIG_PM_SLP_DISABLE_GPIO` 会让睡眠中的引脚浮空）；启动 50 ms 一次性 `esp_timer` 采样按键 ADC（低于 `BSP_BTN_PRESSED_MAX_MV` 视为按下；长按下键息屏时先要看到一次松开）。最后释放 `quota_awake` 锁，自动浅睡眠（`CONFIG_FREERTOS_USE_TICKLESS_IDLE`）才可能发生。唤醒按相反顺序：先取锁，再 `bsp_power_exit_screen_off()`（停采样、恢复引脚与 PWM、LVGL tick 与定时器、按键轮询；按键仍按着时先布置唤醒手势丢弃），再面板 Sleep Out，最后重连。`BSP_BTN_WAKE_MODE` 在编译期选择 POLL（默认）或预留的 GPIO0 低电平唤醒（P5b，未实现；OK 键最高约 595 mV，与 C3 VIL≈825 mV 余量约 180 mV，须实测）。“松开”一律指 ADC ≥1900 mV。唤醒那次按键的事件由 BSP 丢弃，直到状态机报告松开，或 ADC 持续松开 20 ms（覆盖停表时被打断的长按和短于去抖的轻点，这两种情形状态机不会报松开）。按键初始化失败时息屏降级为只关屏并保持亮屏锁。USB-Serial-JTAG 在浅睡眠中断电，息屏时插 USB 可能无法枚举，须先按键亮屏；`CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION` 保证主机已连接时不睡。电流降低和唤醒时序须真机测量。见[应用生命周期契约](../applications/ai-quota-monitor.md#刷新显示与验证)。
 
 ## 真机验收
 

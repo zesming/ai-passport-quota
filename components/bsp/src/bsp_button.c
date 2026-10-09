@@ -19,6 +19,8 @@ static button_handle_t s_btn[BSP_BTN_COUNT];
 static bsp_btn_cb_t s_cb;
 static void *s_user;
 static volatile bool s_ready;
+static bool s_suspended;
+static bsp_button_sample_cb_t s_sample_cb;
 static bool s_long_pressed[BSP_BTN_COUNT];
 
 _Static_assert(CONFIG_BUTTON_DEBOUNCE_TICKS >= 2,
@@ -66,6 +68,9 @@ static uint8_t button_level(button_driver_t *driver)
             ESP_OK) {
             s_sample_mv = -1;
         }
+        // Runs in the button timer task, once per polling cycle (the three keys share it).
+        if (s_sample_cb != NULL)
+            s_sample_cb(s_sample_mv);
     }
     // Half-open windows prevent two keys from matching a shared boundary.
     return s_sample_mv >= BTN_MV[button->index][0] && s_sample_mv < BTN_MV[button->index][1]
@@ -117,6 +122,7 @@ static void button_cleanup(void)
     s_cb = NULL;
     s_user = NULL;
     s_ready = false;
+    s_suspended = false;
     s_sample_valid = false;
 
     for (int i = BSP_BTN_COUNT - 1; i >= 0; i--) {
@@ -271,4 +277,46 @@ int bsp_button_read_mv(void)
     if (adc_cali_raw_to_voltage(s_cali, raw, &mv) != ESP_OK)
         return -1;
     return mv;
+}
+
+void bsp_button_set_sample_callback(bsp_button_sample_cb_t cb)
+{
+    s_sample_cb = cb;
+}
+
+bool bsp_button_ready(void)
+{
+    return s_ready;
+}
+
+// 息屏期间停掉 5 ms 的按键轮询定时器,由 bsp_power 的 50 ms 采样接管唤醒检测。
+// 两个调用都幂等；按键未就绪（初始化失败）时返回错误，调用方据此不进入深度息屏。
+esp_err_t bsp_button_suspend(void)
+{
+    if (!s_ready)
+        return ESP_ERR_INVALID_STATE;
+    if (s_suspended)
+        return ESP_OK;
+    esp_err_t e = iot_button_stop();
+    if (e == ESP_OK) {
+        s_suspended = true;
+        // A key held at the stop (its press cut off mid-gesture) never reports a release after
+        // the restart; this flag makes that release inert. A new press clears it (cb_press).
+        for (int i = 0; i < BSP_BTN_COUNT; ++i)
+            s_long_pressed[i] = true;
+    }
+    return e;
+}
+
+esp_err_t bsp_button_resume(void)
+{
+    if (!s_ready)
+        return ESP_ERR_INVALID_STATE;
+    if (!s_suspended)
+        return ESP_OK;
+    s_sample_valid = false; // The cached shared sample is stale after the sleep.
+    esp_err_t e = iot_button_resume();
+    if (e == ESP_OK)
+        s_suspended = false;
+    return e;
 }
