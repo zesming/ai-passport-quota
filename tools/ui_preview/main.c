@@ -250,7 +250,9 @@ static void load_account(const cJSON *json, size_t index, quota_service_view_t *
         const cJSON *amount = member(json, "balance");
         if (cJSON_IsString(amount)) {
             balance->currency_count = 1;
-            snprintf(balance->balance_infos[0].currency, 4, "CNY");
+            text_field(json, "currency", balance->balance_infos[0].currency, 4);
+            if (balance->balance_infos[0].currency[0] == '\0')
+                snprintf(balance->balance_infos[0].currency, 4, "CNY");
             snprintf(balance->balance_infos[0].total_balance, QUOTA_BALANCE_AMOUNT_BYTES + 1, "%s",
                      amount->valuestring);
         }
@@ -259,10 +261,16 @@ static void load_account(const cJSON *json, size_t index, quota_service_view_t *
         if (member(json, "credits")) {
             extras->has_credits = true;
             text_field(json, "credits", extras->credits_balance, sizeof(extras->credits_balance));
+            extras->unlimited_credits = bool_field(json, "unlimited_credits", false);
         }
         if (member(json, "resets")) {
             extras->has_banked_reset = true;
             extras->available_resets = (uint64_t)number_field(json, "resets", 0);
+        }
+        if (member(json, "reset_expires_in")) {
+            extras->has_next_reset_expiry = true;
+            extras->next_reset_expires_at =
+                now + (uint64_t)number_field(json, "reset_expires_in", 0);
         }
     }
     quota_portable_view_t *portable = &view->portable;
@@ -303,6 +311,7 @@ static void load_view(const cJSON *json, quota_service_view_t *view)
         (quota_portable_network_state_t)choice(source, "network_state", network_states, 7, 0);
     view->connected = portable->network_state == QUOTA_PORTABLE_NETWORK_READY ||
                       portable->network_state == QUOTA_PORTABLE_NETWORK_CONNECTED;
+    view->wifi_rssi = view->connected ? (int8_t)number_field(source, "rssi", 0) : 0;
     text_field(source, "ssid", portable->network_ssid, sizeof(portable->network_ssid));
     text_field(source, "ip", portable->network_ip, sizeof(portable->network_ip));
     text_field(source, "storage_error", portable->storage_error, sizeof(portable->storage_error));
@@ -441,7 +450,8 @@ int main(int argc, char **argv)
         load_navigation(member(fixture, "nav"), &navigation);
         int battery = (int)number_field(fixture, "battery", 82);
         memset(s_frame, 0, sizeof(s_frame));
-        quota_ui_render(&navigation, &view, battery);
+        bool usb_powered = bool_field(fixture, "usb_powered", false);
+        quota_ui_render(&navigation, &view, battery, usb_powered);
         lv_obj_invalidate(lv_screen_active());
         s_flushes = 0;
         lv_refr_now(display);
@@ -457,7 +467,7 @@ int main(int argc, char **argv)
         }
         /* The second pass over the same state, as the device's one-second refresh does, must not
          * touch a single pixel: nothing may restyle, retext or reshow what has not changed. */
-        quota_ui_render(&navigation, &view, battery);
+        quota_ui_render(&navigation, &view, battery, usb_powered);
         s_flushes = 0;
         lv_refr_now(display);
         if (s_flushes != 0) {

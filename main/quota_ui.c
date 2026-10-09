@@ -4,6 +4,7 @@
 #include "lvgl.h"
 #include "quota_brand_assets.h"
 #include "quota_portable.h"
+#include "quota_wifi_icons.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -22,6 +23,11 @@ LV_FONT_DECLARE(quota_font_16);
 #define UI_AMBER 0xE1B974
 #define UI_RED 0xF18C82
 #define UI_TRACK 0x33414D
+/* Status bar battery: outline and nub, and the fill by state. */
+#define UI_BATT_LINE 0x7C8A96
+#define UI_BATT_NORMAL UI_INK
+#define UI_BATT_LOW 0xFF3B30
+#define UI_BATT_USB 0x34C759
 
 #define MARGIN 12
 #define CONTENT_W 216
@@ -31,6 +37,17 @@ LV_FONT_DECLARE(quota_font_16);
 #define QR_SIZE 150
 #define QR_X 45
 #define QR_Y 50
+/* Status bar battery: a 22 x 11 body with a 1 px outline, a 2 x 5 nub, and a fill inset by 1 px. */
+#define BATT_X 204
+#define BATT_Y 8
+#define BATT_BODY_W 22
+#define BATT_BODY_H 11
+#define BATT_FILL_MAX 18
+/* Status bar Wi-Fi glyph (17 x 13), left of the battery with 8 px between. */
+#define WIFI_X 179
+#define WIFI_Y 7
+/* The account title: from the logo to the "1/3" counter. */
+#define TITLE_W 140
 #define STATUS_Y 276
 #define FOOTER_Y 300
 #define FOOTER_LINE_Y 294
@@ -41,8 +58,6 @@ LV_FONT_DECLARE(quota_font_16);
  * slots are shared; the first group has a fixed job on every screen. */
 typedef enum {
     SLOT_CLOCK = 0,
-    SLOT_BATTERY,
-    SLOT_WIFI_MARK,
     SLOT_STATUS,
     SLOT_FOOTER,
     SLOT_TEXT, /* general text, laid out by each screen */
@@ -64,6 +79,7 @@ enum {
     T_VALUE1,
     T_RESET1,
     T_EXTRA,
+    T_EXTRA2, /* the second line of the credits and resets text, when one line is too short */
 };
 /* A list screen has a title and counter, then a label and a value for each row. */
 #define T_ROW_LABEL(row) (2 + (int)(row))
@@ -75,13 +91,17 @@ typedef struct {
     const lv_font_t *font;
     uint32_t color;
     lv_text_align_t align;
+    uint32_t text_hash;   /* hash and length of the text last set: a label that shortens its own */
+    uint32_t text_length; /* text with dots no longer holds it, so it cannot be compared */
     bool used;
 } label_slot_t;
 
 typedef struct {
     label_slot_t slot[SLOT_COUNT];
-    lv_obj_t *wifi_lines[2];
-    lv_obj_t *wifi_dot;
+    lv_obj_t *batt_body, *batt_nub, *batt_fill, *batt_slash;
+    int batt_fill_width;
+    quota_wifi_icon_t wifi_icon; /* last drawn: the signal level changes with hysteresis */
+    lv_obj_t *wifi_dim, *wifi_lit, *wifi_slash;
     lv_obj_t *logo;
     lv_obj_t *bar[2];
     lv_obj_t *footer_line;
@@ -133,6 +153,14 @@ static lv_obj_t *create_rect(lv_obj_t *parent, int x, int y, int width, int heig
     return object;
 }
 
+static uint32_t text_hash(const char *text)
+{
+    uint32_t hash = 2166136261u;
+    for (; *text != '\0'; text++)
+        hash = (hash ^ (uint8_t)*text) * 16777619u;
+    return hash;
+}
+
 static void create_slot(lv_obj_t *parent, slot_t index)
 {
     label_slot_t *slot = &s_ui.slot[index];
@@ -145,14 +173,20 @@ static void create_slot(lv_obj_t *parent, slot_t index)
     slot->color = UINT32_MAX;
     slot->align = (lv_text_align_t)-1;
     slot->x = slot->y = slot->w = slot->h = -1;
+    slot->text_hash = text_hash("");
+    slot->text_length = 0;
     lv_obj_add_flag(slot->obj, LV_OBJ_FLAG_HIDDEN);
 }
 
 static void slot_set_text(label_slot_t *slot, const char *text)
 {
     /* The empty string is static; anything else is the label's own copy. */
-    if (strcmp(lv_label_get_text(slot->obj), text) != 0)
+    uint32_t hash = text_hash(text), length = (uint32_t)strlen(text);
+    if (hash != slot->text_hash || length != slot->text_length) {
         lv_label_set_text(slot->obj, text);
+        slot->text_hash = hash;
+        slot->text_length = length;
+    }
 }
 
 /* Place, style and fill one label, and mark it in use for this frame. */
@@ -204,6 +238,50 @@ static void finish_slots(void)
     }
 }
 
+static lv_obj_t *create_wifi_image(const lv_image_dsc_t *source)
+{
+    lv_obj_t *image = lv_image_create(s_root);
+    lv_image_set_src(image, source);
+    lv_obj_set_pos(image, WIFI_X, WIFI_Y);
+    /* The A8 images are only a shape: the style color tints them. */
+    lv_obj_set_style_image_recolor_opa(image, LV_OPA_COVER, 0);
+    lv_obj_add_flag(image, LV_OBJ_FLAG_HIDDEN);
+    return image;
+}
+
+static void create_wifi(void)
+{
+    s_ui.wifi_dim = create_wifi_image(&quota_wifi_dim[0]);
+    s_ui.wifi_lit = create_wifi_image(&quota_wifi_lit[0]);
+    s_ui.wifi_slash = create_wifi_image(&quota_wifi_slash);
+}
+
+static void create_battery(void)
+{
+    static const lv_point_precise_t slash_points[] = {{3, 9}, {18, 1}};
+    s_ui.batt_body = lv_obj_create(s_root);
+    lv_obj_remove_style_all(s_ui.batt_body);
+    lv_obj_set_pos(s_ui.batt_body, BATT_X, BATT_Y);
+    lv_obj_set_size(s_ui.batt_body, BATT_BODY_W, BATT_BODY_H);
+    lv_obj_set_style_bg_opa(s_ui.batt_body, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_ui.batt_body, 1, 0);
+    lv_obj_set_style_border_color(s_ui.batt_body, color(UI_BATT_LINE), 0);
+    lv_obj_set_style_border_opa(s_ui.batt_body, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(s_ui.batt_body, 3, 0);
+    lv_obj_remove_flag(s_ui.batt_body, LV_OBJ_FLAG_SCROLLABLE);
+    s_ui.batt_fill = create_rect(s_root, BATT_X + 2, BATT_Y + 2, BATT_FILL_MAX, BATT_BODY_H - 4,
+                                 UI_BATT_NORMAL, 1);
+    s_ui.batt_fill_width = BATT_FILL_MAX;
+    s_ui.batt_nub = create_rect(s_root, BATT_X + BATT_BODY_W, BATT_Y + 3, 2, 5, UI_BATT_LINE, 1);
+    s_ui.batt_slash = lv_line_create(s_root);
+    lv_obj_remove_style_all(s_ui.batt_slash);
+    lv_obj_set_pos(s_ui.batt_slash, BATT_X, BATT_Y);
+    lv_line_set_points(s_ui.batt_slash, slash_points, 2);
+    lv_obj_set_style_line_width(s_ui.batt_slash, 1, 0);
+    lv_obj_set_style_line_color(s_ui.batt_slash, color(UI_DIM), 0);
+    lv_obj_add_flag(s_ui.batt_slash, LV_OBJ_FLAG_HIDDEN);
+}
+
 static void create_pool(void)
 {
     lv_style_init(&s_text_style);
@@ -211,20 +289,8 @@ static void create_pool(void)
     lv_style_set_text_line_space(&s_text_style, 2);
 
     s_ui.footer_line = create_rect(s_root, MARGIN, FOOTER_LINE_Y, CONTENT_W, 1, UI_LINE, 0);
-    for (size_t i = 0; i < 2; i++) {
-        static const lv_point_precise_t wifi_points[][7] = {
-            {{0, 5}, {2, 3}, {5, 1}, {8, 0}, {11, 1}, {14, 3}, {16, 5}},
-            {{4, 9}, {6, 7}, {8, 6}, {10, 7}, {12, 9}},
-        };
-        s_ui.wifi_lines[i] = lv_line_create(s_root);
-        lv_obj_remove_style_all(s_ui.wifi_lines[i]);
-        lv_obj_set_pos(s_ui.wifi_lines[i], 146, 6);
-        lv_line_set_points(s_ui.wifi_lines[i], wifi_points[i], i == 0 ? 7 : 5);
-        lv_obj_set_style_line_width(s_ui.wifi_lines[i], 2, 0);
-        lv_obj_set_style_line_rounded(s_ui.wifi_lines[i], true, 0);
-        lv_obj_set_style_line_color(s_ui.wifi_lines[i], color(UI_INK), 0);
-    }
-    s_ui.wifi_dot = create_rect(s_root, 153, 18, 3, 3, UI_INK, 2);
+    create_battery();
+    create_wifi();
     s_ui.logo = lv_image_create(s_root);
     lv_image_set_src(s_ui.logo, &quota_openai_logo);
     s_logo_src = &quota_openai_logo;
@@ -378,39 +444,72 @@ static bool login_active(const quota_portable_view_t *portable)
            portable->login_state <= QUOTA_PORTABLE_LOGIN_EXCHANGING;
 }
 
-static void render_status_bar(const quota_service_view_t *service, int battery_percent)
+static void set_bg_color(lv_obj_t *object, uint32_t hex)
+{
+    if (!lv_color_eq(lv_obj_get_style_bg_color(object, 0), color(hex)))
+        lv_obj_set_style_bg_color(object, color(hex), 0);
+}
+
+static void set_image(lv_obj_t *image, const lv_image_dsc_t *source, uint32_t tint)
+{
+    if (lv_image_get_src(image) != source)
+        lv_image_set_src(image, source);
+    if (!lv_color_eq(lv_obj_get_style_image_recolor(image, 0), color(tint)))
+        lv_obj_set_style_image_recolor(image, color(tint), 0);
+    show(image, true);
+}
+
+/* A reading outside 0 to 100 (no gauge) draws the outline with a slash instead of a fill. */
+static void render_battery(int battery_percent, bool usb_powered)
+{
+    quota_battery_icon_t icon = quota_battery_icon(battery_percent, usb_powered, BATT_FILL_MAX);
+    uint32_t tone = icon.tone == QUOTA_BATTERY_USB   ? UI_BATT_USB
+                    : icon.tone == QUOTA_BATTERY_LOW ? UI_BATT_LOW
+                                                     : UI_BATT_NORMAL;
+    bool available = icon.tone != QUOTA_BATTERY_UNAVAILABLE;
+    set_bg_color(s_ui.batt_fill, tone);
+    if (icon.fill > 0 && s_ui.batt_fill_width != icon.fill) {
+        lv_obj_set_width(s_ui.batt_fill, icon.fill);
+        s_ui.batt_fill_width = icon.fill;
+    }
+    show(s_ui.batt_fill, icon.fill > 0);
+    show(s_ui.batt_slash, !available);
+}
+
+static void render_wifi(const quota_service_view_t *service)
+{
+    const quota_portable_view_t *portable = &service->portable;
+    quota_wifi_icon_t icon =
+        quota_wifi_icon(portable->saved_network_count > 0, service->connected,
+                        portable->network_state == QUOTA_PORTABLE_NETWORK_ERROR, service->wifi_rssi,
+                        s_ui.wifi_icon);
+    s_ui.wifi_icon = icon;
+    bool signal = icon >= QUOTA_WIFI_ICON_SIGNAL_1;
+    int lit = signal ? icon - QUOTA_WIFI_ICON_SIGNAL_1 : -1;
+    if (icon == QUOTA_WIFI_ICON_HIDDEN || (signal && lit == 2)) {
+        show(s_ui.wifi_dim, false);
+    } else {
+        /* What is not lit stays visible, dim: all of it while offline. */
+        set_image(s_ui.wifi_dim, &quota_wifi_dim[signal ? lit + 1 : 0], UI_DIM);
+    }
+    if (signal)
+        set_image(s_ui.wifi_lit, &quota_wifi_lit[lit], UI_INK);
+    else
+        show(s_ui.wifi_lit, false);
+    if (icon == QUOTA_WIFI_ICON_FAILED)
+        set_image(s_ui.wifi_slash, &quota_wifi_slash, UI_AMBER);
+    else
+        show(s_ui.wifi_slash, false);
+}
+
+static void render_status_bar(const quota_service_view_t *service, int battery_percent,
+                              bool usb_powered)
 {
     char text[16];
     format_clock(service->clock_synchronized ? service->now_epoch : 0, text, sizeof(text));
     put(SLOT_CLOCK, MARGIN, 6, 60, 16, &lv_font_montserrat_12, UI_MUTED, LV_TEXT_ALIGN_LEFT, text);
-    if (battery_percent >= 0 && battery_percent <= 100)
-        snprintf(text, sizeof(text), "%d%%", battery_percent);
-    else
-        snprintf(text, sizeof(text), "--%%");
-    put(SLOT_BATTERY, 180, 6, 48, 16, &lv_font_montserrat_12, UI_MUTED, LV_TEXT_ALIGN_RIGHT, text);
-
-    const quota_portable_view_t *portable = &service->portable;
-    bool has_wifi = portable->saved_network_count > 0;
-    bool connected = service->connected;
-    const char *mark = NULL;
-    if (portable->network_state == QUOTA_PORTABLE_NETWORK_ERROR)
-        mark = "!";
-    else if (portable->network_state == QUOTA_PORTABLE_NETWORK_CONNECTING ||
-             portable->network_state == QUOTA_PORTABLE_NETWORK_TIME_REQUIRED)
-        mark = "...";
-    uint32_t tone = connected ? UI_INK : UI_DIM;
-    for (size_t i = 0; i < 2; i++) {
-        if (!lv_color_eq(lv_obj_get_style_line_color(s_ui.wifi_lines[i], 0), color(tone)))
-            lv_obj_set_style_line_color(s_ui.wifi_lines[i], color(tone), 0);
-        show(s_ui.wifi_lines[i], has_wifi);
-    }
-    if (!lv_color_eq(lv_obj_get_style_bg_color(s_ui.wifi_dot, 0), color(tone)))
-        lv_obj_set_style_bg_color(s_ui.wifi_dot, color(tone), 0);
-    show(s_ui.wifi_dot, has_wifi);
-    if (has_wifi && mark != NULL) {
-        put(SLOT_WIFI_MARK, 165, 6, 14, 16, &lv_font_montserrat_12,
-            mark[0] == '!' ? UI_AMBER : UI_MUTED, LV_TEXT_ALIGN_LEFT, mark);
-    }
+    render_battery(battery_percent, usb_powered);
+    render_wifi(service);
 }
 
 static void title(const char *left, const char *right)
@@ -559,6 +658,46 @@ static void render_welcome(const quota_service_view_t *service)
     set_footer("OK 热点设置       长按OK 菜单");
 }
 
+static int text_width(const char *text, const lv_font_t *font)
+{
+    lv_point_t size;
+    lv_text_get_size(&size, text, font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    return size.x;
+}
+
+/* The amount in the big font, with its currency in a smaller one on the same baseline; the pair
+ * is centered. A long amount drops to a smaller size. */
+static void render_balance(const quota_currency_balance_t *entry, uint32_t tone)
+{
+    quota_money_t money;
+    quota_money_parts(entry->currency, entry->total_balance, &money);
+    size_t length = strlen(money.number);
+    const lv_font_t *big = length > 16   ? &lv_font_montserrat_12
+                           : length > 12 ? &lv_font_montserrat_14
+                                         : &lv_font_montserrat_20;
+    /* The symbol is a step smaller than the digits, so a long amount scales both. */
+    const lv_font_t *small = big == &lv_font_montserrat_20 ? &quota_font_16 : &quota_font_12;
+    const int top = 116, gap = 2;
+    int prefix_w = money.prefix[0] ? text_width(money.prefix, small) + gap : 0;
+    int suffix_w = money.suffix[0] ? text_width(money.suffix, small) : 0;
+    int number_w = text_width(money.number, big);
+    int x = MARGIN + (CONTENT_W - (prefix_w + number_w + suffix_w)) / 2;
+    if (x < MARGIN)
+        x = MARGIN;
+    int baseline = top + big->line_height - big->base_line;
+    int small_top = baseline - (small->line_height - small->base_line);
+    put_text(T_VALUE0, x + prefix_w, top, number_w + 2, 28, big, tone, LV_TEXT_ALIGN_LEFT,
+             money.number);
+    if (money.prefix[0]) {
+        put_text(T_VALUE1, x, small_top, prefix_w, small->line_height, small, tone,
+                 LV_TEXT_ALIGN_LEFT, money.prefix);
+    }
+    if (money.suffix[0]) {
+        put_text(T_RESET0, x + prefix_w + number_w, small_top, suffix_w + 2, small->line_height,
+                 small, tone, LV_TEXT_ALIGN_LEFT, money.suffix);
+    }
+}
+
 static void render_home(const quota_navigation_t *navigation, const quota_service_view_t *service)
 {
     if (service->snapshot.account_count == 0) {
@@ -570,22 +709,28 @@ static void render_home(const quota_navigation_t *navigation, const quota_servic
         selected = 0;
     const quota_account_t *account = &service->snapshot.accounts[selected];
     bool deepseek = account->provider == QUOTA_PROVIDER_DEEPSEEK;
-    char text[96];
-    snprintf(text, sizeof(text), "%u/%u", (unsigned)(selected + 1),
-             (unsigned)service->snapshot.account_count);
-    put_text(T_TITLE, 56, 30, 120, 22, &quota_font_16, UI_INK, LV_TEXT_ALIGN_LEFT,
-             deepseek ? "DeepSeek" : "ChatGPT");
-    put_text(T_RIGHT, 176, 34, 52, 16, &lv_font_montserrat_12, UI_MUTED, LV_TEXT_ALIGN_RIGHT, text);
-    set_logo(deepseek ? &quota_deepseek_logo : &quota_openai_logo);
+    char text[QUOTA_EMAIL_MAX_BYTES + 1], heading[QUOTA_PLAN_MAX_BYTES + 12];
     if (deepseek) {
+        snprintf(heading, sizeof(heading), "DeepSeek");
         display_name(service->snapshot.balances[selected].label, "DeepSeek", (unsigned)selected + 1,
                      text, sizeof(text));
     } else {
-        char plan[QUOTA_PLAN_MAX_BYTES + 1], email[QUOTA_EMAIL_MAX_BYTES + 1];
+        /* The plan joins the title so the whole email, unmasked, has the line below to itself. */
+        char plan[QUOTA_PLAN_MAX_BYTES + 1];
         quota_copy_display_plan(account->plan, plan, sizeof(plan));
-        quota_mask_email(account->email, email, sizeof(email));
-        snprintf(text, sizeof(text), "%.31s%s%.60s", plan, plan[0] && email[0] ? " · " : "", email);
+        snprintf(heading, sizeof(heading), "ChatGPT%s%s", plan[0] ? " " : "", plan);
+        /* A plan name too long to sit after "ChatGPT" is shown alone. */
+        if (plan[0] && text_width(heading, &quota_font_16) > TITLE_W)
+            snprintf(heading, sizeof(heading), "%s", plan);
+        quota_copy_display_ascii(account->email, text, sizeof(text));
     }
+    put_text(T_TITLE, 56, 30, TITLE_W, 22, &quota_font_16, UI_INK, LV_TEXT_ALIGN_LEFT, heading);
+    char counter[16];
+    snprintf(counter, sizeof(counter), "%u/%u", (unsigned)(selected + 1),
+             (unsigned)service->snapshot.account_count);
+    put_text(T_RIGHT, 196, 34, 32, 16, &lv_font_montserrat_12, UI_MUTED, LV_TEXT_ALIGN_RIGHT,
+             counter);
+    set_logo(deepseek ? &quota_deepseek_logo : &quota_openai_logo);
     put_text(T_SUB, 56, 52, 172, 16, &quota_font_12, UI_MUTED, LV_TEXT_ALIGN_LEFT, text);
 
     bool stale = quota_data_is_stale(service->now_epoch, account->has_observed_at,
@@ -593,20 +738,14 @@ static void render_home(const quota_navigation_t *navigation, const quota_servic
                  account->status != QUOTA_STATUS_OK;
     if (deepseek) {
         const quota_currency_balance_t *entry =
-            quota_balance_cny(&service->snapshot.balances[selected]);
+            quota_balance_primary(&service->snapshot.balances[selected]);
         put_text(T_NAME0, MARGIN, 84, CONTENT_W, 22, &quota_font_16, UI_INK, LV_TEXT_ALIGN_LEFT,
-                 "可用余额（人民币）");
-        if (entry != NULL) {
-            size_t length = strlen(entry->total_balance);
-            put_text(T_VALUE0, MARGIN, 116, CONTENT_W, 28,
-                     length > 16   ? &lv_font_montserrat_12
-                     : length > 12 ? &lv_font_montserrat_14
-                                   : &lv_font_montserrat_20,
-                     stale ? UI_DIM : UI_INK, LV_TEXT_ALIGN_CENTER, entry->total_balance);
-        } else {
+                 "可用余额");
+        if (entry != NULL)
+            render_balance(entry, stale ? UI_DIM : UI_INK);
+        else
             put_text(T_VALUE0, MARGIN, 116, CONTENT_W, 22, &quota_font_16, UI_DIM,
                      LV_TEXT_ALIGN_CENTER, "未提供");
-        }
     } else {
         const quota_window_t *windows[] = {&account->five_hour, &account->seven_day};
         static const char *const names[] = {"5 小时额度", "7 天额度"};
@@ -623,22 +762,31 @@ static void render_home(const quota_navigation_t *navigation, const quota_servic
                      account->status == QUOTA_STATUS_OK ? "未提供额度窗口" : "等待额度数据");
         }
         const quota_codex_extras_t *extras = &service->snapshot.codex_extras[selected];
-        char credits[QUOTA_CREDITS_BALANCE_BYTES + 1] = "", line[80] = "";
+        char credits[QUOTA_CREDITS_BALANCE_BYTES + 32] = "", resets[80];
         if (extras->has_credits) {
-            quota_copy_display_ascii(extras->credits_balance, credits, sizeof(credits));
-            snprintf(line, sizeof(line), "剩余额度 %s",
+            /* Whole credits only: the stored decimal string is untouched. */
+            char amount[QUOTA_CREDITS_BALANCE_BYTES + 1];
+            quota_format_credits(extras->credits_balance, amount, sizeof(amount));
+            snprintf(credits, sizeof(credits), "剩余额度 %s",
                      extras->unlimited_credits ? "不限量"
-                     : credits[0]              ? credits
+                     : amount[0]               ? amount
                                                : "可用");
         }
-        if (extras->has_banked_reset && extras->available_resets > 0) {
-            size_t used = strlen(line);
-            snprintf(line + used, sizeof(line) - used, "%s可用重置 %llu 次", used ? "   " : "",
-                     (unsigned long long)extras->available_resets);
-        }
-        if (line[0] != '\0') {
-            put_text(T_EXTRA, MARGIN, 222, CONTENT_W, 16, &quota_font_12, stale ? UI_DIM : UI_INK,
-                     LV_TEXT_ALIGN_LEFT, line);
+        quota_format_banked_resets(extras, service->now_epoch, service->clock_synchronized, resets,
+                                   sizeof(resets));
+        /* One line when both fit, otherwise the resets note takes a second line. */
+        char joined[sizeof(credits) + sizeof(resets) + 4];
+        snprintf(joined, sizeof(joined), "%s%s%s", credits, credits[0] && resets[0] ? "   " : "",
+                 resets);
+        uint32_t extra_tone = stale ? UI_DIM : UI_INK;
+        if (credits[0] && resets[0] && text_width(joined, &quota_font_12) > CONTENT_W) {
+            put_text(T_EXTRA, MARGIN, 214, CONTENT_W, 16, &quota_font_12, extra_tone,
+                     LV_TEXT_ALIGN_LEFT, credits);
+            put_text(T_EXTRA2, MARGIN, 232, CONTENT_W, 16, &quota_font_12, extra_tone,
+                     LV_TEXT_ALIGN_LEFT, resets);
+        } else if (joined[0] != '\0') {
+            put_text(T_EXTRA, MARGIN, 222, CONTENT_W, 16, &quota_font_12, extra_tone,
+                     LV_TEXT_ALIGN_LEFT, joined);
         }
     }
     char status[96];
@@ -863,7 +1011,7 @@ static void render_results(const quota_service_view_t *service)
             else
                 snprintf(name, sizeof(name), "DeepSeek %.36s", detail);
         } else {
-            quota_mask_email(account->email, detail, sizeof(detail));
+            quota_copy_display_ascii(account->email, detail, sizeof(detail));
             snprintf(name, sizeof(name), "ChatGPT %.36s", detail);
         }
         add_result(rows, &shown, &total, name, (quota_validation_t)portable->account_validation[i]);
@@ -1194,7 +1342,7 @@ void quota_ui_init(void)
 }
 
 void quota_ui_render(const quota_navigation_t *navigation, const quota_service_view_t *service,
-                     int battery_percent)
+                     int battery_percent, bool usb_powered)
 {
     if (navigation == NULL || service == NULL || s_root == NULL)
         return;
@@ -1203,7 +1351,7 @@ void quota_ui_render(const quota_navigation_t *navigation, const quota_service_v
     memset(s_ui.want_row, 0, sizeof(s_ui.want_row));
     memset(s_ui.want_marker, 0, sizeof(s_ui.want_marker));
     s_sleep_notice = navigation->sleep_notice;
-    render_status_bar(service, battery_percent);
+    render_status_bar(service, battery_percent, usb_powered);
     switch (navigation->screen) {
     case QUOTA_SCREEN_MENU:
         render_menu(navigation, service);

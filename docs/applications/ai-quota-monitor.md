@@ -13,7 +13,7 @@ Passport 拥有一份账户目录、Wi-Fi 列表、选择状态和刷新/息屏�
 
 Codex 设备授权复现[官方客户端实现](https://github.com/openai/codex/blob/7f892275e31002f0422477c6219189284560e689/codex-rs/login/src/device_code_auth.rs)，使用可配置 `QUOTA_DIRECT_CODEX_CLIENT_ID` 及固定 `auth.openai.com`/`chatgpt.com` 来源。额度端点属于客户端实现细节，并非稳定第三方 API；本工程未注册 OAuth 集成。直连只映射恰好 18000/604800 秒的主窗口。剩余额度、可用重置次数来自 usage；可选详情失败只让到期未知，保留新额度。剩余额度保留来源字符串，不推测币种。仅在全部可用详情已知时展示最近到期；正数次数仍以来源为准。
 
-DeepSeek 展示原始十进制人民币 `total_balance`，包括赠送/充值但不展开、不换算、不回退美元。别名不是认证邮箱。API 不提供消费历史、请求总数或累计 Tokens。更换密钥后该行回到待验证，余额待新密钥验证通过后更新；验证失败的行显示“验证失败”，修改密钥后重新验证。
+DeepSeek 展示原始十进制 `total_balance`，包括赠送/充值但不展开、不换算；主页优先显示人民币（`¥123.45`），没有人民币时显示美元（`$12.30`；固件只接受 CNY 和 USD），金额始终是服务返回的十进制字符串，不转为浮点数。别名不是认证邮箱。API 不提供消费历史、请求总数或累计 Tokens。更换密钥后该行回到待验证，余额待新密钥验证通过后更新；验证失败的行显示“验证失败”，修改密钥后重新验证。
 
 主要参考：[Codex 授权](https://learn.chatgpt.com/codex/auth)、[app-server](https://learn.chatgpt.com/codex/app-server)、[DeepSeek 余额](https://api-docs.deepseek.com/api/get-user-balance/)。
 

@@ -7,6 +7,7 @@
 
 #include "driver/usb_serial_jtag_vfs.h"
 #include "esp_log.h"
+#include "esp_wifi.h"
 #include "nvs_flash.h"
 
 #include "freertos/semphr.h"
@@ -265,7 +266,14 @@ void quota_service_get_view(quota_service_view_t *view)
     view->now_epoch = current_epoch();
     quota_usb_fill_view_locked(view);
     quota_portable_service_countdown_overlay_locked(view);
+    bool connected = view->connected;
     quota_service_unlock();
+    /* Signal strength of the live link, for the status bar; outside the lock, and only while the
+     * radio runs (it is stopped with the screen off). */
+    view->wifi_rssi = 0;
+    wifi_ap_record_t ap = {0};
+    if (connected && quota_wifi_started() && esp_wifi_sta_get_ap_info(&ap) == ESP_OK && ap.rssi < 0)
+        view->wifi_rssi = ap.rssi;
 }
 
 void quota_service_get_selected_account_id(char account_id[QUOTA_ACCOUNT_ID_BYTES + 1])

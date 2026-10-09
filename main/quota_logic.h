@@ -253,10 +253,69 @@ void quota_copy_display_plan(const char *source, char *destination, size_t capac
 void quota_format_duration(uint64_t seconds, char *output, size_t capacity);
 void quota_format_reset_time(const quota_window_t *window, uint64_t now, bool clock_synchronized,
                              char *output, size_t capacity);
+/* The banked-reset note of the ChatGPT card: "可用重置 2 次 · 3 天 5 小时后过期" (the duration is
+ * the one of window resets). Only the count when no expiry is known, "待校时" in place of the
+ * duration while the clock is not synchronized, "等待新数据" once the expiry has passed. Empty when
+ * there is no banked reset. */
+void quota_format_banked_resets(const quota_codex_extras_t *extras, uint64_t now,
+                                bool clock_synchronized, char *output, size_t capacity);
 bool quota_refresh_seconds_is_valid(uint64_t seconds);
 bool quota_screen_timeout_is_valid(uint64_t seconds);
 bool quota_balance_is_valid(const quota_balance_t *balance);
 const quota_currency_balance_t *quota_balance_cny(const quota_balance_t *balance);
+/* The entry the home card shows: CNY when present, otherwise the first one. NULL when none. */
+const quota_currency_balance_t *quota_balance_primary(const quota_balance_t *balance);
+
+/* A money amount split for drawing: "-¥12.30" is prefix "-¥" and number "12.30"; an unknown
+ * currency has no symbol and appends its code instead ("123.45" and " EUR"). The amount stays the
+ * provider's decimal string; it is never converted to a number. */
+typedef struct {
+    char prefix[8];
+    char number[QUOTA_BALANCE_AMOUNT_BYTES + 1];
+    char suffix[8];
+} quota_money_t;
+void quota_money_parts(const char *currency, const char *amount, quota_money_t *money);
+/* The parts joined: "¥123.45", "$12.30", "123.45 EUR". */
+void quota_format_money(const char *currency, const char *amount, char *output, size_t capacity);
+/* A credits balance as a whole number for display: the fraction is dropped, never rounded up, so
+ * the shown value is never above the real one ("120.75" is "120", "-0.5" is "-1"). Text that is
+ * not a plain decimal is shown as it is. */
+void quota_format_credits(const char *balance, char *output, size_t capacity);
+
+/* Status bar battery. The fill is `max_fill` pixels wide at 100%; any charge above 0 shows at
+ * least one pixel. USB power (a USB host is connected; see the application) turns the fill green,
+ * otherwise 20% or less is red. */
+typedef enum {
+    QUOTA_BATTERY_UNAVAILABLE = 0, /* no reading: outline with a slash, distinct from 0% */
+    QUOTA_BATTERY_NORMAL,
+    QUOTA_BATTERY_LOW,
+    QUOTA_BATTERY_USB,
+} quota_battery_tone_t;
+#define QUOTA_BATTERY_LOW_PERCENT 20
+typedef struct {
+    quota_battery_tone_t tone;
+    uint8_t fill;
+} quota_battery_icon_t;
+quota_battery_icon_t quota_battery_icon(int percent, bool usb_powered, unsigned max_fill);
+
+/* Status bar Wi-Fi glyph: hidden without a saved network, dim while connecting or disconnected,
+ * dim with a slash after a failure, otherwise 1 to 3 lit arcs from the signal strength. */
+#define QUOTA_WIFI_SIGNAL_3_DBM (-60) /* this strong or stronger lights all three arcs */
+#define QUOTA_WIFI_SIGNAL_2_DBM (-72)
+#define QUOTA_WIFI_HYSTERESIS_DB 3
+typedef enum {
+    QUOTA_WIFI_ICON_HIDDEN = 0,
+    QUOTA_WIFI_ICON_OFFLINE,
+    QUOTA_WIFI_ICON_FAILED,
+    QUOTA_WIFI_ICON_SIGNAL_1,
+    QUOTA_WIFI_ICON_SIGNAL_2,
+    QUOTA_WIFI_ICON_SIGNAL_3,
+} quota_wifi_icon_t;
+/* rssi_dbm is 0 when unknown (a connected link of unknown strength shows full). `previous` is the
+ * icon drawn last: a level is kept until the signal is 3 dB below the level's threshold, so a
+ * reading that hovers on a threshold does not flicker. */
+quota_wifi_icon_t quota_wifi_icon(bool has_network, bool connected, bool failed, int rssi_dbm,
+                                  quota_wifi_icon_t previous);
 void quota_frame_decoder_init(quota_frame_decoder_t *decoder);
 quota_frame_result_t quota_frame_decoder_feed(quota_frame_decoder_t *decoder, char byte,
                                               const char **frame_out, size_t *frame_length_out);
@@ -282,9 +341,6 @@ quota_hotspot_state_t quota_hotspot_state(bool storage_error, bool validating, b
  * has_glyph answers for code points above 0x7e (printable ASCII is always drawn). A name with a
  * character the font lacks is shown as a numbered stand-in instead. */
 bool quota_text_is_displayable(const char *text, bool (*has_glyph)(uint32_t codepoint));
-/* "a***@mail.com": the first character of the name, then the domain. Anything without an at sign
- * is copied as it is. Non-ASCII bytes become '?'. */
-void quota_mask_email(const char *email, char *output, size_t capacity);
 /* Raises the sleep notice for QUOTA_NOTICE_MS, or drops it once that has passed. */
 void quota_navigation_notice(quota_navigation_t *navigation, uint64_t now_ms, bool raise);
 void quota_navigation_sync_settings(quota_navigation_t *navigation, uint16_t refresh_seconds,

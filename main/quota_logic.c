@@ -210,6 +210,139 @@ const quota_currency_balance_t *quota_balance_cny(const quota_balance_t *balance
     }
     return NULL;
 }
+
+const quota_currency_balance_t *quota_balance_primary(const quota_balance_t *balance)
+{
+    const quota_currency_balance_t *cny = quota_balance_cny(balance);
+    if (cny != NULL)
+        return cny;
+    if (balance == NULL || !balance->present || balance->currency_count == 0 ||
+        balance->currency_count > QUOTA_BALANCE_CURRENCIES)
+        return NULL;
+    return &balance->balance_infos[0];
+}
+
+void quota_money_parts(const char *currency, const char *amount, quota_money_t *money)
+{
+    if (money == NULL)
+        return;
+    memset(money, 0, sizeof(*money));
+    if (amount == NULL)
+        amount = "";
+    const char *sign = "";
+    if (amount[0] == '-') {
+        sign = "-";
+        amount++;
+    }
+    snprintf(money->number, sizeof(money->number), "%s", amount);
+    if (currency != NULL && strcmp(currency, "CNY") == 0) {
+        snprintf(money->prefix, sizeof(money->prefix), "%s¥", sign);
+    } else if (currency != NULL && strcmp(currency, "USD") == 0) {
+        snprintf(money->prefix, sizeof(money->prefix), "%s$", sign);
+    } else {
+        snprintf(money->prefix, sizeof(money->prefix), "%s", sign);
+        if (currency != NULL && currency[0] != '\0') {
+            char code[4]; /* ISO 4217 codes are three letters */
+            quota_copy_display_ascii(currency, code, sizeof(code));
+            snprintf(money->suffix, sizeof(money->suffix), " %s", code);
+        }
+    }
+}
+
+void quota_format_money(const char *currency, const char *amount, char *output, size_t capacity)
+{
+    if (output == NULL || capacity == 0)
+        return;
+    quota_money_t money;
+    quota_money_parts(currency, amount, &money);
+    snprintf(output, capacity, "%s%s%s", money.prefix, money.number, money.suffix);
+}
+
+void quota_format_credits(const char *balance, char *output, size_t capacity)
+{
+    if (output == NULL || capacity == 0)
+        return;
+    if (balance == NULL)
+        balance = "";
+    const char *p = balance;
+    bool negative = *p == '-';
+    if (negative)
+        p++;
+    const char *integer = p;
+    while (*p >= '0' && *p <= '9')
+        p++;
+    size_t integer_length = (size_t)(p - integer);
+    bool fraction_nonzero = false, plain = integer_length > 0;
+    if (plain && *p == '.') {
+        p++;
+        while (*p >= '0' && *p <= '9') {
+            fraction_nonzero = fraction_nonzero || *p != '0';
+            p++;
+        }
+    }
+    if (!plain || *p != '\0' || integer_length > QUOTA_CREDITS_BALANCE_BYTES) {
+        quota_copy_display_ascii(balance, output, capacity);
+        return;
+    }
+    while (integer_length > 1 && *integer == '0') {
+        integer++;
+        integer_length--;
+    }
+    char digits[QUOTA_CREDITS_BALANCE_BYTES + 3];
+    memcpy(digits + 1, integer, integer_length);
+    digits[0] = '0';
+    digits[integer_length + 1] = '\0';
+    /* A negative value with a fraction rounds away from zero, which is the lower number. */
+    if (negative && fraction_nonzero) {
+        size_t at = integer_length;
+        for (; at > 0 && digits[at] == '9'; at--)
+            digits[at] = '0';
+        digits[at]++;
+    }
+    const char *start = digits;
+    while (start[0] == '0' && start[1] != '\0')
+        start++;
+    bool zero = start[0] == '0' && start[1] == '\0';
+    snprintf(output, capacity, "%s%s", negative && !zero ? "-" : "", start);
+}
+
+quota_battery_icon_t quota_battery_icon(int percent, bool usb_powered, unsigned max_fill)
+{
+    quota_battery_icon_t icon = {QUOTA_BATTERY_UNAVAILABLE, 0};
+    if (percent < 0 || percent > 100)
+        return icon;
+    icon.fill = (uint8_t)(((unsigned)percent * max_fill + 50) / 100);
+    if (percent > 0 && icon.fill == 0)
+        icon.fill = 1;
+    if (usb_powered)
+        icon.tone = QUOTA_BATTERY_USB;
+    else if (percent <= QUOTA_BATTERY_LOW_PERCENT)
+        icon.tone = QUOTA_BATTERY_LOW;
+    else
+        icon.tone = QUOTA_BATTERY_NORMAL;
+    return icon;
+}
+
+quota_wifi_icon_t quota_wifi_icon(bool has_network, bool connected, bool failed, int rssi_dbm,
+                                  quota_wifi_icon_t previous)
+{
+    if (!has_network)
+        return QUOTA_WIFI_ICON_HIDDEN;
+    if (!connected)
+        return failed ? QUOTA_WIFI_ICON_FAILED : QUOTA_WIFI_ICON_OFFLINE;
+    if (rssi_dbm == 0)
+        return QUOTA_WIFI_ICON_SIGNAL_3;
+    /* A level already shown is kept down to 3 dB below the threshold that earned it. */
+    int hold3 = previous == QUOTA_WIFI_ICON_SIGNAL_3 ? QUOTA_WIFI_HYSTERESIS_DB : 0;
+    int hold2 = previous == QUOTA_WIFI_ICON_SIGNAL_3 || previous == QUOTA_WIFI_ICON_SIGNAL_2
+                    ? QUOTA_WIFI_HYSTERESIS_DB
+                    : 0;
+    if (rssi_dbm >= QUOTA_WIFI_SIGNAL_3_DBM - hold3)
+        return QUOTA_WIFI_ICON_SIGNAL_3;
+    return rssi_dbm >= QUOTA_WIFI_SIGNAL_2_DBM - hold2 ? QUOTA_WIFI_ICON_SIGNAL_2
+                                                       : QUOTA_WIFI_ICON_SIGNAL_1;
+}
+
 void quota_format_duration(uint64_t seconds, char *output, size_t capacity)
 {
     if (output == NULL || capacity == 0)
@@ -243,6 +376,29 @@ void quota_format_reset_time(const quota_window_t *window, uint64_t now, bool cl
         char remaining[32];
         quota_format_duration(window->resets_at - now, remaining, sizeof(remaining));
         snprintf(output, capacity, "%s后重置", remaining);
+    }
+}
+
+void quota_format_banked_resets(const quota_codex_extras_t *extras, uint64_t now,
+                                bool clock_synchronized, char *output, size_t capacity)
+{
+    if (output == NULL || capacity == 0)
+        return;
+    output[0] = '\0';
+    if (extras == NULL || !extras->has_banked_reset || extras->available_resets == 0)
+        return;
+    int used = snprintf(output, capacity, "可用重置 %llu 次",
+                        (unsigned long long)extras->available_resets);
+    if (used < 0 || (size_t)used >= capacity || !extras->has_next_reset_expiry)
+        return;
+    if (!clock_synchronized) {
+        snprintf(output + used, capacity - (size_t)used, " · 待校时");
+    } else if (now >= extras->next_reset_expires_at) {
+        snprintf(output + used, capacity - (size_t)used, " · 等待新数据");
+    } else {
+        char remaining[32];
+        quota_format_duration(extras->next_reset_expires_at - now, remaining, sizeof(remaining));
+        snprintf(output + used, capacity - (size_t)used, " · %s后过期", remaining);
     }
 }
 
@@ -672,20 +828,6 @@ bool quota_text_is_displayable(const char *text, bool (*has_glyph)(uint32_t code
             return false;
     }
     return true;
-}
-
-void quota_mask_email(const char *email, char *output, size_t capacity)
-{
-    if (output == NULL || capacity == 0)
-        return;
-    char plain[QUOTA_EMAIL_MAX_BYTES + 1];
-    quota_copy_display_ascii(email, plain, sizeof(plain));
-    const char *at = strchr(plain, '@');
-    if (at == NULL || at == plain) {
-        snprintf(output, capacity, "%s", plain);
-        return;
-    }
-    snprintf(output, capacity, "%c***%s", plain[0], at);
 }
 
 int quota_find_account_by_id(const quota_snapshot_t *snapshot, const char *id)

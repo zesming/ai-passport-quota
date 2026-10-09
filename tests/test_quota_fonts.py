@@ -74,6 +74,13 @@ class QuotaFonts(unittest.TestCase):
                     missing, set(), "Missing glyphs: " + "".join(map(chr, sorted(missing)))
                 )
 
+    def test_currency_symbol_is_in_the_fonts(self):
+        # The DeepSeek balance draws "¥" in the 16 px font; Montserrat has no such glyph.
+        for size in (12, 16):
+            with self.subTest(size=size):
+                available = font_codepoints(ROOT / f"assets/fonts/quota_font_{size}.c")
+                self.assertIn(0xA5, available)
+
     def test_rare_characters_stay_outside_the_fonts(self):
         # Characters the fonts do not have are what the device shows as "DeepSeek N" / "Wi-Fi N".
         available = font_codepoints(ROOT / "assets/fonts/quota_font_12.c")

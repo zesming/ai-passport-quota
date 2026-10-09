@@ -40,6 +40,7 @@ OWN_SOURCES = [
     "main/quota_ui.c",
     "main/quota_logic.c",
     "main/quota_brand_assets.c",
+    "main/quota_wifi_icons.c",
     "assets/fonts/quota_font_12.c",
     "assets/fonts/quota_font_16.c",
     "components/bsp/src/bsp_display_rounding.c",
@@ -78,8 +79,10 @@ def build(out):
         f"-I{ROOT / 'tests/cjson'}",
         f"-I{ROOT / 'components/bsp/src'}",
         f"-I{ROOT / 'components/bsp/include'}",
-        f"-I{ROOT / 'tests/bsp_stubs'}",
+        # host_sdk first: quota_service.h reaches the SDK through its freertos stubs, and their
+        # esp_timer types must not meet the BSP test stubs'.
         f"-I{ROOT / 'tests/host_sdk'}",
+        f"-I{ROOT / 'tests/bsp_stubs'}",
     ]
     obj_dir = out / "obj"
     jobs = []

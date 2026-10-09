@@ -42,6 +42,10 @@ C 用 `.clang-format`（LLVM 基础，4 空格，100 列），JS 用根目录 `p
 
 每个界面的输出行带有 LVGL 内存：`used` 是当前占用，`summary` 行的 `max_used` 是峰值。主机池为 64 KB 且指针为 64 位，对象、样式和指针比设备大，对本界面逐块估算的结果是设备约为主机的 0.7 倍，所以设备门限 20 KB 大致对应主机 28 KB：测试以 28 KB 为主机上限，作为回退告警，不是测量值；门限以真机 `lv_mem_monitor().max_used ≤ 20 KB` 为准。每个界面渲染两遍，第二遍不得重绘任何像素（预览程序检查）。调试构建用 `sdkconfig.resource_log` 时，每 30 秒的日志包含 `lvgl_pool: total/used/max_used`，在 LVGL 锁内读取。`sdkconfig.defaults` 关闭了界面用不到的 `CONFIG_LV_USE_SPAN` 和 `CONFIG_LV_USE_THEME_DEFAULT`（所有对象自己设样式，预览逐像素对比渲染未变）。预览不能证明字体在面板上的观感、二维码的可扫性或真实堆余量。改动界面文案后运行 `python3 tools/font_glyphs.py --build` 更新字形表并重新生成两种字体（见[资源](../../assets/README.md)）。
 
+## 版本号
+
+固件版本使用语义化版本 `MAJOR.MINOR.PATCH`，只在顶层 `CMakeLists.txt` 的 `PROJECT_VER` 设置。它就是 esp_app_desc 的版本、设备信息里的“固件”和协议 `firmware` 字段，也写进归档清单的 `app_descriptor.version`；git 提交只在启动日志里出现（`QUOTA_GIT_REV`），不给用户看。每次发布：升 `PROJECT_VER`（不兼容的数据或协议变化升 MAJOR，新功能升 MINOR，修复升 PATCH），在[变更日志](../CHANGELOG.md)写同名条目，并打 `v<版本>` 标签（标签同时触发设置页发布）。同一版本号不重复用于不同的固件。
+
 ## 资源余量
 
 调试构建加 `sdkconfig.resource_log` 覆盖层，每 30 秒记录一次 `quota_app`、`quota_network` 的栈剩余最小值和堆的当前与历史最小空闲值：

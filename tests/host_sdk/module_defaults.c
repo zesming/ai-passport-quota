@@ -205,11 +205,12 @@ WEAK esp_err_t bsp_button_init(bsp_btn_cb_t cb, void *user)
 
 WEAK void quota_ui_init(void) {}
 WEAK void quota_ui_render(const quota_navigation_t *navigation, const quota_service_view_t *service,
-                          int battery_percent)
+                          int battery_percent, bool usb_powered)
 {
     (void)navigation;
     (void)service;
     (void)battery_percent;
+    (void)usb_powered;
 }
 
 WEAK void quota_service_factory_reset(void) {}

@@ -85,7 +85,7 @@ run_static_checks() {
         -Itests/bsp_stubs -Icomponents/bsp/include -Icomponents/bsp/src \
         tests/test_bsp_power.c -o "${test_dir}/test_bsp_power_profile"
     "${test_dir}/test_bsp_power_profile"
-    for suite in quota_fonts quota_ui_preview quota_refresh_runtime quota_power_runtime pm_profile_delta quota_usb_runtime quota_wifi_runtime quota_storage_runtime quota_catalog_runtime quota_portable_runtime quota_direct_runtime quota_portable_service_runtime check_repo publish_setup_page verify_firmware archive_firmware; do
+    for suite in quota_fonts quota_ui_preview quota_refresh_runtime quota_power_runtime pm_profile_delta wifi_icons quota_usb_runtime quota_wifi_runtime quota_storage_runtime quota_catalog_runtime quota_portable_runtime quota_direct_runtime quota_portable_service_runtime check_repo publish_setup_page verify_firmware archive_firmware; do
         PYTHONDONTWRITEBYTECODE=1 python3 "tests/test_${suite}.py"
     done
     rm -rf "${test_dir}"

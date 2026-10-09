@@ -9,6 +9,7 @@
 #include "quota_ui.h"
 #include "quota_usb.h"
 
+#include "driver/usb_serial_jtag.h"
 #include "esp_log.h"
 #include "esp_pm.h"
 #include "esp_timer.h"
@@ -28,6 +29,8 @@ QUOTA_TESTABLE quota_display_state_t s_display;
 QUOTA_TESTABLE uint8_t s_backlight_percent = 100;
 QUOTA_TESTABLE int s_battery_percent = -1;
 QUOTA_TESTABLE uint64_t s_battery_read_ms;
+/* A USB host is connected. It is read on every drawn frame, so it needs no timer or wake-up. */
+QUOTA_TESTABLE bool s_usb_powered;
 QUOTA_TESTABLE esp_pm_lock_handle_t s_cpu_lock;
 QUOTA_TESTABLE bool s_cpu_lock_held;
 QUOTA_TESTABLE bool s_display_power_sleeping;
@@ -217,7 +220,8 @@ QUOTA_TESTABLE void render_application(void)
     }
     if (!bsp_lvgl_lock(500))
         return;
-    quota_ui_render(&s_navigation, &s_view_work, s_battery_percent);
+    s_usb_powered = usb_serial_jtag_is_connected();
+    quota_ui_render(&s_navigation, &s_view_work, s_battery_percent, s_usb_powered);
     bsp_lvgl_unlock();
     if (s_backlight_percent != 100) {
         if (!bsp_lvgl_refresh())
@@ -427,7 +431,12 @@ QUOTA_TESTABLE bool on_screen_wake(void *user)
 
 void app_main(void)
 {
+#ifdef QUOTA_GIT_REV
+    /* The startup log already prints the app version; the revision is only for logs. */
+    ESP_LOGI(TAG, "AI quota monitor starting (git %s)", QUOTA_GIT_REV);
+#else
     ESP_LOGI(TAG, "AI quota monitor starting");
+#endif
     (void)setenv("TZ", "CST-8", 1);
     tzset();
     configure_cpu_power_management();
@@ -458,7 +467,8 @@ void app_main(void)
         return;
     }
     quota_ui_init();
-    quota_ui_render(&s_navigation, &s_view_work, s_battery_percent);
+    s_usb_powered = usb_serial_jtag_is_connected();
+    quota_ui_render(&s_navigation, &s_view_work, s_battery_percent, s_usb_powered);
     bsp_lvgl_unlock();
 
     bsp_power_set_wake_callback(on_screen_wake, NULL);

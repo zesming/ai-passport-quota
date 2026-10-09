@@ -70,6 +70,7 @@ typedef struct {
 } wifi_init_config_t;
 typedef struct {
     unsigned char ssid[33];
+    signed char rssi;
 } wifi_ap_record_t;
 typedef struct {
     uint8_t reason;
@@ -102,6 +103,7 @@ esp_err_t esp_pm_lock_delete(esp_pm_lock_handle_t lock);
 esp_err_t esp_pm_configure(const void *config);
 uint32_t esp_random(void);
 void usb_serial_jtag_vfs_use_nonblocking(void);
+bool usb_serial_jtag_is_connected(void);
 esp_err_t nvs_flash_init(void);
 esp_err_t nvs_flash_deinit_partition(const char *partition);
 esp_err_t nvs_flash_erase_partition(const char *partition);

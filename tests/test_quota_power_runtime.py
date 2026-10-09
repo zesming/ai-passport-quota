@@ -18,6 +18,7 @@ extern quota_navigation_t s_navigation;
 extern quota_service_view_t s_view_work;
 extern bool s_display_power_pending, s_display_power_sleeping, s_cpu_lock_held;
 extern uint8_t s_backlight_percent;
+extern bool s_usb_powered;
 void configure_cpu_power_management(void);
 void render_application(void);
 void process_event(const quota_app_event_t *event);
@@ -28,11 +29,14 @@ void application_task(void *arg);
 /* The service view the application reads on every event. */
 static quota_service_view_t fake_view;
 static unsigned views, ui_renders, refreshes, opened, closed;
+static bool last_render_usb, usb_host;
+bool usb_serial_jtag_is_connected(void) { return usb_host; }
 
 void quota_service_get_view(quota_service_view_t *view) { views++; *view = fake_view; }
 void quota_ui_render(const quota_navigation_t *navigation, const quota_service_view_t *service,
-                     int battery_percent) {
+                     int battery_percent, bool usb_powered) {
     (void)navigation; (void)service; (void)battery_percent; ui_renders++;
+    last_render_usb = usb_powered;
 }
 void quota_service_request_refresh(void) { refreshes++; }
 void quota_service_open_phone(void) { opened++; }
@@ -187,6 +191,12 @@ int main(void) {
     fail_refresh = false; render_application(); assert(brightness == 100 && ui_renders == 2);
     assert(order[0] == 0);
     check_wait(1000);
+
+    /* The USB host state is read on every drawn frame and handed to the interface. */
+    usb_host = true; s_display.sleeping = false; render_application();
+    assert(last_render_usb && s_usb_powered);
+    usb_host = false; render_application();
+    assert(!last_render_usb && !s_usb_powered);
 
     /* A release failure retries the whole screen-off step (the BSP call is idempotent). */
     s_display.sleeping = true; fail_release = true; render_application();

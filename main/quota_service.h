@@ -33,6 +33,7 @@ typedef struct {
     bool snapshot_valid;
     bool configured;
     bool connected;
+    int8_t wifi_rssi; /* dBm of the current link, 0 when unknown (set by quota_service_get_view) */
     bool refreshing;
     bool request_failed;
     bool usb_window_active;

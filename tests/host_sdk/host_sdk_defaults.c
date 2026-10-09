@@ -185,6 +185,10 @@ WEAK esp_err_t esp_pm_configure(const void *config)
     return ESP_OK;
 }
 WEAK void usb_serial_jtag_vfs_use_nonblocking(void) {}
+WEAK bool usb_serial_jtag_is_connected(void)
+{
+    return false;
+}
 WEAK esp_err_t nvs_flash_init(void)
 {
     return ESP_OK;

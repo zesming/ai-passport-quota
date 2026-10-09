@@ -495,21 +495,177 @@ static void test_status_line_priority(void)
     assert(quota_status_line_select(NULL) == QUOTA_STATUS_LINE_NO_DATA);
 }
 
-static void test_email_mask(void)
+static void check_credits(const char *input, const char *expected)
 {
-    char out[32];
-    quota_mask_email("alice@mail.com", out, sizeof(out));
-    assert(strcmp(out, "a***@mail.com") == 0);
-    quota_mask_email("a@x.org", out, sizeof(out));
-    assert(strcmp(out, "a***@x.org") == 0);
-    quota_mask_email("no-at-sign", out, sizeof(out));
-    assert(strcmp(out, "no-at-sign") == 0);
-    quota_mask_email("你好@x.org", out, sizeof(out));
-    assert(strcmp(out, "?***@x.org") == 0);
-    quota_mask_email("", out, sizeof(out));
-    assert(out[0] == '\0');
-    quota_mask_email("alice@mail.com", out, 6);
-    assert(strlen(out) == 5);
+    char out[QUOTA_CREDITS_BALANCE_BYTES + 1];
+    quota_format_credits(input, out, sizeof(out));
+    if (strcmp(out, expected) != 0) {
+        fprintf(stderr, "credits \"%s\": got \"%s\", want \"%s\"\n", input, out, expected);
+        assert(false);
+    }
+}
+
+static void test_credits_are_whole_numbers_and_never_overstated(void)
+{
+    check_credits("120", "120");
+    check_credits("120.75", "120");
+    check_credits("120.999999", "120");
+    check_credits("0.9", "0");
+    check_credits("0", "0");
+    check_credits("007.5", "7");
+    check_credits("5.", "5");
+    /* A negative balance with a fraction goes to the lower whole number. */
+    check_credits("-0.5", "-1");
+    check_credits("-3.25", "-4");
+    check_credits("-3", "-3");
+    check_credits("-3.0", "-3");
+    check_credits("-0.0", "0");
+    check_credits("-9.1", "-10");
+    check_credits("-99.5", "-100");
+    /* Not a plain decimal: shown as it is (ASCII only), never guessed at. */
+    check_credits("1e3", "1e3");
+    check_credits(".5", ".5");
+    check_credits("abc", "abc");
+    check_credits("", "");
+    char small[4];
+    quota_format_credits("123456.7", small, sizeof(small));
+    assert(strcmp(small, "123") == 0);
+}
+
+static void test_money_keeps_the_decimal_string(void)
+{
+    char out[48];
+    quota_format_money("CNY", "123.45", out, sizeof(out));
+    assert(strcmp(out, "¥123.45") == 0);
+    quota_format_money("USD", "12.30", out, sizeof(out));
+    assert(strcmp(out, "$12.30") == 0);
+    quota_format_money("EUR", "123.45", out, sizeof(out));
+    assert(strcmp(out, "123.45 EUR") == 0);
+    quota_format_money("CNY", "-0.12345678", out, sizeof(out));
+    assert(strcmp(out, "-¥0.12345678") == 0);
+    quota_format_money("", "1.50", out, sizeof(out));
+    assert(strcmp(out, "1.50") == 0);
+    quota_money_t money;
+    quota_money_parts("USD", "-7.1", &money);
+    assert(strcmp(money.prefix, "-$") == 0 && strcmp(money.number, "7.1") == 0 &&
+           money.suffix[0] == '\0');
+    quota_money_parts("EUR", "9", &money);
+    assert(money.prefix[0] == '\0' && strcmp(money.suffix, " EUR") == 0);
+
+    quota_balance_t balance = {.present = true, .currency_count = 2};
+    strcpy(balance.balance_infos[0].currency, "USD");
+    strcpy(balance.balance_infos[0].total_balance, "1.00");
+    strcpy(balance.balance_infos[1].currency, "CNY");
+    strcpy(balance.balance_infos[1].total_balance, "2.00");
+    assert(quota_balance_primary(&balance) == &balance.balance_infos[1]);
+    balance.currency_count = 1;
+    assert(quota_balance_primary(&balance) == &balance.balance_infos[0]);
+    balance.currency_count = 0;
+    assert(quota_balance_primary(&balance) == NULL);
+    assert(quota_balance_primary(NULL) == NULL);
+}
+
+static void test_battery_icon_state(void)
+{
+    quota_battery_icon_t icon = quota_battery_icon(100, false, 18);
+    assert(icon.tone == QUOTA_BATTERY_NORMAL && icon.fill == 18);
+    icon = quota_battery_icon(50, false, 18);
+    assert(icon.tone == QUOTA_BATTERY_NORMAL && icon.fill == 9);
+    icon = quota_battery_icon(21, false, 18);
+    assert(icon.tone == QUOTA_BATTERY_NORMAL);
+    icon = quota_battery_icon(20, false, 18);
+    assert(icon.tone == QUOTA_BATTERY_LOW && icon.fill == 4);
+    icon = quota_battery_icon(1, false, 18);
+    assert(icon.tone == QUOTA_BATTERY_LOW && icon.fill == 1); /* any charge is visible */
+    icon = quota_battery_icon(0, false, 18);
+    assert(icon.tone == QUOTA_BATTERY_LOW && icon.fill == 0);
+    /* A missing reading is its own state, not 0%. */
+    icon = quota_battery_icon(-1, false, 18);
+    assert(icon.tone == QUOTA_BATTERY_UNAVAILABLE && icon.fill == 0);
+    icon = quota_battery_icon(101, false, 18);
+    assert(icon.tone == QUOTA_BATTERY_UNAVAILABLE);
+    /* USB power turns the fill green and drops the low-battery red; it does not invent a level. */
+    icon = quota_battery_icon(15, true, 18);
+    assert(icon.tone == QUOTA_BATTERY_USB && icon.fill == 3);
+    icon = quota_battery_icon(100, true, 18);
+    assert(icon.tone == QUOTA_BATTERY_USB && icon.fill == 18);
+    icon = quota_battery_icon(-1, true, 18);
+    assert(icon.tone == QUOTA_BATTERY_UNAVAILABLE);
+}
+
+static void test_wifi_icon_state(void)
+{
+    quota_wifi_icon_t none = QUOTA_WIFI_ICON_OFFLINE;
+    assert(quota_wifi_icon(false, false, false, 0, none) == QUOTA_WIFI_ICON_HIDDEN);
+    assert(quota_wifi_icon(false, true, false, -40, none) == QUOTA_WIFI_ICON_HIDDEN);
+    assert(quota_wifi_icon(true, false, false, 0, none) == QUOTA_WIFI_ICON_OFFLINE);
+    assert(quota_wifi_icon(true, false, true, 0, none) == QUOTA_WIFI_ICON_FAILED);
+    assert(quota_wifi_icon(true, true, true, -50, none) == QUOTA_WIFI_ICON_SIGNAL_3);
+    assert(quota_wifi_icon(true, true, false, 0, none) == QUOTA_WIFI_ICON_SIGNAL_3); /* unknown */
+    assert(quota_wifi_icon(true, true, false, -60, none) == QUOTA_WIFI_ICON_SIGNAL_3);
+    assert(quota_wifi_icon(true, true, false, -61, none) == QUOTA_WIFI_ICON_SIGNAL_2);
+    assert(quota_wifi_icon(true, true, false, -72, none) == QUOTA_WIFI_ICON_SIGNAL_2);
+    assert(quota_wifi_icon(true, true, false, -73, none) == QUOTA_WIFI_ICON_SIGNAL_1);
+    assert(quota_wifi_icon(true, true, false, -95, none) == QUOTA_WIFI_ICON_SIGNAL_1);
+    /* Hysteresis: a shown level is held until 3 dB below its threshold. */
+    quota_wifi_icon_t s3 = QUOTA_WIFI_ICON_SIGNAL_3, s2 = QUOTA_WIFI_ICON_SIGNAL_2;
+    assert(quota_wifi_icon(true, true, false, -63, s3) == QUOTA_WIFI_ICON_SIGNAL_3);
+    assert(quota_wifi_icon(true, true, false, -64, s3) == QUOTA_WIFI_ICON_SIGNAL_2);
+    assert(quota_wifi_icon(true, true, false, -61, s2) == QUOTA_WIFI_ICON_SIGNAL_2);
+    assert(quota_wifi_icon(true, true, false, -60, s2) == QUOTA_WIFI_ICON_SIGNAL_3);
+    assert(quota_wifi_icon(true, true, false, -75, s2) == QUOTA_WIFI_ICON_SIGNAL_2);
+    assert(quota_wifi_icon(true, true, false, -76, s2) == QUOTA_WIFI_ICON_SIGNAL_1);
+    assert(quota_wifi_icon(true, true, false, -75, s3) == QUOTA_WIFI_ICON_SIGNAL_2);
+    assert(quota_wifi_icon(true, true, false, -74, QUOTA_WIFI_ICON_SIGNAL_1) ==
+           QUOTA_WIFI_ICON_SIGNAL_1);
+}
+
+static void check_banked(const quota_codex_extras_t *extras, uint64_t now, bool synced,
+                         const char *expected)
+{
+    char out[80];
+    quota_format_banked_resets(extras, now, synced, out, sizeof(out));
+    if (strcmp(out, expected) != 0) {
+        fprintf(stderr, "banked resets: got \"%s\", want \"%s\"\n", out, expected);
+        assert(false);
+    }
+}
+
+static void test_banked_reset_note(void)
+{
+    uint64_t now = 1791527520;
+    quota_codex_extras_t extras = {.has_banked_reset = true, .available_resets = 2};
+    check_banked(&extras, now, true, "可用重置 2 次");
+    extras.has_next_reset_expiry = true;
+    extras.next_reset_expires_at = now + 3 * 86400 + 5 * 3600 + 7;
+    check_banked(&extras, now, true, "可用重置 2 次 · 3 天 5 小时后过期");
+    extras.next_reset_expires_at = now + 2 * 3600 + 14 * 60;
+    check_banked(&extras, now, true, "可用重置 2 次 · 2 小时 14 分后过期");
+    extras.next_reset_expires_at = now + 20;
+    check_banked(&extras, now, true, "可用重置 2 次 · 不到 1 分钟后过期");
+    /* The same formatter as window resets. */
+    quota_window_t window = {.present = true, .has_resets_at = true, .resets_at = now + 9000};
+    char reset[48], expiry[80];
+    quota_format_reset_time(&window, now, true, reset, sizeof(reset));
+    extras.next_reset_expires_at = now + 9000;
+    quota_format_banked_resets(&extras, now, true, expiry, sizeof(expiry));
+    assert(strstr(expiry, "2 小时 30 分") != NULL && strstr(reset, "2 小时 30 分") != NULL);
+    check_banked(&extras, now, false, "可用重置 2 次 · 待校时");
+    extras.next_reset_expires_at = now;
+    check_banked(&extras, now, true, "可用重置 2 次 · 等待新数据");
+    extras.has_next_reset_expiry = false;
+    check_banked(&extras, now, false, "可用重置 2 次");
+    extras.available_resets = 0;
+    check_banked(&extras, now, true, "");
+    extras.available_resets = 1;
+    extras.has_banked_reset = false;
+    check_banked(&extras, now, true, "");
+    char tiny[8];
+    extras.has_banked_reset = true;
+    quota_format_banked_resets(&extras, now, true, tiny, sizeof(tiny));
+    assert(strlen(tiny) < sizeof(tiny));
+    quota_format_banked_resets(NULL, now, true, tiny, sizeof(tiny));
+    assert(tiny[0] == '\0');
 }
 
 static void test_display_sleep_and_wake_gestures(void)
@@ -671,7 +827,11 @@ int main(void)
     test_no_long_press_is_destructive();
     test_navigation_after_external_settings_change();
     test_status_line_priority();
-    test_email_mask();
+    test_credits_are_whole_numbers_and_never_overstated();
+    test_money_keeps_the_decimal_string();
+    test_battery_icon_state();
+    test_wifi_icon_state();
+    test_banked_reset_note();
     test_display_sleep_and_wake_gestures();
     test_long_down_is_refused_during_a_session();
     test_screen_timeout_settings();
