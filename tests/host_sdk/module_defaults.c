@@ -71,6 +71,7 @@ WEAK void quota_portable_service_renew(void) {}
 WEAK void quota_portable_service_cancel_auth(void) {}
 WEAK void quota_portable_service_refresh(void) {}
 WEAK void quota_portable_service_reconnect(void) {}
+WEAK void quota_portable_service_factory_reset(void) {}
 WEAK void quota_portable_service_settings(uint16_t interval, bool automatic,
                                           uint16_t screen_timeout)
 {
@@ -183,6 +184,7 @@ WEAK void quota_ui_render(const quota_navigation_t *navigation, const quota_serv
     (void)battery_percent;
 }
 
+WEAK void quota_service_factory_reset(void) {}
 WEAK bool quota_service_init(void)
 {
     return true;

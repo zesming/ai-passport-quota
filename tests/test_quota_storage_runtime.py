@@ -367,6 +367,49 @@ static void retired_storage(void)
            !nvs_stub_find(STORE_PARTITION, STORE_NAMESPACE, "config"));
 }
 
+static void factory_reset_erases_everything(void)
+{
+    memset(&nvs_stub, 0, sizeof(nvs_stub));
+    nvs_stub.cut_after = -1;
+    s_ready = false;
+    nvs_stub_partition_erases = 0;
+    assert(quota_store_init());
+    nvs_stub_put(STORE_PARTITION, STORE_NAMESPACE, "model_v2", "accounts and wifi", 18);
+    nvs_stub_put(STORE_PARTITION, STORE_NAMESPACE, "account3", "credential", 11);
+    nvs_stub_put(STORE_PARTITION, STORE_NAMESPACE, "quota_obs", "cache", 6);
+    nvs_stub_put("nvs", "ai_quota", "device_cfg", "retired", 8);
+    nvs_stub_put("nvs", "other_app", "keep", "me", 3);
+    assert(quota_store_factory_reset() == QUOTA_FACTORY_RESET_OK && s_ready);
+    assert(nvs_stub_partition_erases == 1);
+    assert(nvs_stub_count(STORE_PARTITION, STORE_NAMESPACE) == 0);
+    assert(nvs_stub_count("nvs", "ai_quota") == 0 && nvs_stub_count("nvs", "other_app") == 1);
+    quota_model_t model_out;
+    uint64_t sequence = 9;
+    assert(quota_store_load_model_result(&model_out, &sequence) == QUOTA_STORE_READ_MISSING);
+    /* Nothing deleted: a failure of the catalog erase leaves everything as it was. */
+    nvs_stub_put(STORE_PARTITION, STORE_NAMESPACE, "model_v2", "accounts and wifi", 18);
+    nvs_stub_put(STORE_PARTITION, STORE_NAMESPACE, "account3", "credential", 11);
+    nvs_stub.cut_after = 0;
+    assert(quota_store_factory_reset() == QUOTA_FACTORY_RESET_FAILED && s_ready);
+    nvs_stub.cut_after = -1;
+    assert(nvs_stub_find(STORE_PARTITION, STORE_NAMESPACE, "model_v2"));
+    assert(nvs_stub_find(STORE_PARTITION, STORE_NAMESPACE, "account3"));
+    /* The catalog is deleted first. If erasing the rest then fails the device is already a new
+     * device (the caller restarts; leftover credential slots are orphans released at boot). */
+    nvs_stub_fail_partition_erase = 1;
+    assert(quota_store_factory_reset() == QUOTA_FACTORY_RESET_CATALOG_GONE);
+    nvs_stub_fail_partition_erase = 0;
+    assert(!nvs_stub_find(STORE_PARTITION, STORE_NAMESPACE, "model_v2"));
+    assert(quota_store_load_model_result(&model_out, &sequence) == QUOTA_STORE_READ_MISSING);
+    assert(quota_store_factory_reset() == QUOTA_FACTORY_RESET_OK);
+    assert(!nvs_stub_find(STORE_PARTITION, STORE_NAMESPACE, "account3"));
+    /* An uninitialized store never deleted the catalog, so a failed erase is a plain failure. */
+    s_ready = false;
+    nvs_stub_fail_partition_erase = 1;
+    assert(quota_store_factory_reset() == QUOTA_FACTORY_RESET_FAILED);
+    nvs_stub_fail_partition_erase = 0;
+}
+
 static void unusable_rows_fail_closed(void)
 {
     /* A damaged catalog is still refused; cleanup never repairs what it cannot recognise. */
@@ -491,6 +534,7 @@ int main(void)
     upgrade_and_power_cut(false);
     upgrade_and_power_cut(true);
     retired_storage();
+    factory_reset_erases_everything();
     unusable_rows_fail_closed();
     orphan_credentials_are_freed();
     stale_cache_rows_do_not_discard_the_rest();

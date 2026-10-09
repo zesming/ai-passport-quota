@@ -6,20 +6,17 @@
 
 `fonts/quota_font_12.c` 和 `quota_font_16.c` 是适用于 LVGL 9.5.0 的 Noto Sans SC Regular 12/16 像素、4-bpp 子集。源字体为锁定 LVGL 组件的 `tests/src/test_files/fonts/noto/NotoSansSC-Regular.ttf`；SIL Open Font License 1.1 保留于 [NotoSansSC-OFL.txt](fonts/NotoSansSC-OFL.txt)。
 
-覆盖 ASCII U+0020–U+007E 和 `fonts/quota-font-glyphs.txt`，`quota-font-codepoints.txt` 记录非 ASCII 覆盖。生成源只读留在 Flash。固定 UI 文本变化后更新列表，并用 `lv_font_conv@1.5.3` 重新生成两种字号（以下为 12）：
+覆盖三类字符：ASCII U+0020–U+007E；常用汉字 `fonts/hanzi-level1.txt`（GB 2312 一级汉字 3,755 个，用来显示备注名和 Wi-Fi 名里的日常中文）；界面字符串里出现的其余非 ASCII 字符和常用全角标点（`tools/font_glyphs.py` 的 `PUNCTUATION`）。三类合并的非 ASCII 列表是 `fonts/quota-font-glyphs.txt`（3,800 个）。
+
+`hanzi-level1.txt` 的来源：GB 2312-1980 的第 16–55 区（一级汉字，按拼音排序），由 Python 的 `gb2312` 编码表导出，只是 Unicode 码位的列表，不含字形，无版权要求；`python3 tools/font_glyphs.py --check`（也是 `tests/test_quota_fonts.py` 的一项）重新导出并逐字比对。它不是《通用规范汉字表》一级字表（约 3,500 字）：两张表大部分重合但不完全相同，选用 GB 2312 是因为它可以离线、可复现地验证；若要换成规范汉字表，替换这个文件并去掉 `--check` 里的 GB 2312 比对即可。字形仍来自 Noto Sans SC，SIL OFL 1.1，见 [NotoSansSC-OFL.txt](fonts/NotoSansSC-OFL.txt)。
+
+界面文本变化或要改汉字范围后运行（需要 npx 和网络，使用 `lv_font_conv@1.5.3`，字体源与参数见两个 `.c` 文件头部）：
 
 ```bash
-npx --yes lv_font_conv@1.5.3 \
-  --font managed_components/lvgl__lvgl/tests/src/test_files/fonts/noto/NotoSansSC-Regular.ttf \
-  --range 0x20-0x7E --symbols "$(cat assets/fonts/quota-font-glyphs.txt)" \
-  --size 12 --bpp 4 --format lvgl --no-compress \
-  --lv-font-name quota_font_12 --lv-include lvgl.h \
-  --output assets/fonts/quota_font_12.c
+python3 tools/font_glyphs.py --build
 ```
 
-`tests/test_quota_fonts.py` 检查生成 cmap 对 UI 字面文本和 ASCII 的覆盖。控件字体选择与真机显示仍须验证；任意非 ASCII 账号身份采用应用的 `?` 回退。
-
-12 像素字体回退到 `lv_font_montserrat_12` 中的内置刷新图标（U+F021）；重新生成此字号时添加 `--lv-fallback lv_font_montserrat_12`。16 像素字体没有回退字体。
+只更新字形表而不重新生成字体时去掉 `--build`。生成的两个 `.c` 各约 2–3 MB，是 4-bpp 未压缩位图，只读留在 Flash。`tests/test_quota_fonts.py` 检查字形表与生成器一致、两种字号都含全部字形和日常中文样例、界面字面文本和 ASCII 都被覆盖。控件字体选择与真机显示仍须验证。字库没有的字（生僻字、表情等）在设备上整体回退为“DeepSeek N”或“Wi-Fi N”（N 为列表顺序），邮箱只显示 ASCII，其余字符为 `?`。两种字号都没有回退字体。
 
 ## 服务标志
 
@@ -29,4 +26,4 @@ npx --yes lv_font_conv@1.5.3 \
 
 ## 文档截图
 
-文档截图（目前没有）使用隔离合成账号，不是真机照片或实时账号/遥测证据。可用 `node tools/preview_portable.mjs` 的示例设备截取设置页；公开前检查私有数据。
+文档截图（目前没有）使用隔离合成账号，不是真机照片或实时账号/遥测证据。设备界面预览见[开发指南](../docs/development/README.md#设备界面预览)；可用 `node tools/preview_portable.mjs` 的示例设备截取设置页；公开前检查私有数据。

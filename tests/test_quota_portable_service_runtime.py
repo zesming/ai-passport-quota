@@ -93,6 +93,8 @@ class PortableServiceRuntime(unittest.TestCase):
                 "hotspot-aborts-unstarted-login",
                 "staged-fail-stays",
                 "staged-stale",
+                "factory-reset",
+                "view-results",
             ):
                 with self.subTest(case=case):
                     result = subprocess.run([str(executable), case], capture_output=True, text=True)

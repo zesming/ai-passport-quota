@@ -53,6 +53,35 @@ esp_err_t nvs_flash_init_partition(const char *partition)
     return ESP_OK;
 }
 
+esp_err_t nvs_flash_deinit_partition(const char *partition)
+{
+    (void)partition;
+    return ESP_OK;
+}
+
+unsigned nvs_stub_partition_erases;
+int nvs_stub_fail_partition_erase;
+esp_err_t nvs_flash_erase_partition(const char *partition)
+{
+    if (nvs_stub.cut_after >= 0 || nvs_stub_fail_partition_erase)
+        return ESP_FAIL;
+    for (unsigned i = 0; i < NVS_STUB_ITEMS; i++) {
+        if (nvs_stub.items[i].used && !strcmp(nvs_stub.items[i].partition, partition))
+            memset(&nvs_stub.items[i], 0, sizeof(nvs_stub.items[i]));
+    }
+    unsigned kept = 0;
+    for (unsigned i = 0; i < nvs_stub.space_count; i++) {
+        if (strcmp(nvs_stub.spaces[i][0], partition) != 0) {
+            if (kept != i)
+                memcpy(nvs_stub.spaces[kept], nvs_stub.spaces[i], sizeof(nvs_stub.spaces[i]));
+            kept++;
+        }
+    }
+    nvs_stub.space_count = kept;
+    nvs_stub_partition_erases++;
+    return ESP_OK;
+}
+
 esp_err_t nvs_open_from_partition(const char *partition, const char *name_space, int mode,
                                   nvs_handle_t *handle)
 {

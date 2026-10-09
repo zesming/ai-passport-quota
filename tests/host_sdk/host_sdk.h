@@ -103,6 +103,10 @@ esp_err_t esp_pm_configure(const void *config);
 uint32_t esp_random(void);
 void usb_serial_jtag_vfs_use_nonblocking(void);
 esp_err_t nvs_flash_init(void);
+esp_err_t nvs_flash_deinit_partition(const char *partition);
+esp_err_t nvs_flash_erase_partition(const char *partition);
+esp_err_t nvs_flash_init_partition(const char *partition);
+void esp_restart(void);
 
 /* esp_timer, esp_system. */
 typedef void *esp_timer_handle_t;

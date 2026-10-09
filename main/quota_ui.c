@@ -22,68 +22,82 @@ LV_FONT_DECLARE(quota_font_16);
 #define UI_AMBER 0xE1B974
 #define UI_RED 0xF18C82
 #define UI_TRACK 0x33414D
-#define UI_BATTERY 0x34C759
+
+#define MARGIN 12
+#define CONTENT_W 216
+#define LIST_ROWS 6
+#define LIST_TOP 52
+#define LIST_ROW_H 36
+#define QR_SIZE 150
+#define QR_X 45
+#define QR_Y 50
+#define STATUS_Y 276
+#define FOOTER_Y 300
+#define FOOTER_LINE_Y 294
+#define QR_DATA_BYTES 192
+
+/* Every screen draws with the same objects. Nothing is created or deleted after quota_ui_init():
+ * a screen change moves, restyles, retexts and hides or shows what is already there. The label
+ * slots are shared; the first group has a fixed job on every screen. */
+typedef enum {
+    SLOT_CLOCK = 0,
+    SLOT_BATTERY,
+    SLOT_WIFI_MARK,
+    SLOT_STATUS,
+    SLOT_FOOTER,
+    SLOT_TEXT, /* general text, laid out by each screen */
+    SLOT_TEXT_COUNT = 14,
+    SLOT_COUNT = SLOT_TEXT + SLOT_TEXT_COUNT,
+} slot_t;
+
+/* General text slots by screen. Names only say what the home card uses them for. */
+enum {
+    T_TITLE = 0,
+    T_RIGHT,
+    T_SUB,
+    T_NAME0,
+    T_REMAIN0,
+    T_VALUE0,
+    T_RESET0,
+    T_NAME1,
+    T_REMAIN1,
+    T_VALUE1,
+    T_RESET1,
+    T_EXTRA,
+};
+/* A list screen has a title and counter, then a label and a value for each row. */
+#define T_ROW_LABEL(row) (2 + (int)(row))
+#define T_ROW_VALUE(row) (8 + (int)(row))
 
 typedef struct {
-    lv_obj_t *header_info;
-    lv_obj_t *footer;
-    lv_obj_t *battery_unknown;
-    lv_obj_t *battery_fill;
-    lv_obj_t *clock;
+    lv_obj_t *obj;
+    int16_t x, y, w, h;
+    const lv_font_t *font;
+    uint32_t color;
+    lv_text_align_t align;
+    bool used;
+} label_slot_t;
+
+typedef struct {
+    label_slot_t slot[SLOT_COUNT];
     lv_obj_t *wifi_lines[2];
     lv_obj_t *wifi_dot;
-    lv_obj_t *wifi_slash;
-    lv_obj_t *home_logo;
-    lv_obj_t *home_provider;
-    lv_obj_t *home_plan;
-    lv_obj_t *home_email;
-    lv_obj_t *metric_name[2];
-    lv_obj_t *metric_reset[2];
-    lv_obj_t *metric_value[2];
-    lv_obj_t *metric_bar[2];
-    lv_obj_t *extra_name[2];
-    lv_obj_t *extra_value[2];
-    lv_obj_t *home_empty;
-    lv_obj_t *balance_heading[QUOTA_BALANCE_CURRENCIES];
-    lv_obj_t *balance_total[QUOTA_BALANCE_CURRENCIES];
-    lv_obj_t *home_status;
-    lv_obj_t *setting_rows[6];
-    lv_obj_t *setting_markers[6];
-    lv_obj_t *setting_labels[6];
-    lv_obj_t *setting_values[6];
-    lv_obj_t *account_rows[QUOTA_MAX_ACCOUNTS + 1];
-    lv_obj_t *account_markers[QUOTA_MAX_ACCOUNTS + 1];
-    lv_obj_t *account_primary[QUOTA_MAX_ACCOUNTS + 1];
-    lv_obj_t *account_secondary[QUOTA_MAX_ACCOUNTS + 1];
-    lv_obj_t *interval_rows[5];
-    lv_obj_t *interval_markers[5];
-    lv_obj_t *interval_labels[5];
-    lv_obj_t *interval_values[5];
-    lv_obj_t *sleep_rows[QUOTA_SCREEN_TIMEOUT_COUNT];
-    lv_obj_t *sleep_markers[QUOTA_SCREEN_TIMEOUT_COUNT];
-    lv_obj_t *sleep_values[QUOTA_SCREEN_TIMEOUT_COUNT];
-    lv_obj_t *network_title;
-    lv_obj_t *network_info;
-    lv_obj_t *network_hint;
-    lv_obj_t *network_saved[QUOTA_PORTABLE_NETWORKS];
-    lv_obj_t *device_rows[2];
-    lv_obj_t *device_markers[2];
+    lv_obj_t *logo;
+    lv_obj_t *bar[2];
+    lv_obj_t *footer_line;
+    lv_obj_t *row_bg[LIST_ROWS];
     lv_obj_t *qr;
-    lv_obj_t *qr_title;
-    lv_obj_t *qr_hint;
-    lv_obj_t *qr_countdown;
-    lv_obj_t *manual_address;
-    lv_obj_t *manual_caption;
-    lv_obj_t *manual_secret;
-    char qr_data[256];
-    lv_obj_t *setup_countdown;
-    lv_obj_t *setup_hint;
+    char qr_data[QR_DATA_BYTES];
+    bool qr_valid;
+    /* What the frame being drawn wants on screen; applied once it is complete. */
+    bool want_logo, want_qr, want_bar[2], want_row[LIST_ROWS], want_marker[LIST_ROWS];
 } quota_ui_objects_t;
 
 static lv_obj_t *s_root;
-static lv_obj_t *s_page;
-static quota_screen_t s_screen = (quota_screen_t)-1;
 static quota_ui_objects_t s_ui;
+static lv_style_t s_text_style;
+static const lv_image_dsc_t *s_logo_src;
+static bool s_sleep_notice;
 
 static const char *portable_error_text(const char *code);
 static const char *portable_storage_title(const char *code);
@@ -91,6 +105,18 @@ static const char *portable_storage_title(const char *code);
 static lv_color_t color(uint32_t hex)
 {
     return lv_color_hex(hex);
+}
+
+/* A hidden flag or a style is written only when it changes, so an unchanged frame repaints
+ * nothing. */
+static void show(lv_obj_t *object, bool visible)
+{
+    if (object == NULL || lv_obj_has_flag(object, LV_OBJ_FLAG_HIDDEN) != visible)
+        return;
+    if (visible)
+        lv_obj_remove_flag(object, LV_OBJ_FLAG_HIDDEN);
+    else
+        lv_obj_add_flag(object, LV_OBJ_FLAG_HIDDEN);
 }
 
 static lv_obj_t *create_rect(lv_obj_t *parent, int x, int y, int width, int height, uint32_t hex,
@@ -103,394 +129,161 @@ static lv_obj_t *create_rect(lv_obj_t *parent, int x, int y, int width, int heig
     lv_obj_set_style_bg_color(object, color(hex), 0);
     lv_obj_set_style_bg_opa(object, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(object, radius, 0);
-    lv_obj_set_style_border_width(object, 0, 0);
-    lv_obj_set_style_pad_all(object, 0, 0);
-    lv_obj_clear_flag(object, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(object, LV_OBJ_FLAG_SCROLLABLE);
     return object;
 }
 
-static lv_obj_t *create_label(lv_obj_t *parent, int x, int y, int width, int height,
-                              const lv_font_t *font, uint32_t text_color, lv_text_align_t align,
-                              const char *text)
+static void create_slot(lv_obj_t *parent, slot_t index)
 {
-    lv_obj_t *label = lv_label_create(parent);
-    lv_obj_remove_style_all(label);
-    lv_obj_set_pos(label, x, y);
-    lv_obj_set_size(label, width, height);
-    lv_obj_set_style_text_font(label, font, 0);
-    lv_obj_set_style_text_color(label, color(text_color), 0);
-    lv_obj_set_style_text_align(label, align, 0);
-    lv_obj_set_style_text_line_space(label, 0, 0);
-    lv_obj_set_style_pad_all(label, 0, 0);
-    lv_label_set_long_mode(label, LV_LABEL_LONG_MODE_DOTS);
-    lv_label_set_text(label, text);
-    return label;
+    label_slot_t *slot = &s_ui.slot[index];
+    slot->obj = lv_label_create(parent);
+    lv_obj_remove_style_all(slot->obj);
+    lv_obj_add_style(slot->obj, &s_text_style, 0);
+    lv_label_set_long_mode(slot->obj, LV_LABEL_LONG_MODE_DOTS);
+    lv_label_set_text_static(slot->obj, "");
+    slot->font = NULL;
+    slot->color = UINT32_MAX;
+    slot->align = (lv_text_align_t)-1;
+    slot->x = slot->y = slot->w = slot->h = -1;
+    lv_obj_add_flag(slot->obj, LV_OBJ_FLAG_HIDDEN);
 }
 
-static lv_obj_t *create_logo(lv_obj_t *parent, const lv_image_dsc_t *image, int x, int y, int width,
-                             int height)
+static void slot_set_text(label_slot_t *slot, const char *text)
 {
-    lv_obj_t *logo = lv_image_create(parent);
-    lv_image_set_src(logo, image);
-    lv_obj_set_pos(logo, x, y);
-    lv_obj_set_size(logo, width, height);
-    if (width < 36)
-        lv_image_set_scale(logo, (uint16_t)(width * 256 / 36));
-    return logo;
+    /* The empty string is static; anything else is the label's own copy. */
+    if (strcmp(lv_label_get_text(slot->obj), text) != 0)
+        lv_label_set_text(slot->obj, text);
 }
 
-static void create_header(const char *title, const char *info)
+/* Place, style and fill one label, and mark it in use for this frame. */
+static void put(slot_t index, int x, int y, int width, int height, const lv_font_t *font,
+                uint32_t text_color, lv_text_align_t align, const char *text)
 {
-    create_label(s_page, 12, 9, 70, 22, &quota_font_16, UI_INK, LV_TEXT_ALIGN_LEFT, title);
-    s_ui.header_info =
-        create_label(s_page, 86, 11, 28, 18, &quota_font_12, UI_MUTED, LV_TEXT_ALIGN_RIGHT, info);
-    s_ui.clock = create_label(s_page, 122, 11, 40, 18, &lv_font_montserrat_12, UI_MUTED,
-                              LV_TEXT_ALIGN_CENTER, "--:--");
-    static const lv_point_precise_t wifi_points[][7] = {
-        {{0, 5}, {2, 3}, {5, 1}, {8, 0}, {11, 1}, {14, 3}, {16, 5}},
-        {{4, 9}, {6, 7}, {8, 6}, {10, 7}, {12, 9}},
-    };
+    label_slot_t *slot = &s_ui.slot[index];
+    if (slot->x != x || slot->y != y) {
+        lv_obj_set_pos(slot->obj, x, y);
+        slot->x = (int16_t)x;
+        slot->y = (int16_t)y;
+    }
+    if (slot->w != width || slot->h != height) {
+        lv_obj_set_size(slot->obj, width, height);
+        slot->w = (int16_t)width;
+        slot->h = (int16_t)height;
+    }
+    if (slot->font != font) {
+        lv_obj_set_style_text_font(slot->obj, font, 0);
+        slot->font = font;
+    }
+    if (slot->color != text_color) {
+        lv_obj_set_style_text_color(slot->obj, color(text_color), 0);
+        slot->color = text_color;
+    }
+    if (slot->align != align) {
+        lv_obj_set_style_text_align(slot->obj, align, 0);
+        slot->align = align;
+    }
+    slot_set_text(slot, text);
+    show(slot->obj, true);
+    slot->used = true;
+}
+
+static void put_text(int index, int x, int y, int width, int height, const lv_font_t *font,
+                     uint32_t text_color, lv_text_align_t align, const char *text)
+{
+    put((slot_t)(SLOT_TEXT + index), x, y, width, height, font, text_color, align, text);
+}
+
+/* Hide the labels a frame did not use, then arm the next frame. */
+static void finish_slots(void)
+{
+    for (size_t i = 0; i < SLOT_COUNT; i++) {
+        label_slot_t *slot = &s_ui.slot[i];
+        if (!slot->used)
+            show(slot->obj, false);
+        slot->used = false;
+    }
+}
+
+static void create_pool(void)
+{
+    lv_style_init(&s_text_style);
+    lv_style_set_pad_all(&s_text_style, 0);
+    lv_style_set_text_line_space(&s_text_style, 2);
+
+    s_ui.footer_line = create_rect(s_root, MARGIN, FOOTER_LINE_Y, CONTENT_W, 1, UI_LINE, 0);
     for (size_t i = 0; i < 2; i++) {
-        s_ui.wifi_lines[i] = lv_line_create(s_page);
+        static const lv_point_precise_t wifi_points[][7] = {
+            {{0, 5}, {2, 3}, {5, 1}, {8, 0}, {11, 1}, {14, 3}, {16, 5}},
+            {{4, 9}, {6, 7}, {8, 6}, {10, 7}, {12, 9}},
+        };
+        s_ui.wifi_lines[i] = lv_line_create(s_root);
         lv_obj_remove_style_all(s_ui.wifi_lines[i]);
-        lv_obj_set_pos(s_ui.wifi_lines[i], 170, 12);
+        lv_obj_set_pos(s_ui.wifi_lines[i], 146, 6);
         lv_line_set_points(s_ui.wifi_lines[i], wifi_points[i], i == 0 ? 7 : 5);
         lv_obj_set_style_line_width(s_ui.wifi_lines[i], 2, 0);
         lv_obj_set_style_line_rounded(s_ui.wifi_lines[i], true, 0);
+        lv_obj_set_style_line_color(s_ui.wifi_lines[i], color(UI_INK), 0);
     }
-    s_ui.wifi_dot = create_rect(s_page, 177, 24, 3, 3, UI_MUTED, 2);
-    static const lv_point_precise_t slash[] = {{0, 0}, {16, 16}};
-    s_ui.wifi_slash = lv_line_create(s_page);
-    lv_obj_remove_style_all(s_ui.wifi_slash);
-    lv_obj_set_pos(s_ui.wifi_slash, 170, 10);
-    lv_line_set_points(s_ui.wifi_slash, slash, 2);
-    lv_obj_set_style_line_width(s_ui.wifi_slash, 2, 0);
-    lv_obj_set_style_line_color(s_ui.wifi_slash, color(UI_MUTED), 0);
-    lv_obj_t *shell = create_rect(s_page, 197, 14, 26, 12, UI_BG, 2);
-    lv_obj_set_style_border_color(shell, color(UI_MUTED), 0);
-    lv_obj_set_style_border_width(shell, 1, 0);
-    create_rect(s_page, 223, 17, 3, 6, UI_MUTED, 1);
-    s_ui.battery_fill = create_rect(s_page, 199, 16, 22, 8, UI_BATTERY, 1);
-    static const lv_point_precise_t battery_slash[] = {{0, 7}, {7, 0}};
-    s_ui.battery_unknown = lv_line_create(s_page);
-    lv_obj_remove_style_all(s_ui.battery_unknown);
-    lv_obj_set_pos(s_ui.battery_unknown, 206, 16);
-    lv_line_set_points(s_ui.battery_unknown, battery_slash, 2);
-    lv_obj_set_style_line_width(s_ui.battery_unknown, 1, 0);
-    lv_obj_set_style_line_color(s_ui.battery_unknown, color(UI_MUTED), 0);
-    create_rect(s_page, 12, 35, 216, 1, UI_LINE, 0);
-}
-
-static void create_footer(const char *text)
-{
-    create_rect(s_page, 12, 280, 216, 1, UI_LINE, 0);
-    s_ui.footer =
-        create_label(s_page, 12, 288, 216, 21, &quota_font_12, UI_MUTED, LV_TEXT_ALIGN_LEFT, text);
-}
-
-static void create_home_page(void)
-{
-    create_header("AI 额度", "0/0");
-    s_ui.home_logo = create_logo(s_page, &quota_openai_logo, 12, 46, 36, 36);
-    s_ui.home_provider = create_label(s_page, 56, 43, 160, 24, &lv_font_montserrat_20, UI_INK,
-                                      LV_TEXT_ALIGN_LEFT, "ChatGPT");
-    s_ui.home_plan = create_label(s_page, 56, 67, 160, 17, &quota_font_12, UI_MUTED,
-                                  LV_TEXT_ALIGN_LEFT, "Codex");
-    s_ui.home_email =
-        create_label(s_page, 56, 84, 160, 17, &quota_font_12, UI_MUTED, LV_TEXT_ALIGN_LEFT, "");
-    create_rect(s_page, 12, 103, 216, 1, UI_LINE, 0);
-
-    static const char *const names[] = {"5h 剩余", "7 天剩余"};
+    s_ui.wifi_dot = create_rect(s_root, 153, 18, 3, 3, UI_INK, 2);
+    s_ui.logo = lv_image_create(s_root);
+    lv_image_set_src(s_ui.logo, &quota_openai_logo);
+    s_logo_src = &quota_openai_logo;
+    lv_obj_set_pos(s_ui.logo, MARGIN, 30);
+    lv_obj_set_size(s_ui.logo, 36, 36);
     for (size_t i = 0; i < 2; i++) {
-        int y = i == 0 ? 107 : 183;
-        s_ui.metric_name[i] = create_label(s_page, 12, y, 86, 18, &quota_font_12, UI_INK,
-                                           LV_TEXT_ALIGN_LEFT, names[i]);
-        s_ui.metric_reset[i] = create_label(s_page, 96, y, 132, 18, &quota_font_12, UI_MUTED,
-                                            LV_TEXT_ALIGN_RIGHT, "重置时间未知");
-        s_ui.metric_value[i] = create_label(s_page, 12, y + 17, 116, 30, &lv_font_montserrat_20,
-                                            UI_MINT, LV_TEXT_ALIGN_LEFT, "--");
-        s_ui.metric_bar[i] = lv_bar_create(s_page);
-        lv_obj_remove_style_all(s_ui.metric_bar[i]);
-        lv_obj_set_pos(s_ui.metric_bar[i], 12, y + 52);
-        lv_obj_set_size(s_ui.metric_bar[i], 216, 8);
-        lv_bar_set_range(s_ui.metric_bar[i], 0, 100);
-        lv_bar_set_value(s_ui.metric_bar[i], 0, LV_ANIM_OFF);
-        lv_obj_set_style_bg_color(s_ui.metric_bar[i], color(UI_TRACK), LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(s_ui.metric_bar[i], LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_radius(s_ui.metric_bar[i], 4, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(s_ui.metric_bar[i], color(UI_MINT), LV_PART_INDICATOR);
-        lv_obj_set_style_bg_opa(s_ui.metric_bar[i], LV_OPA_COVER, LV_PART_INDICATOR);
-        lv_obj_set_style_radius(s_ui.metric_bar[i], 4, LV_PART_INDICATOR);
+        lv_obj_t *bar = lv_bar_create(s_root);
+        lv_obj_remove_style_all(bar);
+        lv_obj_set_pos(bar, MARGIN, 0);
+        lv_obj_set_size(bar, CONTENT_W, 8);
+        lv_bar_set_range(bar, 0, 100);
+        lv_bar_set_value(bar, 0, LV_ANIM_OFF);
+        lv_obj_set_style_bg_color(bar, color(UI_TRACK), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_radius(bar, 4, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(bar, color(UI_MINT), LV_PART_INDICATOR);
+        lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
+        lv_obj_set_style_radius(bar, 4, LV_PART_INDICATOR);
+        lv_obj_add_flag(bar, LV_OBJ_FLAG_HIDDEN);
+        s_ui.bar[i] = bar;
     }
-    for (size_t i = 0; i < QUOTA_BALANCE_CURRENCIES; i++) {
-        int y = i == 0 ? 107 : 183;
-        s_ui.balance_heading[i] =
-            create_label(s_page, 12, y, 216, 18, &quota_font_12, UI_MUTED, LV_TEXT_ALIGN_LEFT, "");
-        s_ui.balance_total[i] = create_label(s_page, 12, y + 17, 216, 26, &lv_font_montserrat_20,
-                                             UI_INK, LV_TEXT_ALIGN_LEFT, "");
+    for (size_t i = 0; i < LIST_ROWS; i++) {
+        int y = LIST_TOP + (int)i * LIST_ROW_H;
+        s_ui.row_bg[i] = create_rect(s_root, MARGIN, y, CONTENT_W, LIST_ROW_H - 2, UI_BG, 4);
+        /* The focus marker is the left border of the row; it is only switched on or off. */
+        lv_obj_set_style_border_side(s_ui.row_bg[i], LV_BORDER_SIDE_LEFT, 0);
+        lv_obj_set_style_border_width(s_ui.row_bg[i], 3, 0);
+        lv_obj_set_style_border_color(s_ui.row_bg[i], color(UI_MINT), 0);
+        lv_obj_set_style_border_opa(s_ui.row_bg[i], LV_OPA_TRANSP, 0);
+        lv_obj_add_flag(s_ui.row_bg[i], LV_OBJ_FLAG_HIDDEN);
     }
-    for (size_t i = 0; i < 2; i++) {
-        s_ui.extra_name[i] = create_label(s_page, 12, 228 + (int)i * 16, 72, 16, &quota_font_12,
-                                          UI_MUTED, LV_TEXT_ALIGN_LEFT, "");
-        s_ui.extra_value[i] = create_label(s_page, 84, 228 + (int)i * 16, 144, 16, &quota_font_12,
-                                           UI_INK, LV_TEXT_ALIGN_RIGHT, "");
-    }
-    s_ui.home_empty = create_label(s_page, 12, 119, 216, 22, &quota_font_16, UI_MUTED,
-                                   LV_TEXT_ALIGN_LEFT, "等待额度数据");
-    s_ui.home_status = create_label(s_page, 12, 262, 216, 18, &quota_font_12, UI_MUTED,
-                                    LV_TEXT_ALIGN_LEFT, "等待额度数据");
-    create_footer("UP/DOWN 切换  OK 刷新  长按设置");
-}
-
-static void create_focus_row(lv_obj_t **background, lv_obj_t **marker, int y, int height)
-{
-    *background = create_rect(s_page, 12, y, 216, height, UI_BG, 4);
-    *marker = create_rect(s_page, 12, y + 4, 3, height - 8, UI_MINT, 2);
-    lv_obj_add_flag(*marker, LV_OBJ_FLAG_HIDDEN);
-}
-
-static void create_settings_page(void)
-{
-    create_header("设置", "");
-    static const char *const labels[] = {"账户管理", "刷新间隔", "立即刷新",
-                                         "自动息屏", "网络信息", "设备设置"};
-    for (size_t i = 0; i < 6; i++) {
-        int y = 43 + (int)i * 35;
-        create_focus_row(&s_ui.setting_rows[i], &s_ui.setting_markers[i], y, 34);
-        s_ui.setting_labels[i] = create_label(s_page, 22, y + 5, 118, 24, &quota_font_16, UI_INK,
-                                              LV_TEXT_ALIGN_LEFT, labels[i]);
-        s_ui.setting_values[i] = create_label(s_page, 140, y + 7, 82, 20, &quota_font_12, UI_MUTED,
-                                              LV_TEXT_ALIGN_RIGHT, "");
-    }
-    create_label(s_page, 16, 254, 212, 20, &quota_font_12, UI_MUTED, LV_TEXT_ALIGN_LEFT,
-                 "离线时保留最近数据");
-    create_footer("UP/DOWN 选择  OK 确认  长按返回");
-}
-
-static void create_sleep_page(void)
-{
-    create_header("自动息屏", "");
-    static const char *const labels[] = {
-        "从不", "30 秒", "1 分钟", "2 分钟", "5 分钟", "10 分钟",
-    };
-    for (size_t i = 0; i < QUOTA_SCREEN_TIMEOUT_COUNT; i++) {
-        int y = 43 + (int)i * 35;
-        create_focus_row(&s_ui.sleep_rows[i], &s_ui.sleep_markers[i], y, 32);
-        create_label(s_page, 22, y + 4, 146, 24, &quota_font_16, UI_INK, LV_TEXT_ALIGN_LEFT,
-                     labels[i]);
-        s_ui.sleep_values[i] = create_label(s_page, 170, y + 6, 48, 19, &quota_font_12, UI_MUTED,
-                                            LV_TEXT_ALIGN_RIGHT, "");
-    }
-    create_label(s_page, 16, 253, 212, 23, &quota_font_12, UI_MUTED, LV_TEXT_ALIGN_LEFT,
-                 "任意键亮屏  长按 DOWN 息屏");
-    create_footer("UP/DOWN 选择  OK 保存  长按返回");
-}
-
-static void create_accounts_page(void)
-{
-    create_header("账户管理", "0/0");
-    for (size_t i = 0; i < QUOTA_MAX_ACCOUNTS + 1; i++) {
-        int y = 41 + (int)i * 26;
-        create_focus_row(&s_ui.account_rows[i], &s_ui.account_markers[i], y, 25);
-        s_ui.account_primary[i] = create_label(s_page, 22, y + 1, 198, 13, &quota_font_12, UI_INK,
-                                               LV_TEXT_ALIGN_LEFT, "");
-        s_ui.account_secondary[i] = create_label(s_page, 22, y + 13, 198, 12, &quota_font_12,
-                                                 UI_MUTED, LV_TEXT_ALIGN_LEFT, "");
-    }
-    create_footer("OK 选择或添加账户  长按返回");
-}
-
-static void create_interval_page(void)
-{
-    create_header("刷新间隔", "");
-    static const char *const labels[] = {
-        "自动刷新", "1 分钟", "5 分钟", "15 分钟", "30 分钟",
-    };
-    for (size_t i = 0; i < 5; i++) {
-        int y = 49 + (int)i * 43;
-        create_focus_row(&s_ui.interval_rows[i], &s_ui.interval_markers[i], y, 36);
-        s_ui.interval_labels[i] = create_label(s_page, 22, y + 6, 146, 24, &quota_font_16, UI_INK,
-                                               LV_TEXT_ALIGN_LEFT, labels[i]);
-        s_ui.interval_values[i] = create_label(s_page, 170, y + 8, 48, 19, &quota_font_12, UI_MUTED,
-                                               LV_TEXT_ALIGN_RIGHT, "");
-    }
-    create_label(s_page, 16, 267, 212, 14, &quota_font_12, UI_MUTED, LV_TEXT_ALIGN_LEFT,
-                 "全部账户使用此刷新间隔");
-    create_footer("UP/DOWN 选择  OK 保存  长按返回");
-}
-
-static void create_setup_page(void)
-{
-    create_header("USB 设置", "");
-    create_label(s_page, 20, 51, 200, 22, &quota_font_16, UI_INK, LV_TEXT_ALIGN_CENTER,
-                 "电脑管理账户与设置");
-    create_label(s_page, 20, 74, 200, 22, &quota_font_16, UI_INK, LV_TEXT_ALIGN_CENTER,
-                 "账户保存在 Passport");
-    create_logo(s_page, &quota_openai_logo, 54, 109, 36, 36);
-    create_logo(s_page, &quota_deepseek_logo, 150, 109, 36, 36);
-    create_label(s_page, 36, 149, 72, 22, &quota_font_12, UI_INK, LV_TEXT_ALIGN_CENTER, "Codex");
-    create_label(s_page, 132, 149, 72, 22, &quota_font_12, UI_INK, LV_TEXT_ALIGN_CENTER,
-                 "DeepSeek");
-    s_ui.setup_countdown = create_label(s_page, 15, 190, 210, 25, &quota_font_16, UI_MINT,
-                                        LV_TEXT_ALIGN_CENTER, "配对窗口 02:00");
-    const char *connect_hint = "请用 USB 线连接电脑\n在设置页连接设备";
-    s_ui.setup_hint = create_label(s_page, 16, 220, 208, 44, &quota_font_12, UI_MUTED,
-                                   LV_TEXT_ALIGN_CENTER, connect_hint);
-    create_footer("长按 OK 返回");
-}
-
-static void create_network_page(void)
-{
-    create_header("网络信息", "");
-    s_ui.network_title = create_label(s_page, 12, 49, 216, 24, &quota_font_16, UI_INK,
-                                      LV_TEXT_ALIGN_LEFT, "尚未配置网络");
-    s_ui.network_info =
-        create_label(s_page, 12, 80, 216, 44, &quota_font_12, UI_MUTED, LV_TEXT_ALIGN_LEFT, "");
-    create_label(s_page, 12, 124, 216, 18, &quota_font_12, UI_MUTED, LV_TEXT_ALIGN_LEFT,
-                 "已保存 Wi-Fi");
-    for (size_t i = 0; i < QUOTA_PORTABLE_NETWORKS; i++) {
-        s_ui.network_saved[i] = create_label(s_page, 12, 146 + (int)i * 25, 216, 22, &quota_font_16,
-                                             UI_INK, LV_TEXT_ALIGN_LEFT, "");
-    }
-    s_ui.network_hint =
-        create_label(s_page, 12, 255, 216, 24, &quota_font_12, UI_MUTED, LV_TEXT_ALIGN_LEFT, "");
-    create_footer("长按 OK 返回");
-}
-
-static void create_device_settings_page(void)
-{
-    create_header("设备设置", "");
-    static const char *const labels[] = {"热点", "USB"};
-    static const char *const hints[] = {
-        "手机和电脑管理账户",
-        "电脑管理账户与设置",
-    };
-    for (size_t i = 0; i < 2; i++) {
-        int y = 70 + (int)i * 76;
-        create_focus_row(&s_ui.device_rows[i], &s_ui.device_markers[i], y, 60);
-        create_label(s_page, 22, y + 5, 196, 24, &quota_font_16, UI_INK, LV_TEXT_ALIGN_LEFT,
-                     labels[i]);
-        create_label(s_page, 22, y + 32, 196, 20, &quota_font_12, UI_MUTED, LV_TEXT_ALIGN_LEFT,
-                     hints[i]);
-    }
-    create_footer("UP/DOWN 选择  OK 确认  长按返回");
-}
-
-static void create_qr_page(bool auth)
-{
-    create_header(auth ? "账户授权" : "设备设置", auth ? "" : "1/3");
-    s_ui.qr_title =
-        create_label(s_page, 12, 44, 216, 22, &quota_font_16, UI_INK, LV_TEXT_ALIGN_CENTER, "");
-    s_ui.qr = lv_qrcode_create(s_page);
-    lv_obj_set_pos(s_ui.qr, 36, 70);
-    lv_qrcode_set_size(s_ui.qr, 168);
+    s_ui.qr = lv_qrcode_create(s_root);
+    lv_obj_set_pos(s_ui.qr, QR_X, QR_Y);
+    lv_qrcode_set_size(s_ui.qr, QR_SIZE);
     lv_qrcode_set_dark_color(s_ui.qr, lv_color_black());
     lv_qrcode_set_light_color(s_ui.qr, lv_color_white());
     lv_qrcode_set_quiet_zone(s_ui.qr, true);
     lv_obj_add_flag(s_ui.qr, LV_OBJ_FLAG_HIDDEN);
-    s_ui.qr_hint = create_label(s_page, 12, 242, 216, 22, auth ? &quota_font_16 : &quota_font_12,
-                                UI_INK, LV_TEXT_ALIGN_CENTER, "");
-    s_ui.qr_countdown =
-        create_label(s_page, 12, 265, 216, 14, &quota_font_12, UI_MUTED, LV_TEXT_ALIGN_CENTER, "");
-    if (!auth) {
-        s_ui.manual_address = create_label(s_page, 12, 78, 216, 22, &lv_font_montserrat_12, UI_INK,
-                                           LV_TEXT_ALIGN_CENTER, "http://192.168.4.1");
-        const char *caption = "设置密钥 · 完整输入";
-        s_ui.manual_caption = create_label(s_page, 12, 108, 216, 22, &quota_font_12, UI_MUTED,
-                                           LV_TEXT_ALIGN_CENTER, caption);
-        s_ui.manual_secret = create_label(s_page, 12, 136, 216, 88, &lv_font_montserrat_14, UI_INK,
-                                          LV_TEXT_ALIGN_CENTER, "");
-        lv_obj_set_style_text_line_space(s_ui.manual_secret, 5, 0);
-        lv_label_set_long_mode(s_ui.manual_secret, LV_LABEL_LONG_MODE_WRAP);
-        lv_obj_add_flag(s_ui.manual_address, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(s_ui.manual_caption, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(s_ui.manual_secret, LV_OBJ_FLAG_HIDDEN);
-    }
-    create_footer(auth ? "长按OK取消 · 长按DOWN暂停" : "UP/DOWN 切换  长按 OK 返回");
+    for (size_t i = 0; i < SLOT_COUNT; i++)
+        create_slot(s_root, (slot_t)i);
 }
 
-static void create_page(quota_screen_t screen)
+/* ---- shared pieces -------------------------------------------------------------------------- */
+
+static bool font_has_glyph(uint32_t codepoint)
 {
-    if (s_page != NULL)
-        lv_obj_delete(s_page);
-    memset(&s_ui, 0, sizeof(s_ui));
-    s_page = create_rect(s_root, 0, 0, BSP_LCD_W, BSP_LCD_H, UI_BG, 0);
-    s_screen = screen;
-    switch (screen) {
-    case QUOTA_SCREEN_HOME:
-        create_home_page();
-        break;
-    case QUOTA_SCREEN_SETTINGS:
-        create_settings_page();
-        break;
-    case QUOTA_SCREEN_ACCOUNTS:
-        create_accounts_page();
-        break;
-    case QUOTA_SCREEN_INTERVAL:
-        create_interval_page();
-        break;
-    case QUOTA_SCREEN_SLEEP:
-        create_sleep_page();
-        break;
-    case QUOTA_SCREEN_SETUP:
-        create_setup_page();
-        break;
-    case QUOTA_SCREEN_NETWORK:
-        create_network_page();
-        break;
-    case QUOTA_SCREEN_DEVICE_SETTINGS:
-        create_device_settings_page();
-        break;
-    case QUOTA_SCREEN_PHONE:
-        create_qr_page(false);
-        break;
-    case QUOTA_SCREEN_AUTH:
-        create_qr_page(true);
-        break;
-    default:
-        create_home_page();
-        break;
-    }
+    lv_font_glyph_dsc_t glyph;
+    return lv_font_get_glyph_dsc(&quota_font_12, &glyph, codepoint, 0);
 }
 
-static void set_label_text(lv_obj_t *label, const char *text)
+/* A name or note the font cannot draw becomes "<kind> N" (N is its place in the list) instead of a
+ * row of boxes. Everyday Chinese is in the font; rarer characters and emoji are not. */
+static void display_name(const char *name, const char *kind, unsigned number, char *out,
+                         size_t capacity)
 {
-    if (label != NULL && text != NULL && strcmp(lv_label_get_text(label), text) != 0)
-        lv_label_set_text(label, text);
-}
-
-static void set_row_focus(lv_obj_t *row, lv_obj_t *marker, bool focused)
-{
-    if (row == NULL || marker == NULL)
-        return;
-    lv_color_t tone = color(focused ? UI_PANEL : UI_BG);
-    if (!lv_color_eq(lv_obj_get_style_bg_color(row, 0), tone))
-        lv_obj_set_style_bg_color(row, tone, 0);
-    bool hidden = lv_obj_has_flag(marker, LV_OBJ_FLAG_HIDDEN);
-    if (focused && hidden)
-        lv_obj_clear_flag(marker, LV_OBJ_FLAG_HIDDEN);
-    else if (!focused && !hidden)
-        lv_obj_add_flag(marker, LV_OBJ_FLAG_HIDDEN);
-}
-
-static void set_account_row_visible(size_t index, bool visible)
-{
-    lv_obj_t *objects[] = {
-        s_ui.account_rows[index],
-        s_ui.account_markers[index],
-        s_ui.account_primary[index],
-        s_ui.account_secondary[index],
-    };
-    for (size_t i = 0; i < sizeof(objects) / sizeof(objects[0]); i++) {
-        if (objects[i] == NULL)
-            continue;
-        if (visible && objects[i] == s_ui.account_markers[index])
-            continue;
-        if (visible)
-            lv_obj_clear_flag(objects[i], LV_OBJ_FLAG_HIDDEN);
-        else
-            lv_obj_add_flag(objects[i], LV_OBJ_FLAG_HIDDEN);
-    }
+    if (name[0] != '\0' && !quota_text_is_displayable(name, font_has_glyph))
+        snprintf(out, capacity, "%s %u", kind, number);
+    else
+        snprintf(out, capacity, "%s", name);
 }
 
 static void format_clock(uint64_t epoch, char *output, size_t capacity)
@@ -503,397 +296,818 @@ static void format_clock(uint64_t epoch, char *output, size_t capacity)
     }
 }
 
-static void render_metric(size_t index, const quota_window_t *window, uint64_t now, bool stale,
-                          bool clock_synchronized, int y, bool single)
+static void format_countdown(uint32_t seconds, char *output, size_t capacity)
 {
-    lv_obj_set_y(s_ui.metric_name[index], y);
-    lv_obj_set_y(s_ui.metric_reset[index], y);
-    lv_obj_set_y(s_ui.metric_value[index], y + 18);
-    lv_obj_set_y(s_ui.metric_bar[index], y + (single ? 62 : 46));
-    lv_obj_clear_flag(s_ui.metric_name[index], LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(s_ui.metric_reset[index], LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(s_ui.metric_value[index], LV_OBJ_FLAG_HIDDEN);
-    char reset_text[48];
-    quota_format_reset_time(window, now, clock_synchronized, reset_text, sizeof(reset_text));
-    set_label_text(s_ui.metric_reset[index], reset_text);
-    quota_metric_state_t state = quota_metric_state(window, now);
-    if (state == QUOTA_METRIC_UNAVAILABLE) {
-        set_label_text(s_ui.metric_value[index], "未提供");
-        lv_obj_set_style_text_font(s_ui.metric_value[index], &quota_font_12, 0);
-        lv_obj_set_style_text_color(s_ui.metric_value[index], color(UI_DIM), 0);
-        lv_obj_add_flag(s_ui.metric_bar[index], LV_OBJ_FLAG_HIDDEN);
-        return;
-    }
-    if (state == QUOTA_METRIC_WAITING_FOR_SOURCE) {
-        set_label_text(s_ui.metric_value[index], "等待新数据");
-        lv_obj_set_style_text_font(s_ui.metric_value[index], &quota_font_12, 0);
-        lv_obj_set_style_text_color(s_ui.metric_value[index], color(UI_MUTED), 0);
-        lv_obj_add_flag(s_ui.metric_bar[index], LV_OBJ_FLAG_HIDDEN);
-        return;
-    }
+    snprintf(output, capacity, "剩余 %u:%02u", (unsigned)(seconds / 60), (unsigned)(seconds % 60));
+}
 
+/* One list row: label left, value right. A focused row gets the panel tone and the marker. */
+static void list_row(size_t row, bool focused, bool selectable, const char *label,
+                     uint32_t label_color, const char *value, const lv_font_t *value_font,
+                     uint32_t value_color, int value_x)
+{
+    int y = LIST_TOP + (int)row * LIST_ROW_H;
+    lv_color_t tone = color(focused ? UI_PANEL : UI_BG);
+    if (!lv_color_eq(lv_obj_get_style_bg_color(s_ui.row_bg[row], 0), tone))
+        lv_obj_set_style_bg_color(s_ui.row_bg[row], tone, 0);
+    s_ui.want_row[row] = true;
+    s_ui.want_marker[row] = focused && selectable;
+    put_text(T_ROW_LABEL(row), 22, y + 8, value_x - 22, 22, &quota_font_16, label_color,
+             LV_TEXT_ALIGN_LEFT, label);
+    if (value != NULL && value[0] != '\0') {
+        /* Small text sits lower in the row so its baseline matches the 16 px label. */
+        int offset = value_font == &quota_font_16 ? 8 : 11;
+        put_text(T_ROW_VALUE(row), value_x, y + offset, 220 - value_x, 22, value_font, value_color,
+                 LV_TEXT_ALIGN_RIGHT, value);
+    }
+}
+
+static void set_footer(const char *text)
+{
+    /* The refused sleep key is explained on whichever screen it was pressed. */
+    put(SLOT_FOOTER, MARGIN, FOOTER_Y, CONTENT_W, 18, &quota_font_12, UI_MUTED, LV_TEXT_ALIGN_LEFT,
+        s_sleep_notice ? "设置中不能息屏" : text);
+}
+
+static void set_status(const char *text, uint32_t text_color)
+{
+    put(SLOT_STATUS, MARGIN, STATUS_Y, CONTENT_W, 18, &quota_font_12, text_color,
+        LV_TEXT_ALIGN_LEFT, text);
+}
+
+static void set_logo(const lv_image_dsc_t *image)
+{
+    if (s_logo_src != image) {
+        lv_image_set_src(s_ui.logo, image);
+        s_logo_src = image;
+    }
+    s_ui.want_logo = true;
+}
+
+static void render_qr_data(const char *data)
+{
+    if (data == NULL || data[0] == '\0')
+        return;
+    if (!s_ui.qr_valid || strcmp(s_ui.qr_data, data) != 0) {
+        s_ui.qr_valid = false;
+        if (strlen(data) >= sizeof(s_ui.qr_data) ||
+            lv_qrcode_update(s_ui.qr, data, (uint32_t)strlen(data)) != LV_RESULT_OK) {
+            return;
+        }
+        snprintf(s_ui.qr_data, sizeof(s_ui.qr_data), "%s", data);
+        s_ui.qr_valid = true;
+    }
+    s_ui.want_qr = true;
+}
+
+static void set_bar(size_t index, int y, int value, uint32_t tone)
+{
+    lv_obj_t *bar = s_ui.bar[index];
+    if (lv_obj_get_y(bar) != y)
+        lv_obj_set_y(bar, y);
+    if (lv_bar_get_value(bar) != value)
+        lv_bar_set_value(bar, value, LV_ANIM_OFF);
+    if (!lv_color_eq(lv_obj_get_style_bg_color(bar, LV_PART_INDICATOR), color(tone)))
+        lv_obj_set_style_bg_color(bar, color(tone), LV_PART_INDICATOR);
+    s_ui.want_bar[index] = true;
+}
+
+static bool login_active(const quota_portable_view_t *portable)
+{
+    return portable->login_state >= QUOTA_PORTABLE_LOGIN_CONNECTING &&
+           portable->login_state <= QUOTA_PORTABLE_LOGIN_EXCHANGING;
+}
+
+static void render_status_bar(const quota_service_view_t *service, int battery_percent)
+{
+    char text[16];
+    format_clock(service->clock_synchronized ? service->now_epoch : 0, text, sizeof(text));
+    put(SLOT_CLOCK, MARGIN, 6, 60, 16, &lv_font_montserrat_12, UI_MUTED, LV_TEXT_ALIGN_LEFT, text);
+    if (battery_percent >= 0 && battery_percent <= 100)
+        snprintf(text, sizeof(text), "%d%%", battery_percent);
+    else
+        snprintf(text, sizeof(text), "--%%");
+    put(SLOT_BATTERY, 180, 6, 48, 16, &lv_font_montserrat_12, UI_MUTED, LV_TEXT_ALIGN_RIGHT, text);
+
+    const quota_portable_view_t *portable = &service->portable;
+    bool has_wifi = portable->saved_network_count > 0;
+    bool connected = service->connected;
+    const char *mark = NULL;
+    if (portable->network_state == QUOTA_PORTABLE_NETWORK_ERROR)
+        mark = "!";
+    else if (portable->network_state == QUOTA_PORTABLE_NETWORK_CONNECTING ||
+             portable->network_state == QUOTA_PORTABLE_NETWORK_TIME_REQUIRED)
+        mark = "...";
+    uint32_t tone = connected ? UI_INK : UI_DIM;
+    for (size_t i = 0; i < 2; i++) {
+        if (!lv_color_eq(lv_obj_get_style_line_color(s_ui.wifi_lines[i], 0), color(tone)))
+            lv_obj_set_style_line_color(s_ui.wifi_lines[i], color(tone), 0);
+        show(s_ui.wifi_lines[i], has_wifi);
+    }
+    if (!lv_color_eq(lv_obj_get_style_bg_color(s_ui.wifi_dot, 0), color(tone)))
+        lv_obj_set_style_bg_color(s_ui.wifi_dot, color(tone), 0);
+    show(s_ui.wifi_dot, has_wifi);
+    if (has_wifi && mark != NULL) {
+        put(SLOT_WIFI_MARK, 165, 6, 14, 16, &lv_font_montserrat_12,
+            mark[0] == '!' ? UI_AMBER : UI_MUTED, LV_TEXT_ALIGN_LEFT, mark);
+    }
+}
+
+static void title(const char *left, const char *right)
+{
+    bool has_right = right != NULL && right[0] != '\0';
+    put_text(T_TITLE, MARGIN, 30, has_right ? 150 : CONTENT_W, 22, &quota_font_16, UI_INK,
+             LV_TEXT_ALIGN_LEFT, left);
+    if (has_right) {
+        put_text(T_RIGHT, 150, 34, 78, 16, &quota_font_12, UI_MUTED, LV_TEXT_ALIGN_RIGHT, right);
+    }
+}
+
+/* ---- home ----------------------------------------------------------------------------------- */
+
+static void render_metric(size_t block, const char *name, const quota_window_t *window,
+                          uint64_t now, bool stale, bool clock_synchronized)
+{
+    int y = block == 0 ? 80 : 150;
+    int base = block == 0 ? T_NAME0 : T_NAME1;
+    put_text(base, MARGIN, y, 120, 22, &quota_font_16, UI_INK, LV_TEXT_ALIGN_LEFT, name);
+    char reset[48];
+    quota_format_reset_time(window, now, clock_synchronized, reset, sizeof(reset));
+    put_text(base + 3, MARGIN, y + 42, CONTENT_W, 16, &quota_font_12, UI_MUTED, LV_TEXT_ALIGN_LEFT,
+             reset);
+    quota_metric_state_t state = quota_metric_state(window, now);
+    if (state != QUOTA_METRIC_VALUE) {
+        put_text(base + 2, 120, y + 2, 108, 18, &quota_font_12, UI_DIM, LV_TEXT_ALIGN_RIGHT,
+                 state == QUOTA_METRIC_UNAVAILABLE ? "未提供" : "等待新数据");
+        return;
+    }
     char value[8];
     snprintf(value, sizeof(value), "%u%%", (unsigned)window->remaining_percent);
-    set_label_text(s_ui.metric_value[index], value);
-    lv_obj_set_style_text_font(s_ui.metric_value[index], &lv_font_montserrat_20, 0);
     uint32_t tone = stale                             ? UI_DIM
                     : window->remaining_percent <= 5  ? UI_RED
                     : window->remaining_percent <= 20 ? UI_AMBER
                                                       : UI_MINT;
-    lv_obj_set_style_text_color(s_ui.metric_value[index], color(tone), 0);
-    lv_obj_set_style_bg_color(s_ui.metric_bar[index], color(stale ? UI_DIM : tone),
-                              LV_PART_INDICATOR);
-    lv_bar_set_value(s_ui.metric_bar[index], window->remaining_percent, LV_ANIM_OFF);
-    lv_obj_clear_flag(s_ui.metric_bar[index], LV_OBJ_FLAG_HIDDEN);
+    put_text(base + 1, 120, y, 48, 22, &quota_font_16, UI_MUTED, LV_TEXT_ALIGN_RIGHT, "剩余");
+    put_text(base + 2, 168, y - 2, 60, 26, &lv_font_montserrat_20, tone, LV_TEXT_ALIGN_RIGHT,
+             value);
+    set_bar(block, y + 28, window->remaining_percent, stale ? UI_DIM : tone);
 }
 
-static void render_extra(size_t index, const char *name, const char *value, int y, bool stale)
+static void build_status_line(const quota_service_view_t *service, size_t selected,
+                              const quota_account_t *account, bool stale, char *text,
+                              size_t capacity, uint32_t *tone, bool *authorizing)
 {
-    set_label_text(s_ui.extra_name[index], name);
-    set_label_text(s_ui.extra_value[index], value);
-    lv_obj_set_y(s_ui.extra_name[index], y);
-    lv_obj_set_y(s_ui.extra_value[index], y);
-    lv_obj_set_style_text_color(s_ui.extra_value[index], color(stale ? UI_DIM : UI_INK), 0);
-    lv_obj_clear_flag(s_ui.extra_name[index], LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(s_ui.extra_value[index], LV_OBJ_FLAG_HIDDEN);
+    const quota_portable_view_t *portable = &service->portable;
+    const char *error = portable->account_errors[selected];
+    quota_status_input_t input = {
+        .storage_error = portable->storage_error[0] != '\0',
+        .authorizing = login_active(portable),
+        .reauth_needed = account->status == QUOTA_STATUS_EXPIRED ||
+                         strcmp(error, "codex_expired") == 0 || strcmp(error, "auth_required") == 0,
+        .unverified_items = (uint8_t)(portable->pending_items + portable->failed_items),
+        .wifi_failed = portable->network_state == QUOTA_PORTABLE_NETWORK_ERROR,
+        .rate_limited = strcmp(error, "rate_limited") == 0,
+        .update_failed = error[0] != '\0' || account->status == QUOTA_STATUS_ERROR ||
+                         account->status == QUOTA_STATUS_UNSUPPORTED,
+        .refreshing = service->refreshing,
+        .has_observed_at = account->has_observed_at,
+    };
+    char clock_text[16] = "";
+    if (account->has_observed_at)
+        format_clock(account->observed_at, clock_text, sizeof(clock_text));
+    quota_status_line_t kind = quota_status_line_select(&input);
+    *authorizing = kind == QUOTA_STATUS_LINE_AUTHORIZING;
+    *tone = stale ? UI_AMBER : UI_MUTED;
+    switch (kind) {
+    case QUOTA_STATUS_LINE_STORAGE_ERROR:
+        snprintf(text, capacity, "%s", portable_error_text(portable->storage_error));
+        *tone = UI_AMBER;
+        break;
+    case QUOTA_STATUS_LINE_AUTHORIZING:
+        snprintf(text, capacity, "授权中 · OK 查看");
+        break;
+    case QUOTA_STATUS_LINE_REAUTH:
+        snprintf(text, capacity, "需要重新授权 · 请打开设置页");
+        *tone = UI_AMBER;
+        break;
+    case QUOTA_STATUS_LINE_UNVERIFIED:
+        if (portable->failed_items > 0)
+            snprintf(text, capacity, "验证失败 · 请打开设置页修改");
+        else
+            snprintf(text, capacity, "待验证 · 在设置页点完成设置");
+        *tone = UI_AMBER;
+        break;
+    case QUOTA_STATUS_LINE_WIFI_FAILED:
+        if (account->has_observed_at)
+            snprintf(text, capacity, "Wi-Fi 连接失败 · 显示 %s 的数据", clock_text);
+        else
+            snprintf(text, capacity, "Wi-Fi 连接失败");
+        *tone = UI_AMBER;
+        break;
+    case QUOTA_STATUS_LINE_RATE_LIMITED: {
+        uint64_t retry = portable->account_retry_at[selected];
+        if (service->clock_synchronized && retry > service->now_epoch) {
+            snprintf(text, capacity, "请求过多 · %llu 秒后重试",
+                     (unsigned long long)(retry - service->now_epoch));
+        } else {
+            snprintf(text, capacity, "请求过多 · 稍后重试");
+        }
+        *tone = UI_AMBER;
+        break;
+    }
+    case QUOTA_STATUS_LINE_UPDATE_FAILED:
+        if (account->has_observed_at)
+            snprintf(text, capacity, "更新失败 · 显示 %s 的数据", clock_text);
+        else
+            snprintf(text, capacity, "更新失败");
+        *tone = UI_AMBER;
+        break;
+    case QUOTA_STATUS_LINE_REFRESHING:
+        snprintf(text, capacity, "正在刷新");
+        break;
+    case QUOTA_STATUS_LINE_UPDATED:
+        snprintf(text, capacity, "更新于 %s", clock_text);
+        break;
+    default:
+        snprintf(text, capacity, "尚无数据");
+        break;
+    }
+}
+
+static void render_welcome(const quota_service_view_t *service)
+{
+    bool storage_error = service->portable.storage_error[0] != '\0';
+    put_text(T_TITLE, 0, 56, 240, 22, &quota_font_16, UI_INK, LV_TEXT_ALIGN_CENTER, "AI 额度");
+    if (storage_error) {
+        put_text(T_SUB, MARGIN, 90, CONTENT_W, 22, &quota_font_16, UI_AMBER, LV_TEXT_ALIGN_CENTER,
+                 portable_storage_title(service->portable.storage_error));
+        put_text(T_NAME0, MARGIN, 124, CONTENT_W, 40, &quota_font_12, UI_MUTED,
+                 LV_TEXT_ALIGN_CENTER, portable_error_text(service->portable.storage_error));
+        set_footer("OK 热点设置       长按OK 菜单");
+        return;
+    }
+    put_text(T_SUB, MARGIN, 90, CONTENT_W, 22, &quota_font_16, UI_MUTED, LV_TEXT_ALIGN_CENTER,
+             "Passport 还没有账户");
+    put_text(T_NAME0, MARGIN, 128, CONTENT_W, 16, &quota_font_12, UI_INK, LV_TEXT_ALIGN_LEFT,
+             "手机：按 OK 开启热点设置");
+    put_text(T_NAME1, MARGIN, 148, CONTENT_W, 16, &quota_font_12, UI_INK, LV_TEXT_ALIGN_LEFT,
+             "USB：用 USB 线连接，打开");
+    put_text(T_VALUE0, 24, 166, 204, 32, &quota_font_12, UI_MUTED, LV_TEXT_ALIGN_LEFT,
+             "zesming.github.io/\nai-passport-quota");
+    put_text(T_VALUE1, MARGIN, 206, CONTENT_W, 34, &quota_font_12, UI_INK, LV_TEXT_ALIGN_LEFT,
+             "点“连接 Passport”后，长按 OK，\n按下键，再按 OK 打开 USB 设置");
+    set_footer("OK 热点设置       长按OK 菜单");
 }
 
 static void render_home(const quota_navigation_t *navigation, const quota_service_view_t *service)
 {
-    char count[16];
-    snprintf(count, sizeof(count), "%u/%u",
-             service->snapshot.account_count == 0 ? 0
-                                                  : (unsigned)(navigation->selected_account + 1),
-             (unsigned)service->snapshot.account_count);
-    set_label_text(s_ui.header_info, count);
-    bool deepseek = service->snapshot.account_count > 0 &&
-                    service->snapshot
-                            .accounts[navigation->selected_account < service->snapshot.account_count
-                                          ? navigation->selected_account
-                                          : 0]
-                            .provider == QUOTA_PROVIDER_DEEPSEEK;
-    for (size_t i = 0; i < QUOTA_BALANCE_CURRENCIES; i++) {
-        lv_obj_t *balance_objects[] = {s_ui.balance_heading[i], s_ui.balance_total[i]};
-        for (size_t j = 0; j < 2; j++)
-            lv_obj_add_flag(balance_objects[j], LV_OBJ_FLAG_HIDDEN);
-        lv_obj_t *quota_objects[] = {s_ui.metric_name[i], s_ui.metric_reset[i],
-                                     s_ui.metric_value[i], s_ui.metric_bar[i]};
-        for (size_t j = 0; j < 4; j++)
-            lv_obj_add_flag(quota_objects[j], LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(s_ui.extra_name[i], LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(s_ui.extra_value[i], LV_OBJ_FLAG_HIDDEN);
-    }
-    lv_obj_add_flag(s_ui.home_empty, LV_OBJ_FLAG_HIDDEN);
     if (service->snapshot.account_count == 0) {
-        lv_obj_add_flag(s_ui.home_logo, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_style_text_font(s_ui.home_provider, &quota_font_16, 0);
-        bool storage_error = service->portable.storage_error[0] != '\0';
-        set_label_text(s_ui.home_provider,
-                       storage_error ? portable_storage_title(service->portable.storage_error)
-                                     : "暂无账户");
-        set_label_text(s_ui.home_plan, storage_error ? (strcmp(service->portable.storage_error,
-                                                               "storage_write_unknown") == 0
-                                                            ? "设备正在确认保存"
-                                                            : "请保留数据并检查设备")
-                                                     : "请打开设备设置添加账户");
-        set_label_text(s_ui.home_email, "");
-        set_label_text(s_ui.home_status, storage_error
-                                             ? portable_error_text(service->portable.storage_error)
-                                             : "长按 OK 打开设置");
-        lv_obj_set_style_text_color(s_ui.home_status, color(storage_error ? UI_AMBER : UI_MUTED),
-                                    0);
+        render_welcome(service);
         return;
     }
-
     size_t selected = navigation->selected_account;
     if (selected >= service->snapshot.account_count)
         selected = 0;
     const quota_account_t *account = &service->snapshot.accounts[selected];
-    lv_obj_set_style_text_font(s_ui.home_provider, &lv_font_montserrat_20, 0);
-    lv_image_set_src(s_ui.home_logo, deepseek ? &quota_deepseek_logo : &quota_openai_logo);
-    lv_obj_clear_flag(s_ui.home_logo, LV_OBJ_FLAG_HIDDEN);
-    set_label_text(s_ui.home_provider, deepseek ? "DeepSeek" : "ChatGPT");
-    char plan[QUOTA_PLAN_MAX_BYTES + 1];
-    quota_copy_display_plan(account->plan, plan, sizeof(plan));
-    char source_and_plan[QUOTA_PLAN_MAX_BYTES + 20];
-    snprintf(source_and_plan, sizeof(source_and_plan), "%s · %s", "Codex",
-             plan[0] == '\0' ? "" : plan);
-    set_label_text(s_ui.home_plan, source_and_plan);
-    if (deepseek)
-        set_label_text(s_ui.home_plan, "开放平台 · API");
-    char email[QUOTA_EMAIL_MAX_BYTES + 1];
-    quota_copy_display_ascii(account->email, email, sizeof(email));
-    set_label_text(s_ui.home_email, email);
+    bool deepseek = account->provider == QUOTA_PROVIDER_DEEPSEEK;
+    char text[96];
+    snprintf(text, sizeof(text), "%u/%u", (unsigned)(selected + 1),
+             (unsigned)service->snapshot.account_count);
+    put_text(T_TITLE, 56, 30, 120, 22, &quota_font_16, UI_INK, LV_TEXT_ALIGN_LEFT,
+             deepseek ? "DeepSeek" : "ChatGPT");
+    put_text(T_RIGHT, 176, 34, 52, 16, &lv_font_montserrat_12, UI_MUTED, LV_TEXT_ALIGN_RIGHT, text);
+    set_logo(deepseek ? &quota_deepseek_logo : &quota_openai_logo);
     if (deepseek) {
-        quota_copy_display_ascii(service->snapshot.balances[selected].label, email, sizeof(email));
-        set_label_text(s_ui.home_email, email[0] == '\0' ? "DeepSeek API" : email);
+        display_name(service->snapshot.balances[selected].label, "DeepSeek", (unsigned)selected + 1,
+                     text, sizeof(text));
+    } else {
+        char plan[QUOTA_PLAN_MAX_BYTES + 1], email[QUOTA_EMAIL_MAX_BYTES + 1];
+        quota_copy_display_plan(account->plan, plan, sizeof(plan));
+        quota_mask_email(account->email, email, sizeof(email));
+        snprintf(text, sizeof(text), "%.31s%s%.60s", plan, plan[0] && email[0] ? " · " : "", email);
     }
+    put_text(T_SUB, 56, 52, 172, 16, &quota_font_12, UI_MUTED, LV_TEXT_ALIGN_LEFT, text);
 
     bool stale = quota_data_is_stale(service->now_epoch, account->has_observed_at,
                                      account->observed_at, service->refresh_seconds) ||
                  account->status != QUOTA_STATUS_OK;
-    const quota_balance_t *balance = &service->snapshot.balances[selected];
     if (deepseek) {
-        const quota_currency_balance_t *entry = quota_balance_cny(balance);
+        const quota_currency_balance_t *entry =
+            quota_balance_cny(&service->snapshot.balances[selected]);
+        put_text(T_NAME0, MARGIN, 84, CONTENT_W, 22, &quota_font_16, UI_INK, LV_TEXT_ALIGN_LEFT,
+                 "可用余额（人民币）");
         if (entry != NULL) {
-            size_t i = 0;
-            char heading[32];
-            snprintf(heading, sizeof(heading), "人民币可用余额");
-            set_label_text(s_ui.balance_heading[i], heading);
-            set_label_text(s_ui.balance_total[i], entry->total_balance);
-            lv_obj_set_style_text_font(s_ui.balance_total[i],
-                                       strlen(entry->total_balance) > 16   ? &lv_font_montserrat_12
-                                       : strlen(entry->total_balance) > 12 ? &lv_font_montserrat_14
-                                                                           : &lv_font_montserrat_20,
-                                       0);
-            lv_obj_set_style_text_color(s_ui.balance_total[i], color(stale ? UI_DIM : UI_INK), 0);
-            lv_obj_clear_flag(s_ui.balance_heading[i], LV_OBJ_FLAG_HIDDEN);
-            lv_obj_clear_flag(s_ui.balance_total[i], LV_OBJ_FLAG_HIDDEN);
-        }
-        if (entry == NULL) {
-            set_label_text(s_ui.balance_heading[0], "人民币可用余额");
-            set_label_text(s_ui.balance_total[0], "未提供");
-            lv_obj_set_style_text_font(s_ui.balance_total[0], &quota_font_16, 0);
-            lv_obj_clear_flag(s_ui.balance_heading[0], LV_OBJ_FLAG_HIDDEN);
-            lv_obj_clear_flag(s_ui.balance_total[0], LV_OBJ_FLAG_HIDDEN);
+            size_t length = strlen(entry->total_balance);
+            put_text(T_VALUE0, MARGIN, 116, CONTENT_W, 28,
+                     length > 16   ? &lv_font_montserrat_12
+                     : length > 12 ? &lv_font_montserrat_14
+                                   : &lv_font_montserrat_20,
+                     stale ? UI_DIM : UI_INK, LV_TEXT_ALIGN_CENTER, entry->total_balance);
+        } else {
+            put_text(T_VALUE0, MARGIN, 116, CONTENT_W, 22, &quota_font_16, UI_DIM,
+                     LV_TEXT_ALIGN_CENTER, "未提供");
         }
     } else {
         const quota_window_t *windows[] = {&account->five_hour, &account->seven_day};
-        unsigned window_count = account->five_hour.present + account->seven_day.present;
-        unsigned row = 0;
+        static const char *const names[] = {"5 小时额度", "7 天额度"};
+        size_t block = 0;
         for (size_t i = 0; i < 2; i++) {
-            if (!windows[i]->present)
-                continue;
-            render_metric(i, windows[i], service->now_epoch, stale, service->clock_synchronized,
-                          109 + (int)row++ * 60, window_count == 1);
+            if (windows[i]->present) {
+                render_metric(block++, names[i], windows[i], service->now_epoch, stale,
+                              service->clock_synchronized);
+            }
+        }
+        if (block == 0) {
+            put_text(T_NAME0, MARGIN, 84, CONTENT_W, 22, &quota_font_16, UI_MUTED,
+                     LV_TEXT_ALIGN_LEFT,
+                     account->status == QUOTA_STATUS_OK ? "未提供额度窗口" : "等待额度数据");
         }
         const quota_codex_extras_t *extras = &service->snapshot.codex_extras[selected];
-        int extra_y = window_count == 2 ? 228 : window_count == 1 ? 199 : 151;
-        unsigned extra_row = 0;
-        if (extras->has_banked_reset && extras->available_resets > 0) {
-            char value[64];
-            if (extras->has_next_reset_expiry && !service->clock_synchronized) {
-                snprintf(value, sizeof(value), "%llu次 · 时间待同步",
-                         (unsigned long long)extras->available_resets);
-            } else if (extras->has_next_reset_expiry &&
-                       extras->next_reset_expires_at > service->now_epoch) {
-                char expiry[20];
-                quota_format_duration(extras->next_reset_expires_at - service->now_epoch, expiry,
-                                      sizeof(expiry));
-                snprintf(value, sizeof(value), "%llu次 · %s 到期",
-                         (unsigned long long)extras->available_resets, expiry);
-            } else if (extras->has_next_reset_expiry) {
-                snprintf(value, sizeof(value), "%llu次 · 等待更新",
-                         (unsigned long long)extras->available_resets);
-            } else {
-                snprintf(value, sizeof(value), "%llu 次",
-                         (unsigned long long)extras->available_resets);
-            }
-            render_extra(extra_row++, "可用重置", value, extra_y, stale);
-        }
+        char credits[QUOTA_CREDITS_BALANCE_BYTES + 1] = "", line[80] = "";
         if (extras->has_credits) {
-            char value[QUOTA_CREDITS_BALANCE_BYTES + 1];
-            quota_copy_display_ascii(extras->credits_balance, value, sizeof(value));
-            render_extra(extra_row, "剩余额度",
-                         extras->unlimited_credits ? "不限量"
-                         : value[0] != '\0'        ? value
-                                                   : "可用",
-                         extra_y + (int)extra_row * 16, stale);
+            quota_copy_display_ascii(extras->credits_balance, credits, sizeof(credits));
+            snprintf(line, sizeof(line), "剩余额度 %s",
+                     extras->unlimited_credits ? "不限量"
+                     : credits[0]              ? credits
+                                               : "可用");
         }
-        if (window_count == 0) {
-            const char *empty =
-                account->status == QUOTA_STATUS_OK ? "未提供额度窗口" : "等待额度数据";
-            set_label_text(s_ui.home_empty, empty);
-            lv_obj_clear_flag(s_ui.home_empty, LV_OBJ_FLAG_HIDDEN);
+        if (extras->has_banked_reset && extras->available_resets > 0) {
+            size_t used = strlen(line);
+            snprintf(line + used, sizeof(line) - used, "%s可用重置 %llu 次", used ? "   " : "",
+                     (unsigned long long)extras->available_resets);
+        }
+        if (line[0] != '\0') {
+            put_text(T_EXTRA, MARGIN, 222, CONTENT_W, 16, &quota_font_12, stale ? UI_DIM : UI_INK,
+                     LV_TEXT_ALIGN_LEFT, line);
         }
     }
-
     char status[96];
-    const char *account_error = service->portable.account_errors[selected];
-    bool connected = service->portable.network_state == QUOTA_PORTABLE_NETWORK_READY ||
-                     service->portable.network_state == QUOTA_PORTABLE_NETWORK_CONNECTED;
-    if (service->portable.storage_error[0]) {
-        snprintf(status, sizeof(status), "%s",
-                 portable_error_text(service->portable.storage_error));
-    } else if (!connected) {
-        snprintf(status, sizeof(status), "离线 · 最近数据");
-    } else if (account_error[0]) {
-        uint64_t retry = service->portable.account_retry_at[selected];
-        if (strcmp(account_error, "rate_limited") == 0 && service->clock_synchronized &&
-            retry > service->now_epoch) {
-            snprintf(status, sizeof(status), "请求过多 · %llu 秒后重试",
-                     (unsigned long long)(retry - service->now_epoch));
-        } else
-            snprintf(status, sizeof(status), "%s", portable_error_text(account_error));
-    } else if (service->refreshing) {
-        snprintf(status, sizeof(status), "正在刷新");
-    } else if (!service->clock_synchronized) {
-        snprintf(status, sizeof(status), "时间待同步 · 最近数据");
-    } else if (account->status == QUOTA_STATUS_EXPIRED) {
-        snprintf(status, sizeof(status), "登录过期 · 最近数据");
-    } else if (account->status == QUOTA_STATUS_WAITING) {
-        snprintf(status, sizeof(status), "待验证 · 结束设备设置");
-    } else if (account->status == QUOTA_STATUS_ERROR) {
-        snprintf(status, sizeof(status), "数据源错误 · 保留缓存");
-    } else if (account->status == QUOTA_STATUS_UNSUPPORTED) {
-        snprintf(status, sizeof(status), "数据源暂不支持");
-    } else if (deepseek && balance->present && !balance->is_available) {
-        snprintf(status, sizeof(status), "余额不可用");
-    } else if (account->has_observed_at) {
-        char clock_text[16];
-        format_clock(account->observed_at, clock_text, sizeof(clock_text));
-        if (stale)
-            snprintf(status, sizeof(status), "缓存 · 更新于 %s", clock_text);
-        else
-            snprintf(status, sizeof(status), "更新于 %s", clock_text);
-    } else {
-        snprintf(status, sizeof(status), "尚未采集数据");
-    }
-    set_label_text(s_ui.home_status, status);
-    lv_obj_set_style_text_color(
-        s_ui.home_status,
-        color((service->portable.storage_error[0] || !connected || stale) ? UI_AMBER : UI_MUTED),
-        0);
-}
-
-static void render_settings(const quota_navigation_t *navigation,
-                            const quota_service_view_t *service)
-{
-    static const char *const labels[] = {"账户管理", "刷新间隔", "立即刷新",
-                                         "自动息屏", "网络信息", "设备设置"};
-    char values[6][24];
-    snprintf(values[0], sizeof(values[0]), "%u 个", (unsigned)service->snapshot.account_count);
-    if (!service->auto_refresh)
-        snprintf(values[1], sizeof(values[1]), "手动");
+    uint32_t tone;
+    bool authorizing;
+    build_status_line(service, selected, account, stale, status, sizeof(status), &tone,
+                      &authorizing);
+    set_status(status, tone);
+    if (authorizing)
+        set_footer("上下 切换  OK 查看  长按OK 菜单");
     else
-        snprintf(values[1], sizeof(values[1]), "%u 分钟",
-                 (unsigned)(service->refresh_seconds / 60));
-    snprintf(values[2], sizeof(values[2]), "%s", service->refreshing ? "同步中" : "");
-    if (service->screen_timeout_seconds == 0)
-        snprintf(values[3], sizeof(values[3]), "从不");
-    else if (service->screen_timeout_seconds < 60) {
-        snprintf(values[3], sizeof(values[3]), "%u 秒", (unsigned)service->screen_timeout_seconds);
-    } else {
-        snprintf(values[3], sizeof(values[3]), "%u 分钟",
-                 (unsigned)(service->screen_timeout_seconds / 60));
-    }
-    snprintf(values[4], sizeof(values[4]), "%u 个",
-             (unsigned)service->portable.saved_network_count);
-    snprintf(values[5], sizeof(values[5]), "%s",
-             service->usb_window_preparing                                  ? "准备中"
-             : service->usb_window_active || service->portable.setup_active ? "已打开"
-                                                                            : "");
-    for (size_t i = 0; i < 6; i++) {
-        set_row_focus(s_ui.setting_rows[i], s_ui.setting_markers[i],
-                      i == navigation->settings_focus);
-        set_label_text(s_ui.setting_labels[i], labels[i]);
-        set_label_text(s_ui.setting_values[i], values[i]);
-    }
-    set_label_text(s_ui.header_info, "");
+        set_footer("上下 切换  OK 刷新  长按OK 菜单");
 }
 
-static void render_accounts(const quota_navigation_t *navigation,
-                            const quota_service_view_t *service)
+/* ---- menu and option lists ------------------------------------------------------------------ */
+
+static void format_refresh(const quota_service_view_t *service, char *output, size_t capacity)
 {
-    char count[16];
-    snprintf(count, sizeof(count), "%u/%u",
-             (unsigned)(navigation->account_focus < service->snapshot.account_count
-                            ? navigation->account_focus + 1
-                            : service->snapshot.account_count + 1),
-             (unsigned)(service->snapshot.account_count + 1));
-    set_label_text(s_ui.header_info, count);
-    size_t visible_rows = (size_t)service->snapshot.account_count + 1;
-    if (visible_rows > QUOTA_MAX_ACCOUNTS + 1)
-        visible_rows = QUOTA_MAX_ACCOUNTS + 1;
-    for (size_t i = 0; i < visible_rows; i++) {
-        set_account_row_visible(i, true);
-        bool selected = i == navigation->account_focus;
-        set_row_focus(s_ui.account_rows[i], s_ui.account_markers[i], selected);
-        if (i == service->snapshot.account_count) {
-            set_label_text(s_ui.account_primary[i], "添加账户");
-            set_label_text(s_ui.account_secondary[i], "手机或电脑打开设备设置");
-        } else {
-            const quota_account_t *account = &service->snapshot.accounts[i];
-            char title[QUOTA_PLAN_MAX_BYTES + 20];
-            char plan[QUOTA_PLAN_MAX_BYTES + 1];
-            quota_copy_display_plan(account->plan, plan, sizeof(plan));
-            bool deepseek = account->provider == QUOTA_PROVIDER_DEEPSEEK;
-            snprintf(title, sizeof(title), "%s · %s", deepseek ? "DeepSeek" : "ChatGPT", plan);
-            char email[QUOTA_EMAIL_MAX_BYTES + 1];
-            quota_copy_display_ascii(account->email, email, sizeof(email));
-            if (deepseek)
-                quota_copy_display_ascii(service->snapshot.balances[i].label, email, sizeof(email));
-            set_label_text(s_ui.account_primary[i], title);
-            set_label_text(s_ui.account_secondary[i], email);
-        }
-    }
-    for (size_t i = visible_rows; i < QUOTA_MAX_ACCOUNTS + 1; i++) {
-        set_account_row_visible(i, false);
-    }
+    if (!service->auto_refresh)
+        snprintf(output, capacity, "手动");
+    else
+        snprintf(output, capacity, "%u 分钟", (unsigned)(service->refresh_seconds / 60));
 }
 
-static void render_interval(const quota_navigation_t *navigation,
-                            const quota_service_view_t *service)
+static void format_timeout(uint16_t seconds, char *output, size_t capacity)
 {
-    static const char *const labels[] = {
-        "自动刷新", "1 分钟", "5 分钟", "15 分钟", "30 分钟",
-    };
-    static const uint16_t seconds[] = {0, 60, 300, 900, 1800};
-    for (size_t i = 0; i < 5; i++) {
-        set_row_focus(s_ui.interval_rows[i], s_ui.interval_markers[i],
-                      i == navigation->interval_focus);
-        set_label_text(s_ui.interval_labels[i], labels[i]);
-        if (i == 0) {
-            set_label_text(s_ui.interval_values[i], service->auto_refresh ? "开" : "关");
-            lv_obj_set_style_text_color(s_ui.interval_values[i],
-                                        color(service->auto_refresh ? UI_MINT : UI_MUTED), 0);
-        } else {
-            set_label_text(s_ui.interval_values[i],
-                           seconds[i] == service->refresh_seconds ? "选中" : "");
-        }
-    }
+    if (seconds == 0)
+        snprintf(output, capacity, "从不");
+    else if (seconds < 60)
+        snprintf(output, capacity, "%u 秒", (unsigned)seconds);
+    else
+        snprintf(output, capacity, "%u 分钟", (unsigned)(seconds / 60));
 }
 
-static void render_setup(const quota_service_view_t *service)
+static void render_menu(const quota_navigation_t *navigation, const quota_service_view_t *service)
 {
-    if (service->portable.storage_error[0]) {
-        set_label_text(s_ui.setup_countdown,
-                       portable_storage_title(service->portable.storage_error));
-        lv_obj_set_style_text_color(s_ui.setup_countdown, color(UI_AMBER), 0);
-        set_label_text(s_ui.setup_hint, portable_error_text(service->portable.storage_error));
+    static const char *const labels[QUOTA_MENU_ITEMS] = {"热点设置", "USB 设置", "刷新频率",
+                                                         "自动息屏", "设备信息"};
+    char values[QUOTA_MENU_ITEMS][16] = {"", "", "", "", ""};
+    if (service->portable.setup_active)
+        snprintf(values[0], sizeof(values[0]), "已打开");
+    if (service->usb_window_active || service->usb_window_preparing)
+        snprintf(values[1], sizeof(values[1]), "已打开");
+    format_refresh(service, values[2], sizeof(values[2]));
+    format_timeout(service->screen_timeout_seconds, values[3], sizeof(values[3]));
+    title("菜单", "");
+    for (size_t i = 0; i < QUOTA_MENU_ITEMS; i++) {
+        list_row(i, i == navigation->menu_focus, true, labels[i], UI_INK, values[i], &quota_font_12,
+                 UI_MUTED, 120);
+    }
+    set_footer("上下 选择  OK 进入  长按OK 返回");
+}
+
+static void render_options(const quota_navigation_t *navigation,
+                           const quota_service_view_t *service)
+{
+    bool refresh = navigation->screen == QUOTA_SCREEN_REFRESH;
+    static const char *const refresh_labels[QUOTA_REFRESH_OPTIONS] = {"手动", "1 分钟", "5 分钟",
+                                                                      "15 分钟", "30 分钟"};
+    static const uint16_t refresh_seconds[QUOTA_REFRESH_OPTIONS] = {0, 60, 300, 900, 1800};
+    static const char *const sleep_labels[QUOTA_SCREEN_TIMEOUT_COUNT] = {
+        "从不", "30 秒", "1 分钟", "2 分钟", "5 分钟", "10 分钟"};
+    size_t count = refresh ? QUOTA_REFRESH_OPTIONS : QUOTA_SCREEN_TIMEOUT_COUNT;
+    title(refresh ? "刷新频率" : "自动息屏", "");
+    for (size_t i = 0; i < count; i++) {
+        bool current = refresh ? (i == 0 ? !service->auto_refresh
+                                         : service->auto_refresh &&
+                                               refresh_seconds[i] == service->refresh_seconds)
+                               : quota_screen_timeouts[i] == service->screen_timeout_seconds;
+        list_row(i, i == navigation->option_focus, true,
+                 refresh ? refresh_labels[i] : sleep_labels[i], UI_INK, current ? "●" : "",
+                 &quota_font_16, UI_MINT, 170);
+    }
+    set_status(refresh ? "所有账户使用同一频率" : "长按下键可随时息屏", UI_MUTED);
+    set_footer("上下 选择  OK 保存  长按OK 返回");
+}
+
+/* ---- device information and confirmation ---------------------------------------------------- */
+
+static void render_info(const quota_service_view_t *service, int battery_percent)
+{
+    const quota_portable_view_t *portable = &service->portable;
+    char wifi[64], address[24], level[12], ssid[QUOTA_SSID_MAX_BYTES + 1];
+    display_name(portable->network_ssid, "Wi-Fi", (unsigned)portable->selected_saved_network + 1,
+                 ssid, sizeof(ssid));
+    switch (portable->network_state) {
+    case QUOTA_PORTABLE_NETWORK_READY:
+    case QUOTA_PORTABLE_NETWORK_CONNECTED:
+    case QUOTA_PORTABLE_NETWORK_TIME_REQUIRED:
+        snprintf(wifi, sizeof(wifi), "已连接 %.40s", ssid);
+        break;
+    case QUOTA_PORTABLE_NETWORK_CONNECTING:
+        snprintf(wifi, sizeof(wifi), "连接中");
+        break;
+    case QUOTA_PORTABLE_NETWORK_ERROR:
+        snprintf(wifi, sizeof(wifi), "连接失败");
+        break;
+    default:
+        snprintf(wifi, sizeof(wifi), portable->saved_network_count ? "未连接" : "未设置");
+        break;
+    }
+    snprintf(address, sizeof(address), "%s", service->connected ? portable->network_ip : "--");
+    if (battery_percent >= 0 && battery_percent <= 100)
+        snprintf(level, sizeof(level), "%d%%", battery_percent);
+    else
+        snprintf(level, sizeof(level), "--");
+    char firmware[QUOTA_FIRMWARE_VERSION_BYTES + 1];
+    quota_copy_display_ascii(portable->firmware, firmware, sizeof(firmware));
+    const char *values[] = {wifi, address, service->clock_synchronized ? "已校时" : "未校时", level,
+                            firmware[0] ? firmware : "--"};
+    static const char *const labels[] = {"Wi-Fi", "IP", "时间", "电量", "固件"};
+    title("设备信息", "");
+    for (size_t i = 0; i < 5; i++)
+        list_row(i, false, false, labels[i], UI_INK, values[i], &quota_font_12, UI_MUTED, 76);
+    set_footer("OK 恢复出厂设置   长按OK 返回");
+}
+
+static void render_confirm(const quota_navigation_t *navigation,
+                           const quota_service_view_t *service)
+{
+    (void)service;
+    bool reset = navigation->confirm_kind == QUOTA_CONFIRM_FACTORY_RESET;
+    if (navigation->factory_resetting) { /* every key is ignored until the device restarts */
+        title("正在恢复出厂设置", "");
+        put_text(T_SUB, MARGIN, 62, CONTENT_W, 40, &quota_font_12, UI_MUTED, LV_TEXT_ALIGN_LEFT,
+                 "正在擦除，请勿断电。\n完成后 Passport 会重启。");
+        set_footer("擦除中，按键无效");
         return;
     }
-    char countdown[32];
-    if (service->usb_window_preparing) {
-        snprintf(countdown, sizeof(countdown), "正在准备 USB 设置");
-        lv_obj_set_style_text_color(s_ui.setup_countdown, color(UI_AMBER), 0);
-        bool saving = strcmp(service->portable.login_error, "storage_failed") == 0;
-        const char *waiting = saving ? "等待保存账户\n准备完成后开始 2 分钟配对"
-                                     : "请稍候\n准备完成后开始 2 分钟配对";
-        set_label_text(s_ui.setup_hint, waiting);
-    } else if (service->usb_window_active) {
-        uint32_t seconds = service->usb_window_seconds_left;
-        snprintf(countdown, sizeof(countdown), "配对窗口 %02u:%02u", (unsigned)(seconds / 60),
-                 (unsigned)(seconds % 60));
-        lv_obj_set_style_text_color(s_ui.setup_countdown, color(UI_MINT), 0);
-        set_label_text(s_ui.setup_hint, "请用 USB 线连接电脑\n在设置页连接设备");
-    } else {
-        snprintf(countdown, sizeof(countdown), "配对窗口已关闭");
-        lv_obj_set_style_text_color(s_ui.setup_countdown, color(UI_AMBER), 0);
-        const char *reopen = "长按 OK 返回并重新打开\n配置有效期为 2 分钟";
-        set_label_text(s_ui.setup_hint, reopen);
+    if (navigation->factory_failed) {
+        title("恢复出厂设置失败", "");
+        put_text(T_SUB, MARGIN, 62, CONTENT_W, 40, &quota_font_12, UI_AMBER, LV_TEXT_ALIGN_LEFT,
+                 "擦除失败，账户和设置保持不变。\n请重试，或检查设备存储。");
+        set_footer("长按OK 返回");
+        return;
     }
-    set_label_text(s_ui.setup_countdown, countdown);
+    title(reset ? "恢复出厂设置？" : "取消 ChatGPT 授权？", "");
+    put_text(T_SUB, MARGIN, 62, CONTENT_W, 56, &quota_font_12, UI_MUTED, LV_TEXT_ALIGN_LEFT,
+             reset ? "将删除全部账户、Wi-Fi 和设置，\nPassport 会重启。"
+                   : "授权会停止，已扫码的授权页\n也会失效。");
+    list_row(3, navigation->confirm_focus == 0, true, reset ? "取消" : "不取消", UI_INK, "",
+             &quota_font_12, UI_MUTED, 120);
+    list_row(4, navigation->confirm_focus == 1, true, reset ? "确认删除" : "取消授权", UI_RED, "",
+             &quota_font_12, UI_MUTED, 120);
+    set_footer("上下 选择  OK 确定  长按OK 返回");
 }
 
-static void render_sleep(const quota_navigation_t *navigation, const quota_service_view_t *service)
+/* ---- hotspot and USB ------------------------------------------------------------------------ */
+
+typedef struct {
+    char label[48];
+    quota_validation_t state;
+} result_row_t;
+
+static void add_result(result_row_t rows[LIST_ROWS], size_t *shown, size_t *total,
+                       const char *label, quota_validation_t state)
 {
-    for (size_t i = 0; i < QUOTA_SCREEN_TIMEOUT_COUNT; i++) {
-        set_row_focus(s_ui.sleep_rows[i], s_ui.sleep_markers[i], i == navigation->sleep_focus);
-        set_label_text(s_ui.sleep_values[i],
-                       quota_screen_timeouts[i] == service->screen_timeout_seconds ? "选中" : "");
+    (*total)++;
+    /* Failed first, then waiting, then the rest, so what needs work is always on screen. */
+    static const quota_validation_t order[] = {QUOTA_VALIDATION_FAILED, QUOTA_VALIDATION_PENDING,
+                                               QUOTA_VALIDATION_OK, QUOTA_VALIDATION_SAVED};
+    size_t rank = 0;
+    for (; rank < 4 && order[rank] != state; rank++) {
+    }
+    size_t at = *shown;
+    for (size_t i = 0; i < *shown; i++) {
+        size_t other = 0;
+        for (; other < 4 && order[other] != rows[i].state; other++) {
+        }
+        if (rank < other) {
+            at = i;
+            break;
+        }
+    }
+    if (at >= LIST_ROWS)
+        return;
+    size_t last = *shown < LIST_ROWS ? *shown : LIST_ROWS - 1;
+    for (size_t i = last; i > at; i--)
+        rows[i] = rows[i - 1];
+    snprintf(rows[at].label, sizeof(rows[at].label), "%s", label);
+    rows[at].state = state;
+    if (*shown < LIST_ROWS)
+        (*shown)++;
+}
+
+static const char *validation_text(quota_validation_t state, bool validating)
+{
+    switch (state) {
+    case QUOTA_VALIDATION_OK:
+        return "正常";
+    case QUOTA_VALIDATION_FAILED:
+        return "验证失败";
+    case QUOTA_VALIDATION_PENDING:
+        return validating ? "验证中" : "待验证";
+    default:
+        return "已保存";
     }
 }
+
+/* What the hotspot found when it was closed with 完成设置: every Wi-Fi and account, worst first. */
+/* What the hotspot found when it was closed with 完成设置: every Wi-Fi and account, worst first. */
+static void render_results(const quota_service_view_t *service)
+{
+    const quota_portable_view_t *portable = &service->portable;
+    result_row_t rows[LIST_ROWS];
+    size_t shown = 0, total = 0;
+    for (size_t i = 0; i < portable->saved_network_count && i < QUOTA_PORTABLE_NETWORKS; i++) {
+        char ssid[QUOTA_SSID_MAX_BYTES + 1];
+        display_name(portable->saved_network_ssids[i], "Wi-Fi", (unsigned)i + 1, ssid,
+                     sizeof(ssid));
+        add_result(rows, &shown, &total, ssid,
+                   (quota_validation_t)portable->saved_network_validation[i]);
+    }
+    for (size_t i = 0; i < service->snapshot.account_count; i++) {
+        const quota_account_t *account = &service->snapshot.accounts[i];
+        char name[48], detail[QUOTA_EMAIL_MAX_BYTES + 1];
+        if (account->provider == QUOTA_PROVIDER_DEEPSEEK) {
+            display_name(service->snapshot.balances[i].label, "DeepSeek", (unsigned)i + 1, detail,
+                         sizeof(detail));
+            if (strncmp(detail, "DeepSeek ", 9) == 0)
+                snprintf(name, sizeof(name), "%.47s", detail);
+            else
+                snprintf(name, sizeof(name), "DeepSeek %.36s", detail);
+        } else {
+            quota_mask_email(account->email, detail, sizeof(detail));
+            snprintf(name, sizeof(name), "ChatGPT %.36s", detail);
+        }
+        add_result(rows, &shown, &total, name, (quota_validation_t)portable->account_validation[i]);
+    }
+    char summary[40];
+    if (portable->validating)
+        snprintf(summary, sizeof(summary), "验证中");
+    else if (portable->failed_items > 0)
+        snprintf(summary, sizeof(summary), "%u 项失败", (unsigned)portable->failed_items);
+    else if (portable->pending_items > 0)
+        snprintf(summary, sizeof(summary), "%u 项待验证", (unsigned)portable->pending_items);
+    else
+        snprintf(summary, sizeof(summary), "全部正常");
+    title("验证结果", summary);
+    for (size_t i = 0; i < shown; i++) {
+        quota_validation_t state = rows[i].state;
+        int y = LIST_TOP + (int)i * LIST_ROW_H;
+        s_ui.want_row[i] = true;
+        if (!lv_color_eq(lv_obj_get_style_bg_color(s_ui.row_bg[i], 0), color(UI_BG)))
+            lv_obj_set_style_bg_color(s_ui.row_bg[i], color(UI_BG), 0);
+        put_text(T_ROW_LABEL(i), 22, y + 10, 146, 18, &quota_font_12, UI_INK, LV_TEXT_ALIGN_LEFT,
+                 rows[i].label);
+        put_text(T_ROW_VALUE(i), 168, y + 10, 52, 18, &quota_font_12,
+                 state == QUOTA_VALIDATION_FAILED ? UI_RED
+                 : state == QUOTA_VALIDATION_OK   ? UI_MINT
+                                                  : UI_MUTED,
+                 LV_TEXT_ALIGN_RIGHT, validation_text(state, portable->validating));
+    }
+    if (total > shown) {
+        char more[24];
+        snprintf(more, sizeof(more), "另有 %u 项", (unsigned)(total - shown));
+        set_status(more, UI_MUTED);
+    }
+}
+static void render_hotspot(const quota_navigation_t *navigation,
+                           const quota_service_view_t *service)
+{
+    const quota_portable_view_t *portable = &service->portable;
+    char head[24], right[16] = "";
+    unsigned page = navigation->hotspot_page % QUOTA_HOTSPOT_PAGES;
+    quota_hotspot_state_t state =
+        quota_hotspot_state(portable->storage_error[0] != '\0', portable->validating,
+                            portable->setup_active, portable->setup_ready, portable->setup_opening);
+    const char *ok = "OK 下一页";
+    if (portable->setup_active)
+        format_countdown(portable->setup_seconds_left, right, sizeof(right));
+    /* OK only does something where the footer says so: it turns pages, or opens a closed hotspot.
+     * While the hotspot opens, validates or reports an error it does nothing, so it can never
+     * restart a validation that is still using the Wi-Fi credentials. */
+    if (portable->storage_error[0]) {
+        title(portable_storage_title(portable->storage_error), "");
+        put_text(T_SUB, MARGIN, 62, CONTENT_W, 40, &quota_font_12, UI_AMBER, LV_TEXT_ALIGN_LEFT,
+                 portable_error_text(portable->storage_error));
+        set_footer("长按OK 返回");
+        return;
+    }
+    if (portable->validating || (state == QUOTA_HOTSPOT_CLOSED && portable->setup_result)) {
+        render_results(service);
+        set_footer(portable->validating ? "OK 请稍候  长按OK 返回" : "OK 重新开启  长按OK 返回");
+        return;
+    }
+    if (state == QUOTA_HOTSPOT_CLOSED) {
+        title("热点设置", right);
+        put_text(T_SUB, MARGIN, 62, CONTENT_W, 22, &quota_font_16, UI_MUTED, LV_TEXT_ALIGN_LEFT,
+                 "热点已关闭");
+        set_footer("OK 重新开启  长按OK 返回");
+        return;
+    }
+    if (state == QUOTA_HOTSPOT_BUSY) {
+        title("热点设置", right);
+        put_text(T_SUB, MARGIN, 62, CONTENT_W, 22, &quota_font_16, UI_MUTED, LV_TEXT_ALIGN_LEFT,
+                 "正在打开热点");
+        set_footer("OK 请稍候  长按OK 返回");
+        return;
+    }
+    snprintf(head, sizeof(head), "热点设置 %u/3", page + 1);
+    title(head, right);
+    char text[160];
+    if (page == 0) {
+        snprintf(text, sizeof(text), "WIFI:T:WPA;S:%s;P:%s;;", portable->setup_ssid,
+                 portable->setup_password);
+        render_qr_data(text);
+        snprintf(text, sizeof(text), "名称 %s", portable->setup_ssid);
+        put_text(T_SUB, MARGIN, 206, CONTENT_W, 16, &quota_font_12, UI_INK, LV_TEXT_ALIGN_CENTER,
+                 text);
+        snprintf(text, sizeof(text), "密码 %s", portable->setup_password);
+        put_text(T_NAME0, MARGIN, 226, CONTENT_W, 16, &quota_font_12, UI_INK, LV_TEXT_ALIGN_CENTER,
+                 text);
+    } else if (page == 1) {
+        render_qr_data(portable->setup_page_url);
+        put_text(T_SUB, MARGIN, 206, CONTENT_W, 16, &quota_font_12, UI_INK, LV_TEXT_ALIGN_CENTER,
+                 "连上热点后扫码");
+        put_text(T_NAME0, MARGIN, 226, CONTENT_W, 16, &quota_font_12, UI_INK, LV_TEXT_ALIGN_CENTER,
+                 "打开设置页");
+    } else {
+        put_text(T_SUB, MARGIN, 66, CONTENT_W, 22, &quota_font_16, UI_INK, LV_TEXT_ALIGN_CENTER,
+                 "在浏览器输入");
+        put_text(T_NAME0, MARGIN, 94, CONTENT_W, 20, &lv_font_montserrat_14, UI_INK,
+                 LV_TEXT_ALIGN_CENTER, "http://192.168.4.1");
+        put_text(T_NAME1, MARGIN, 140, CONTENT_W, 22, &quota_font_16, UI_INK, LV_TEXT_ALIGN_CENTER,
+                 "访问码");
+        put_text(T_VALUE0, MARGIN, 168, CONTENT_W, 20, &lv_font_montserrat_14, UI_MINT,
+                 LV_TEXT_ALIGN_CENTER, portable->setup_secret);
+        ok = "OK 回到第 1 页";
+    }
+    snprintf(text, sizeof(text), "%s  长按OK 关闭", ok);
+    set_footer(text);
+}
+
+static void render_usb(const quota_service_view_t *service)
+{
+    const quota_portable_view_t *portable = &service->portable;
+    bool open = service->usb_window_active || service->usb_window_preparing;
+    char right[16] = "";
+    if (service->usb_window_active)
+        format_countdown(service->usb_window_seconds_left, right, sizeof(right));
+    title("USB 设置", right);
+    if (portable->storage_error[0]) {
+        put_text(T_SUB, MARGIN, 62, CONTENT_W, 40, &quota_font_12, UI_AMBER, LV_TEXT_ALIGN_LEFT,
+                 portable_error_text(portable->storage_error));
+        set_footer(open ? "长按OK 返回" : "OK 重新打开  长按OK 返回");
+        return;
+    }
+    /* The page is connected first; USB setup is opened last, and again if the Passport rebooted
+     * while the page was still connecting. */
+    put_text(T_SUB, MARGIN, 54, CONTENT_W, 114, &quota_font_12, UI_INK, LV_TEXT_ALIGN_LEFT,
+             "1 用 USB 线连接 Passport\n2 用 Chrome 或 Edge 打开\n  zesming.github.io/\n"
+             "  ai-passport-quota\n3 点“连接 Passport”并选择串口\n页面连上前 Passport 若重启，\n"
+             "再打开一次 USB 设置即可");
+    const char *state;
+    if (service->usb_window_preparing)
+        state = "准备中";
+    else if (!service->usb_window_active)
+        state = "已结束";
+    else if (portable->validating)
+        state = "验证中";
+    else if (portable->saving)
+        state = "保存中";
+    else if (service->usb_page_connected)
+        state = "已连接";
+    else
+        state = "等待连接";
+    char text[40];
+    snprintf(text, sizeof(text), "状态：%s", state);
+    put_text(T_NAME0, MARGIN, 196, CONTENT_W, 22, &quota_font_16, open ? UI_MINT : UI_AMBER,
+             LV_TEXT_ALIGN_LEFT, text);
+    set_footer(open ? "长按OK 返回" : "OK 重新打开  长按OK 返回");
+}
+
+/* ---- ChatGPT authorization ------------------------------------------------------------------ */
+
+static void render_auth(const quota_service_view_t *service)
+{
+    const quota_portable_view_t *portable = &service->portable;
+    char right[16] = "", text[96];
+    bool active = login_active(portable);
+    if (active)
+        format_countdown(portable->login_seconds_left, right, sizeof(right));
+    title("ChatGPT 授权", right);
+    /* The phase a person sees: a line of what is happening and a line of what to do. */
+    const char *state = "等待批准", *headline = NULL, *hint = "";
+    switch (portable->login_state) {
+    case QUOTA_PORTABLE_LOGIN_QUEUED:
+    case QUOTA_PORTABLE_LOGIN_CONNECTING:
+        state = "连接中";
+        headline = "正在连接 ChatGPT…";
+        hint = "请稍候，Passport 正在联网";
+        break;
+    case QUOTA_PORTABLE_LOGIN_REQUESTING_CODE:
+        state = "获取验证码";
+        headline = "正在获取验证码…";
+        hint = "请稍候";
+        break;
+    case QUOTA_PORTABLE_LOGIN_EXCHANGING:
+        state = portable->saving ? "保存中" : "完成授权中";
+        headline = "已批准，正在保存授权…";
+        hint = "请勿断电";
+        break;
+    case QUOTA_PORTABLE_LOGIN_SUCCESS:
+        state = "成功";
+        headline = "授权成功";
+        hint = "正在查询额度";
+        break;
+    case QUOTA_PORTABLE_LOGIN_EXPIRED:
+        state = "失败，授权超时";
+        headline = "授权已过期";
+        hint = "请在设置页重新授权";
+        break;
+    case QUOTA_PORTABLE_LOGIN_CANCELED:
+        state = "已取消";
+        headline = "授权已取消";
+        break;
+    case QUOTA_PORTABLE_LOGIN_ERROR:
+        state = "失败";
+        headline = "授权未完成";
+        hint = portable_error_text(portable->login_error);
+        break;
+    case QUOTA_PORTABLE_LOGIN_IDLE:
+        state = "未开始";
+        headline = "没有进行中的授权";
+        break;
+    default:
+        break;
+    }
+    bool waiting =
+        portable->login_state == QUOTA_PORTABLE_LOGIN_WAITING && !portable->storage_error[0];
+    if (waiting) {
+        render_qr_data(portable->login_url);
+        /* Official page without scheme or query, e.g. auth.openai.com/codex/device */
+        const char *start = strstr(portable->login_url, "://");
+        snprintf(text, sizeof(text), "%.*s", 40, start ? start + 3 : portable->login_url);
+        char *query = strchr(text, '?');
+        if (query)
+            *query = '\0';
+        put_text(T_SUB, MARGIN, 202, CONTENT_W, 16, &quota_font_12, UI_MUTED, LV_TEXT_ALIGN_CENTER,
+                 text);
+        put_text(T_NAME0, MARGIN, 220, CONTENT_W, 16, &quota_font_12, UI_INK, LV_TEXT_ALIGN_CENTER,
+                 "输入验证码");
+        put_text(T_VALUE0, MARGIN, 236, CONTENT_W, 26, &lv_font_montserrat_20, UI_MINT,
+                 LV_TEXT_ALIGN_CENTER, portable->login_user_code);
+    } else if (portable->storage_error[0]) {
+        put_text(T_SUB, MARGIN, 80, CONTENT_W, 22, &quota_font_16, UI_AMBER, LV_TEXT_ALIGN_CENTER,
+                 portable_storage_title(portable->storage_error));
+        put_text(T_NAME0, MARGIN, 108, CONTENT_W, 40, &quota_font_12, UI_MUTED,
+                 LV_TEXT_ALIGN_CENTER, portable_error_text(portable->storage_error));
+    } else if (headline != NULL) {
+        bool bad = portable->login_state == QUOTA_PORTABLE_LOGIN_ERROR ||
+                   portable->login_state == QUOTA_PORTABLE_LOGIN_EXPIRED;
+        put_text(T_SUB, MARGIN, 96, CONTENT_W, 22, &quota_font_16, bad ? UI_AMBER : UI_INK,
+                 LV_TEXT_ALIGN_CENTER, headline);
+        put_text(T_NAME0, MARGIN, 126, CONTENT_W, 36, &quota_font_12, UI_MUTED,
+                 LV_TEXT_ALIGN_CENTER, hint);
+    }
+    snprintf(text, sizeof(text), "状态：%s", state);
+    put(SLOT_STATUS, MARGIN, waiting ? 268 : 276, CONTENT_W, 18, &quota_font_12,
+        portable->login_state == QUOTA_PORTABLE_LOGIN_ERROR ||
+                portable->login_state == QUOTA_PORTABLE_LOGIN_EXPIRED
+            ? UI_AMBER
+            : UI_MUTED,
+        LV_TEXT_ALIGN_LEFT, text);
+    set_footer(active ? "OK 取消授权   长按OK 回主页" : "OK 回主页   长按OK 回主页");
+}
+
+/* ---- text for errors ------------------------------------------------------------------------ */
 
 static const char *portable_storage_title(const char *code)
 {
@@ -919,21 +1133,19 @@ static const char *portable_storage_title(const char *code)
 static const char *portable_error_text(const char *code)
 {
     if (strcmp(code, "wifi_auth_failed") == 0)
-        return "密码错误 · 请重新配网";
+        return "Wi-Fi 密码错误或信号弱";
     if (strcmp(code, "wifi_not_found") == 0)
-        return "找不到网络 · 请检查热点";
+        return "找不到 Wi-Fi · 请检查热点";
     if (strcmp(code, "network_unavailable") == 0)
         return "服务连接失败或超时";
     if (strcmp(code, "rate_limited") == 0)
         return "请求过多 · 稍后重试";
-    if (strcmp(code, "login_disabled") == 0)
-        return "请开启设备码授权";
     if (strcmp(code, "codex_expired") == 0 || strcmp(code, "auth_required") == 0)
         return "需要重新授权";
     if (strcmp(code, "deepseek_invalid_key") == 0)
         return "密钥无效 · 请更换密钥";
     if (strcmp(code, "time_required") == 0)
-        return "时间待同步";
+        return "待校时";
     if (strcmp(code, "provider_response_invalid") == 0)
         return "服务暂不兼容 · 稍后重试";
     if (strcmp(code, "no_memory") == 0 || strcmp(code, "resource_error") == 0)
@@ -954,8 +1166,6 @@ static const char *portable_error_text(const char *code)
         return "存储记录不存在 · 请检查";
     if (strcmp(code, "canceled") == 0)
         return "操作已取消";
-    if (strcmp(code, "unsupported") == 0)
-        return "此操作暂不支持";
     if (strcmp(code, "busy") == 0)
         return "正在处理 · 请稍候";
     if (strcmp(code, "storage_failed") == 0)
@@ -967,277 +1177,20 @@ static const char *portable_error_text(const char *code)
     return "操作未完成 · 请重试";
 }
 
-static void render_network(const quota_portable_view_t *portable)
-{
-    for (size_t i = 0; i < QUOTA_PORTABLE_NETWORKS; i++) {
-        char line[QUOTA_SSID_MAX_BYTES + 24] = "";
-        char saved[QUOTA_SSID_MAX_BYTES + 1];
-        if (!portable->storage_error[0] && i < portable->saved_network_count) {
-            quota_copy_display_ascii(portable->saved_network_ssids[i], saved, sizeof(saved));
-            snprintf(line, sizeof(line), "%s%s",
-                     i == portable->selected_saved_network ? "* " : "  ", saved);
-        }
-        set_label_text(s_ui.network_saved[i], line);
-    }
-    char ssid[QUOTA_SSID_MAX_BYTES + 1];
-    quota_copy_display_ascii(portable->network_ssid, ssid, sizeof(ssid));
-    if (portable->storage_error[0]) {
-        set_label_text(s_ui.network_title, portable_storage_title(portable->storage_error));
-        set_label_text(s_ui.network_info, portable_error_text(portable->storage_error));
-        set_label_text(s_ui.network_hint,
-                       strcmp(portable->storage_error, "storage_write_unknown") == 0
-                           ? "设备正在确认保存"
-                           : "请保留数据并检查设备");
-        return;
-    }
-    set_label_text(s_ui.network_hint, "修改网络请打开设备设置");
-    set_label_text(s_ui.network_title, ssid[0] ? ssid : "尚未配置网络");
-    char info[80];
-    const char *status = "网络未连接";
-    switch (portable->network_state) {
-    case QUOTA_PORTABLE_NETWORK_READY:
-        status = "网络已连接";
-        break;
-    case QUOTA_PORTABLE_NETWORK_CONNECTING:
-        status = "正在连接网络";
-        break;
-    case QUOTA_PORTABLE_NETWORK_AP:
-        status = "设备设置已打开";
-        break;
-    case QUOTA_PORTABLE_NETWORK_TIME_REQUIRED:
-        status = "时间待同步";
-        break;
-    case QUOTA_PORTABLE_NETWORK_CONNECTED:
-        status = "网络已连接 · 时间待同步";
-        break;
-    case QUOTA_PORTABLE_NETWORK_ERROR:
-        status = portable_error_text(portable->network_error);
-        break;
-    default:
-        break;
-    }
-    snprintf(info, sizeof(info), "%s\n%s", status, portable->network_ip);
-    set_label_text(s_ui.network_info, info);
-}
-
-static void render_device_settings(const quota_navigation_t *navigation)
-{
-    for (size_t i = 0; i < 2; i++)
-        set_row_focus(s_ui.device_rows[i], s_ui.device_markers[i],
-                      navigation->device_settings_focus == i);
-}
-
-static void render_qr_data(const char *data)
-{
-    if (data == NULL || data[0] == '\0') {
-        s_ui.qr_data[0] = '\0';
-        lv_obj_add_flag(s_ui.qr, LV_OBJ_FLAG_HIDDEN);
-        return;
-    }
-    if (strcmp(s_ui.qr_data, data) != 0) {
-        if (strlen(data) >= sizeof(s_ui.qr_data) ||
-            lv_qrcode_update(s_ui.qr, data, (uint32_t)strlen(data)) != LV_RESULT_OK) {
-            lv_obj_add_flag(s_ui.qr, LV_OBJ_FLAG_HIDDEN);
-            set_label_text(s_ui.qr_title, "二维码生成失败");
-            return;
-        }
-        snprintf(s_ui.qr_data, sizeof(s_ui.qr_data), "%s", data);
-    }
-    lv_obj_clear_flag(s_ui.qr, LV_OBJ_FLAG_HIDDEN);
-}
-
-static void render_phone(const quota_navigation_t *navigation,
-                         const quota_portable_view_t *portable)
-{
-    bool second = navigation->phone_step == 1;
-    bool manual = navigation->phone_step == 2;
-    bool ready = portable->setup_active && portable->setup_ready && !portable->storage_error[0];
-    set_label_text(s_ui.header_info, manual ? "3/3" : second ? "2/3" : "1/3");
-    lv_obj_set_y(s_ui.qr, second ? 70 : 66);
-    lv_obj_set_y(s_ui.qr_hint, manual ? 229 : second ? 242 : 235);
-    lv_obj_set_height(s_ui.qr_hint, manual ? 34 : second ? 22 : 28);
-    lv_obj_t *manual_labels[] = {s_ui.manual_address, s_ui.manual_caption, s_ui.manual_secret};
-    for (size_t i = 0; i < 3; i++) {
-        if (manual && ready)
-            lv_obj_clear_flag(manual_labels[i], LV_OBJ_FLAG_HIDDEN);
-        else
-            lv_obj_add_flag(manual_labels[i], LV_OBJ_FLAG_HIDDEN);
-    }
-    char countdown[40];
-    snprintf(countdown, sizeof(countdown), "OK 下一步 · 窗口 %02u:%02u",
-             (unsigned)(portable->setup_seconds_left / 60),
-             (unsigned)(portable->setup_seconds_left % 60));
-    set_label_text(s_ui.qr_countdown, countdown);
-    if (portable->storage_error[0]) {
-        render_qr_data(NULL);
-        set_label_text(s_ui.manual_secret, "");
-        set_label_text(s_ui.qr_title, portable_storage_title(portable->storage_error));
-        set_label_text(s_ui.qr_hint, portable_error_text(portable->storage_error));
-        set_label_text(s_ui.qr_countdown,
-                       strcmp(portable->storage_error, "storage_write_unknown") == 0
-                           ? "等待保存确认"
-                           : "请保留数据并检查设备");
-        return;
-    }
-    if (!ready) {
-        render_qr_data(NULL);
-        set_label_text(s_ui.manual_secret, "");
-        if (portable->setup_active)
-            set_label_text(s_ui.qr_title, "正在打开热点");
-        else
-            set_label_text(s_ui.qr_title, "设置窗口已关闭");
-        set_label_text(s_ui.qr_hint, portable->setup_active ? "请稍候" : "按 OK 重新打开");
-        return;
-    }
-    if (manual) {
-        /* XXXX-XXXX-XXXX-XXXX on two lines of 9 characters. */
-        char grouped[24];
-        snprintf(grouped, sizeof(grouped), "%.9s\n%.9s", portable->setup_secret,
-                 portable->setup_secret + 10);
-        set_label_text(s_ui.manual_secret, grouped);
-        set_label_text(s_ui.qr_title, "手动打开设置");
-        const char *manual_hint = "手机或电脑连接设备热点\n在网页输入完整密钥";
-        set_label_text(s_ui.qr_hint, manual_hint);
-        render_qr_data(NULL);
-        return;
-    }
-    set_label_text(s_ui.manual_secret, "");
-    set_label_text(s_ui.qr_title, second ? "打开设置网页" : "连接设备热点");
-    char data[256];
-    if (second) {
-        snprintf(data, sizeof(data), "%s", portable->setup_page_url);
-        set_label_text(s_ui.qr_hint, "手机或电脑 · 扫码打开");
-    } else {
-        /* Firmware-generated AP name/password use QR-safe ASCII only. */
-        snprintf(data, sizeof(data), "WIFI:T:WPA;S:%s;P:%s;;", portable->setup_ssid,
-                 portable->setup_password);
-        char fallback[112];
-        snprintf(fallback, sizeof(fallback), "%s\n密码: %s", portable->setup_ssid,
-                 portable->setup_password);
-        set_label_text(s_ui.qr_hint, fallback);
-    }
-    render_qr_data(data);
-}
-
-static void render_auth(const quota_portable_view_t *portable)
-{
-    const char *title = "正在准备授权";
-    const char *hint = "请打开手机热点或可用网络";
-    bool show_qr = portable->login_state == QUOTA_PORTABLE_LOGIN_WAITING;
-    bool terminal = portable->login_state == QUOTA_PORTABLE_LOGIN_SUCCESS ||
-                    portable->login_state == QUOTA_PORTABLE_LOGIN_EXPIRED ||
-                    portable->login_state == QUOTA_PORTABLE_LOGIN_CANCELED ||
-                    portable->login_state == QUOTA_PORTABLE_LOGIN_ERROR;
-    bool saving = portable->login_state == QUOTA_PORTABLE_LOGIN_EXCHANGING &&
-                  strcmp(portable->login_error, "storage_failed") == 0;
-    set_label_text(s_ui.footer, saving     ? "正在保存 · 请稍候"
-                                : terminal ? "长按 OK 返回"
-                                           : "OK USB 设置 · 长按OK取消");
-    switch (portable->login_state) {
-    case QUOTA_PORTABLE_LOGIN_CONNECTING:
-        title = "正在连接网络";
-        break;
-    case QUOTA_PORTABLE_LOGIN_REQUESTING_CODE:
-        title = "正在获取验证码";
-        break;
-    case QUOTA_PORTABLE_LOGIN_WAITING:
-        title = "扫码打开官方验证页";
-        hint = portable->login_user_code;
-        break;
-    case QUOTA_PORTABLE_LOGIN_EXCHANGING:
-        title = portable->login_error[0] && strcmp(portable->login_error, "storage_failed") == 0
-                    ? "正在保存账户"
-                    : "正在完成授权";
-        hint = portable->login_error[0] && strcmp(portable->login_error, "storage_failed") == 0
-                   ? "请稍候 · 保存后再退出"
-                   : "请稍候";
-        break;
-    case QUOTA_PORTABLE_LOGIN_SUCCESS:
-        title = "账户已连接";
-        hint = "正在查询额度";
-        break;
-    case QUOTA_PORTABLE_LOGIN_EXPIRED:
-        title = "授权已过期";
-        hint = "返回并重新打开设备设置";
-        break;
-    case QUOTA_PORTABLE_LOGIN_CANCELED:
-        title = "授权已取消";
-        hint = "长按 OK 返回";
-        break;
-    case QUOTA_PORTABLE_LOGIN_ERROR:
-        title = "授权未完成";
-        hint = portable_error_text(portable->login_error);
-        break;
-    default:
-        break;
-    }
-    if (portable->storage_error[0]) {
-        title = portable_storage_title(portable->storage_error);
-        hint = portable_error_text(portable->storage_error);
-        show_qr = false;
-        set_label_text(s_ui.footer, strcmp(portable->storage_error, "storage_write_unknown") == 0
-                                        ? "保存待确认 · 请稍候"
-                                        : "请保留数据 · 检查设备");
-    }
-    set_label_text(s_ui.qr_title, title);
-    lv_obj_set_style_text_font(s_ui.qr_hint, show_qr ? &quota_font_16 : &quota_font_12, 0);
-    bool long_code = show_qr && strlen(hint) > 32;
-    unsigned qr_size = long_code ? 144 : 168;
-    if ((unsigned)lv_obj_get_width(s_ui.qr) != qr_size) {
-        lv_qrcode_set_size(s_ui.qr, qr_size);
-        s_ui.qr_data[0] = '\0';
-    }
-    lv_obj_set_x(s_ui.qr, long_code ? 48 : 36);
-    lv_obj_set_y(s_ui.qr_countdown, long_code ? 273 : 265);
-    char code[QUOTA_PORTABLE_USER_CODE_BYTES + 4];
-    if (long_code) {
-        size_t length = strlen(hint), at = 0;
-        for (size_t i = 0; i < length; i++) {
-            if (i && i % 16 == 0)
-                code[at++] = '\n';
-            code[at++] = hint[i];
-        }
-        code[at] = '\0';
-        lv_obj_set_style_text_font(s_ui.qr_hint, &quota_font_12, 0);
-        lv_obj_set_y(s_ui.qr, 66);
-        lv_obj_set_y(s_ui.qr_hint, 211);
-        lv_obj_set_height(s_ui.qr_hint, 56);
-        set_label_text(s_ui.qr_hint, code);
-    } else if (show_qr && strlen(hint) > 20) {
-        snprintf(code, sizeof(code), "%.16s\n%s", hint, hint + 16);
-        lv_obj_set_style_text_font(s_ui.qr_hint, &quota_font_12, 0);
-        lv_obj_set_y(s_ui.qr, 66);
-        lv_obj_set_y(s_ui.qr_hint, 235);
-        lv_obj_set_height(s_ui.qr_hint, 28);
-        set_label_text(s_ui.qr_hint, code);
-    } else {
-        lv_obj_set_y(s_ui.qr, 70);
-        lv_obj_set_y(s_ui.qr_hint, 242);
-        lv_obj_set_height(s_ui.qr_hint, 22);
-        set_label_text(s_ui.qr_hint, hint);
-    }
-    render_qr_data(show_qr ? portable->login_url : NULL);
-    char countdown[40];
-    snprintf(countdown, sizeof(countdown), "有效时间 %02u:%02u",
-             (unsigned)(portable->login_seconds_left / 60),
-             (unsigned)(portable->login_seconds_left % 60));
-    set_label_text(s_ui.qr_countdown,
-                   portable->storage_error[0]
-                       ? (strcmp(portable->storage_error, "storage_write_unknown") == 0
-                              ? "等待保存确认"
-                              : "请检查设备存储")
-                       : countdown);
-}
+/* ---- entry points --------------------------------------------------------------------------- */
 
 void quota_ui_init(void)
 {
+    if (s_root != NULL)
+        return; /* the pool is built once for the life of the device */
+    memset(&s_ui, 0, sizeof(s_ui));
     s_root = lv_obj_create(NULL);
     lv_obj_remove_style_all(s_root);
     lv_obj_set_style_bg_color(s_root, color(UI_BG), 0);
     lv_obj_set_style_bg_opa(s_root, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(s_root, LV_OBJ_FLAG_SCROLLABLE);
-    s_page = NULL;
-    s_screen = (quota_screen_t)-1;
+    lv_obj_remove_flag(s_root, LV_OBJ_FLAG_SCROLLABLE);
+    create_pool();
+    lv_screen_load(s_root);
 }
 
 void quota_ui_render(const quota_navigation_t *navigation, const quota_service_view_t *service,
@@ -1245,71 +1198,48 @@ void quota_ui_render(const quota_navigation_t *navigation, const quota_service_v
 {
     if (navigation == NULL || service == NULL || s_root == NULL)
         return;
-    if (s_screen != navigation->screen || s_page == NULL) {
-        create_page(navigation->screen);
-        lv_screen_load(s_root);
-    }
-
-    bool battery_known = battery_percent >= 0 && battery_percent <= 100;
-    int fill_width = battery_known ? (22 * battery_percent + 50) / 100 : 0;
-    lv_obj_set_width(s_ui.battery_fill, fill_width);
-    if (fill_width == 0)
-        lv_obj_add_flag(s_ui.battery_fill, LV_OBJ_FLAG_HIDDEN);
-    else
-        lv_obj_clear_flag(s_ui.battery_fill, LV_OBJ_FLAG_HIDDEN);
-    if (battery_known)
-        lv_obj_add_flag(s_ui.battery_unknown, LV_OBJ_FLAG_HIDDEN);
-    else
-        lv_obj_clear_flag(s_ui.battery_unknown, LV_OBJ_FLAG_HIDDEN);
-    char clock_text[16];
-    format_clock(service->clock_synchronized ? service->now_epoch : 0, clock_text,
-                 sizeof(clock_text));
-    set_label_text(s_ui.clock, clock_text);
-    for (size_t i = 0; i < 2; i++) {
-        lv_color_t tone = color(service->connected ? UI_INK : UI_DIM);
-        if (!lv_color_eq(lv_obj_get_style_line_color(s_ui.wifi_lines[i], 0), tone))
-            lv_obj_set_style_line_color(s_ui.wifi_lines[i], tone, 0);
-    }
-    lv_color_t wifi_tone = color(service->connected ? UI_INK : UI_DIM);
-    if (!lv_color_eq(lv_obj_get_style_bg_color(s_ui.wifi_dot, 0), wifi_tone))
-        lv_obj_set_style_bg_color(s_ui.wifi_dot, wifi_tone, 0);
-    if (service->connected)
-        lv_obj_add_flag(s_ui.wifi_slash, LV_OBJ_FLAG_HIDDEN);
-    else
-        lv_obj_clear_flag(s_ui.wifi_slash, LV_OBJ_FLAG_HIDDEN);
-
+    s_ui.want_logo = s_ui.want_qr = false;
+    memset(s_ui.want_bar, 0, sizeof(s_ui.want_bar));
+    memset(s_ui.want_row, 0, sizeof(s_ui.want_row));
+    memset(s_ui.want_marker, 0, sizeof(s_ui.want_marker));
+    s_sleep_notice = navigation->sleep_notice;
+    render_status_bar(service, battery_percent);
     switch (navigation->screen) {
-    case QUOTA_SCREEN_HOME:
-        render_home(navigation, service);
+    case QUOTA_SCREEN_MENU:
+        render_menu(navigation, service);
         break;
-    case QUOTA_SCREEN_SETTINGS:
-        render_settings(navigation, service);
-        break;
-    case QUOTA_SCREEN_ACCOUNTS:
-        render_accounts(navigation, service);
-        break;
-    case QUOTA_SCREEN_INTERVAL:
-        render_interval(navigation, service);
-        break;
+    case QUOTA_SCREEN_REFRESH:
     case QUOTA_SCREEN_SLEEP:
-        render_sleep(navigation, service);
+        render_options(navigation, service);
         break;
-    case QUOTA_SCREEN_SETUP:
-        render_setup(service);
+    case QUOTA_SCREEN_INFO:
+        render_info(service, battery_percent);
         break;
-    case QUOTA_SCREEN_NETWORK:
-        render_network(&service->portable);
+    case QUOTA_SCREEN_CONFIRM:
+        render_confirm(navigation, service);
         break;
-    case QUOTA_SCREEN_DEVICE_SETTINGS:
-        render_device_settings(navigation);
+    case QUOTA_SCREEN_HOTSPOT:
+        render_hotspot(navigation, service);
         break;
-    case QUOTA_SCREEN_PHONE:
-        render_phone(navigation, &service->portable);
+    case QUOTA_SCREEN_USB:
+        render_usb(service);
         break;
     case QUOTA_SCREEN_AUTH:
-        render_auth(&service->portable);
+        render_auth(service);
         break;
     default:
+        render_home(navigation, service);
         break;
     }
+    show(s_ui.logo, s_ui.want_logo);
+    show(s_ui.qr, s_ui.want_qr);
+    for (size_t i = 0; i < 2; i++)
+        show(s_ui.bar[i], s_ui.want_bar[i]);
+    for (size_t i = 0; i < LIST_ROWS; i++) {
+        show(s_ui.row_bg[i], s_ui.want_row[i]);
+        lv_opa_t opa = s_ui.want_marker[i] ? LV_OPA_COVER : LV_OPA_TRANSP;
+        if (lv_obj_get_style_border_opa(s_ui.row_bg[i], 0) != opa)
+            lv_obj_set_style_border_opa(s_ui.row_bg[i], opa, 0);
+    }
+    finish_slots();
 }

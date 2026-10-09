@@ -28,6 +28,9 @@ CONFIG_LV_FONT_MONTSERRAT_12=y
 CONFIG_LV_FONT_MONTSERRAT_14=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
 CONFIG_LV_USE_QRCODE=y
+# 界面没有用到 Span 控件和默认主题（所有对象都自己设样式）；关闭可省 LVGL 内存池。
+CONFIG_LV_USE_SPAN=n
+CONFIG_LV_USE_THEME_DEFAULT=n
 # LVGL 内置 malloc 池大小(KB)。它是独立静态区、不与系统堆共享,配大了会白白占用 RAM。
 # 当前额度界面使用 24KB；复杂 UI 需重新测量内存。
 CONFIG_LV_MEM_SIZE_KILOBYTES=24

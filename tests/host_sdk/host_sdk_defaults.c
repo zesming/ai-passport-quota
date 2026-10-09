@@ -189,6 +189,22 @@ WEAK esp_err_t nvs_flash_init(void)
 {
     return ESP_OK;
 }
+WEAK esp_err_t nvs_flash_deinit_partition(const char *partition)
+{
+    (void)partition;
+    return ESP_OK;
+}
+WEAK esp_err_t nvs_flash_erase_partition(const char *partition)
+{
+    (void)partition;
+    return ESP_OK;
+}
+WEAK esp_err_t nvs_flash_init_partition(const char *partition)
+{
+    (void)partition;
+    return ESP_OK;
+}
+WEAK void esp_restart(void) {}
 
 #include "esp_http_server.h"
 

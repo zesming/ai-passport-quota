@@ -44,6 +44,9 @@ void quota_portable_service_renew(void);
 void quota_portable_service_cancel_auth(void);
 void quota_portable_service_refresh(void);
 void quota_portable_service_reconnect(void);
+/* Only the physical interface asks for this. The next tick of the network task stops setup and
+ * USB, erases all stored data and restarts; a failed erase shows as a storage error. */
+void quota_portable_service_factory_reset(void);
 void quota_portable_service_settings(uint16_t interval, bool automatic, uint16_t screen_timeout);
 void quota_portable_service_select(const char *account_id);
 bool quota_portable_service_selected(char account_id[QUOTA_ACCOUNT_ID_BYTES + 1]);

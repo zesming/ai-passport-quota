@@ -179,6 +179,35 @@ bool quota_store_erase_retired(bool default_partition_ready)
     return ok;
 }
 
+quota_factory_reset_result_t quota_store_factory_reset(void)
+{
+    /* Without an initialized store the catalog was never deleted, so a failed erase leaves the
+       data untouched and must be reported as a failure rather than a restart-worthy result. */
+    bool catalog_deleted = s_ready;
+    if (s_ready) {
+        nvs_handle_t handle;
+        if (nvs_open_from_partition(STORE_PARTITION, STORE_NAMESPACE, NVS_READWRITE, &handle) !=
+            ESP_OK)
+            return QUOTA_FACTORY_RESET_FAILED;
+        esp_err_t error = nvs_erase_key(handle, "model_v2");
+        if (error == ESP_OK || error == ESP_ERR_NVS_NOT_FOUND)
+            error = nvs_commit(handle);
+        nvs_close(handle);
+        if (error != ESP_OK)
+            return QUOTA_FACTORY_RESET_FAILED;
+    }
+    bool ok = quota_store_erase_retired(true);
+    if (s_ready) {
+        s_ready = false;
+        ok = nvs_flash_deinit_partition(STORE_PARTITION) == ESP_OK && ok;
+    }
+    ok = nvs_flash_erase_partition(STORE_PARTITION) == ESP_OK && ok;
+    s_ready = nvs_flash_init_partition(STORE_PARTITION) == ESP_OK;
+    if (ok && s_ready)
+        return QUOTA_FACTORY_RESET_OK;
+    return catalog_deleted ? QUOTA_FACTORY_RESET_CATALOG_GONE : QUOTA_FACTORY_RESET_FAILED;
+}
+
 quota_portable_credential_t *quota_store_credential_acquire(void)
 {
     if (s_credential_record)

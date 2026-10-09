@@ -214,12 +214,17 @@ void quota_format_duration(uint64_t seconds, char *output, size_t capacity)
 {
     if (output == NULL || capacity == 0)
         return;
-    uint64_t hours = seconds / 3600;
-    if (hours == 0) {
-        snprintf(output, capacity, "<1h");
+    uint64_t days = seconds / 86400, hours = seconds % 86400 / 3600, minutes = seconds % 3600 / 60;
+    if (days > 0) {
+        snprintf(output, capacity, "%llu 天 %llu 小时", (unsigned long long)days,
+                 (unsigned long long)hours);
+    } else if (hours > 0) {
+        snprintf(output, capacity, "%llu 小时 %llu 分", (unsigned long long)hours,
+                 (unsigned long long)minutes);
+    } else if (minutes > 0) {
+        snprintf(output, capacity, "%llu 分钟", (unsigned long long)minutes);
     } else {
-        snprintf(output, capacity, "%llud %lluh", (unsigned long long)(hours / 24),
-                 (unsigned long long)(hours % 24));
+        snprintf(output, capacity, "不到 1 分钟");
     }
 }
 
@@ -231,14 +236,13 @@ void quota_format_reset_time(const quota_window_t *window, uint64_t now, bool cl
     if (window == NULL || !window->present || !window->has_resets_at) {
         snprintf(output, capacity, "重置时间未知");
     } else if (!clock_synchronized) {
-        snprintf(output, capacity, "时间待同步");
+        snprintf(output, capacity, "待校时");
     } else if (now >= window->resets_at) {
         snprintf(output, capacity, "等待新数据");
     } else {
         char remaining[32];
         quota_format_duration(window->resets_at - now, remaining, sizeof(remaining));
-        /* U+F021 is the refresh glyph in the built-in font fallback. */
-        snprintf(output, capacity, "\xEF\x80\xA1 %s", remaining);
+        snprintf(output, capacity, "%s后重置", remaining);
     }
 }
 
@@ -296,6 +300,7 @@ void quota_display_tick(quota_display_state_t *display, uint64_t now_ms, uint16_
 {
     if (display == NULL)
         return;
+    display->session_open = usb_window_active;
     /* Start a fresh idle period when the USB window closes, including on clock rollback. */
     if (usb_window_active || now_ms < display->last_input_ms)
         display->last_input_ms = now_ms;
@@ -323,7 +328,10 @@ bool quota_display_handle_key(quota_display_state_t *display, uint64_t now_ms,
         return false;
     }
     if (event == QUOTA_KEY_LONG && down_key) {
-        display->sleeping = true;
+        if (display->session_open)
+            display->sleep_blocked = true;
+        else
+            display->sleeping = true;
         return false;
     }
     return event != QUOTA_KEY_PRESS;
@@ -331,7 +339,7 @@ bool quota_display_handle_key(quota_display_state_t *display, uint64_t now_ms,
 
 void quota_navigation_init(quota_navigation_t *navigation, bool configured,
                            uint16_t refresh_seconds, bool auto_refresh,
-                           uint16_t screen_timeout_seconds, uint8_t account_count)
+                           uint16_t screen_timeout_seconds)
 {
     if (navigation == NULL)
         return;
@@ -344,10 +352,20 @@ void quota_navigation_init(quota_navigation_t *navigation, bool configured,
     navigation->screen_timeout_seconds = quota_screen_timeout_is_valid(screen_timeout_seconds)
                                              ? screen_timeout_seconds
                                              : QUOTA_SCREEN_TIMEOUT_DEFAULT_SECONDS;
-    navigation->screen = configured ? QUOTA_SCREEN_HOME : QUOTA_SCREEN_PHONE;
-    navigation->setup_return_screen = QUOTA_SCREEN_HOME;
-    if (account_count == 0)
-        navigation->selected_account = 0;
+    navigation->screen = QUOTA_SCREEN_HOME;
+    navigation->return_screen = QUOTA_SCREEN_HOME;
+}
+
+void quota_navigation_notice(quota_navigation_t *navigation, uint64_t now_ms, bool raise)
+{
+    if (navigation == NULL)
+        return;
+    if (raise) {
+        navigation->sleep_notice = true;
+        navigation->sleep_notice_until_ms = now_ms + QUOTA_NOTICE_MS;
+    } else if (navigation->sleep_notice && now_ms >= navigation->sleep_notice_until_ms) {
+        navigation->sleep_notice = false;
+    }
 }
 
 void quota_navigation_sync_settings(quota_navigation_t *navigation, uint16_t refresh_seconds,
@@ -362,7 +380,7 @@ void quota_navigation_sync_settings(quota_navigation_t *navigation, uint16_t ref
     }
 }
 
-static const uint16_t quota_refresh_intervals[] = {60, 300, 900, 1800};
+static const uint16_t quota_refresh_intervals[QUOTA_REFRESH_OPTIONS - 1] = {60, 300, 900, 1800};
 
 static uint8_t wrap_index(uint8_t current, int direction, uint8_t count)
 {
@@ -373,146 +391,301 @@ static uint8_t wrap_index(uint8_t current, int direction, uint8_t count)
     return (uint8_t)((current + 1) % count);
 }
 
-quota_action_t quota_navigation_handle(quota_navigation_t *navigation, quota_input_t input,
-                                       uint8_t account_count)
+/* Without an account the menu always opens on its first item, so "long OK, DOWN, OK" reaches USB
+ * from the welcome screen. With an account it keeps the item that was last in use. */
+static void enter_menu(quota_navigation_t *navigation, uint8_t account_count)
 {
-    if (navigation == NULL || account_count > QUOTA_MAX_ACCOUNTS)
-        return QUOTA_ACTION_NONE;
-    if (input == QUOTA_INPUT_UP || input == QUOTA_INPUT_DOWN) {
-        int direction = input == QUOTA_INPUT_UP ? -1 : 1;
-        if (navigation->screen == QUOTA_SCREEN_HOME && account_count > 1) {
-            navigation->selected_account =
-                wrap_index(navigation->selected_account, direction, account_count);
-            return QUOTA_ACTION_PERSIST_SELECTION;
-        }
-        if (navigation->screen == QUOTA_SCREEN_SETTINGS) {
-            navigation->settings_focus = wrap_index(navigation->settings_focus, direction, 6);
-        } else if (navigation->screen == QUOTA_SCREEN_ACCOUNTS) {
-            navigation->account_focus =
-                wrap_index(navigation->account_focus, direction, (uint8_t)(account_count + 1));
-        } else if (navigation->screen == QUOTA_SCREEN_INTERVAL) {
-            navigation->interval_focus = wrap_index(navigation->interval_focus, direction, 5);
-        } else if (navigation->screen == QUOTA_SCREEN_SLEEP) {
-            navigation->sleep_focus =
-                wrap_index(navigation->sleep_focus, direction, QUOTA_SCREEN_TIMEOUT_COUNT);
-        } else if (navigation->screen == QUOTA_SCREEN_PHONE) {
-            navigation->phone_step = wrap_index(navigation->phone_step, direction, 3);
-        } else if (navigation->screen == QUOTA_SCREEN_DEVICE_SETTINGS) {
-            navigation->device_settings_focus =
-                wrap_index(navigation->device_settings_focus, direction, 2);
-        }
-        return QUOTA_ACTION_NONE;
-    }
+    navigation->screen = QUOTA_SCREEN_MENU;
+    if (account_count == 0 || navigation->menu_focus >= QUOTA_MENU_ITEMS)
+        navigation->menu_focus = 0;
+}
 
-    if (input == QUOTA_INPUT_OK_LONG) {
-        if (navigation->screen == QUOTA_SCREEN_HOME) {
-            navigation->screen = QUOTA_SCREEN_SETTINGS;
-        } else if (navigation->screen == QUOTA_SCREEN_SETUP) {
-            navigation->screen = navigation->setup_return_screen;
-        } else if (navigation->screen == QUOTA_SCREEN_PHONE) {
-            navigation->screen = navigation->setup_return_screen;
-            return QUOTA_ACTION_CLOSE_PHONE;
-        } else if (navigation->screen == QUOTA_SCREEN_AUTH) {
-            navigation->screen = QUOTA_SCREEN_ACCOUNTS;
-            return QUOTA_ACTION_CANCEL_AUTH;
-        } else if (navigation->screen == QUOTA_SCREEN_INTERVAL ||
-                   navigation->screen == QUOTA_SCREEN_SLEEP ||
-                   navigation->screen == QUOTA_SCREEN_NETWORK ||
-                   navigation->screen == QUOTA_SCREEN_ACCOUNTS) {
-            navigation->screen = QUOTA_SCREEN_SETTINGS;
-        } else if (navigation->screen == QUOTA_SCREEN_DEVICE_SETTINGS) {
-            navigation->screen = QUOTA_SCREEN_SETTINGS;
-        } else {
-            navigation->screen = QUOTA_SCREEN_HOME;
-        }
-        return QUOTA_ACTION_NONE;
-    }
+/* Show the hotspot screen. Only a closed hotspot is opened: while one is showing, opening or
+ * validating, a second open would restart the session or abort the validation. */
+static quota_action_t enter_hotspot(quota_navigation_t *navigation, quota_screen_t from,
+                                    quota_navigation_context_t context)
+{
+    navigation->return_screen = from;
+    navigation->hotspot_page = 0;
+    navigation->screen = QUOTA_SCREEN_HOTSPOT;
+    return context.hotspot == QUOTA_HOTSPOT_CLOSED ? QUOTA_ACTION_OPEN_HOTSPOT : QUOTA_ACTION_NONE;
+}
 
-    if (input != QUOTA_INPUT_OK_SHORT)
-        return QUOTA_ACTION_NONE;
+static void enter_option_list(quota_navigation_t *navigation, quota_screen_t screen)
+{
+    navigation->screen = screen;
+    navigation->option_focus = 0;
+    if (screen == QUOTA_SCREEN_REFRESH) {
+        for (size_t i = 0; navigation->auto_refresh && i < QUOTA_REFRESH_OPTIONS - 1; i++) {
+            if (quota_refresh_intervals[i] == navigation->refresh_seconds)
+                navigation->option_focus = (uint8_t)(i + 1);
+        }
+    } else {
+        for (size_t i = 0; i < QUOTA_SCREEN_TIMEOUT_COUNT; i++) {
+            if (quota_screen_timeouts[i] == navigation->screen_timeout_seconds)
+                navigation->option_focus = (uint8_t)i;
+        }
+    }
+}
+
+static void enter_confirm(quota_navigation_t *navigation, quota_confirm_kind_t kind)
+{
+    navigation->return_screen = navigation->screen;
+    navigation->confirm_kind = kind;
+    navigation->confirm_focus = 0;
+    navigation->factory_resetting = false;
+    navigation->factory_failed = false;
+    navigation->screen = QUOTA_SCREEN_CONFIRM;
+}
+
+static quota_action_t handle_move(quota_navigation_t *navigation, int direction,
+                                  quota_navigation_context_t context)
+{
     switch (navigation->screen) {
     case QUOTA_SCREEN_HOME:
-        return navigation->configured ? QUOTA_ACTION_REFRESH : QUOTA_ACTION_NONE;
-    case QUOTA_SCREEN_SETTINGS:
-        if (navigation->settings_focus == 0) {
-            navigation->screen = QUOTA_SCREEN_ACCOUNTS;
-            navigation->account_focus = 0;
-        } else if (navigation->settings_focus == 1) {
-            navigation->screen = QUOTA_SCREEN_INTERVAL;
-            navigation->interval_focus = 0;
-            for (size_t i = 0; navigation->auto_refresh && i < 4; i++) {
-                if (quota_refresh_intervals[i] == navigation->refresh_seconds) {
-                    navigation->interval_focus = (uint8_t)(i + 1);
-                    break;
-                }
-            }
-        } else if (navigation->settings_focus == 2) {
-            return QUOTA_ACTION_REFRESH;
-        } else if (navigation->settings_focus == 3) {
-            navigation->screen = QUOTA_SCREEN_SLEEP;
-            navigation->sleep_focus = 0;
-            for (size_t i = 0; i < QUOTA_SCREEN_TIMEOUT_COUNT; i++) {
-                if (quota_screen_timeouts[i] == navigation->screen_timeout_seconds) {
-                    navigation->sleep_focus = (uint8_t)i;
-                    break;
-                }
-            }
-        } else if (navigation->settings_focus == 4) {
-            navigation->screen = QUOTA_SCREEN_NETWORK;
-        } else {
-            navigation->device_settings_focus = 0;
-            navigation->screen = QUOTA_SCREEN_DEVICE_SETTINGS;
-        }
-        return QUOTA_ACTION_NONE;
-    case QUOTA_SCREEN_ACCOUNTS:
-        if (navigation->account_focus < account_count) {
-            navigation->selected_account = navigation->account_focus;
-            navigation->screen = QUOTA_SCREEN_HOME;
+        if (context.account_count > 1) {
+            navigation->selected_account =
+                wrap_index(navigation->selected_account, direction, context.account_count);
             return QUOTA_ACTION_PERSIST_SELECTION;
         }
-        navigation->setup_return_screen = QUOTA_SCREEN_ACCOUNTS;
-        navigation->screen = QUOTA_SCREEN_PHONE;
-        navigation->phone_step = 0;
-        return QUOTA_ACTION_OPEN_PHONE;
-    case QUOTA_SCREEN_INTERVAL: {
-        if (navigation->interval_focus == 0) {
-            navigation->auto_refresh = !navigation->auto_refresh;
-        } else {
-            navigation->refresh_seconds = quota_refresh_intervals[navigation->interval_focus - 1];
+        break;
+    case QUOTA_SCREEN_MENU:
+        navigation->menu_focus = wrap_index(navigation->menu_focus, direction, QUOTA_MENU_ITEMS);
+        break;
+    case QUOTA_SCREEN_REFRESH:
+        navigation->option_focus =
+            wrap_index(navigation->option_focus, direction, QUOTA_REFRESH_OPTIONS);
+        break;
+    case QUOTA_SCREEN_SLEEP:
+        navigation->option_focus =
+            wrap_index(navigation->option_focus, direction, QUOTA_SCREEN_TIMEOUT_COUNT);
+        break;
+    case QUOTA_SCREEN_HOTSPOT:
+        navigation->hotspot_page =
+            wrap_index(navigation->hotspot_page, direction, QUOTA_HOTSPOT_PAGES);
+        break;
+    case QUOTA_SCREEN_CONFIRM:
+        if (!navigation->factory_failed)
+            navigation->confirm_focus = wrap_index(navigation->confirm_focus, direction, 2);
+        break;
+    default:
+        break;
+    }
+    return QUOTA_ACTION_NONE;
+}
+
+/* Long OK always goes back one level and never does anything destructive. */
+static quota_action_t handle_back(quota_navigation_t *navigation,
+                                  quota_navigation_context_t context)
+{
+    switch (navigation->screen) {
+    case QUOTA_SCREEN_HOME:
+        enter_menu(navigation, context.account_count);
+        break;
+    case QUOTA_SCREEN_MENU:
+        navigation->screen = QUOTA_SCREEN_HOME;
+        break;
+    case QUOTA_SCREEN_HOTSPOT:
+        navigation->screen = navigation->return_screen;
+        if (navigation->screen == QUOTA_SCREEN_MENU)
+            enter_menu(navigation, context.account_count);
+        return QUOTA_ACTION_CLOSE_HOTSPOT;
+    case QUOTA_SCREEN_USB:
+        navigation->screen = navigation->return_screen;
+        if (navigation->screen == QUOTA_SCREEN_MENU)
+            enter_menu(navigation, context.account_count);
+        return QUOTA_ACTION_CLOSE_USB;
+    case QUOTA_SCREEN_AUTH:
+        navigation->screen = QUOTA_SCREEN_HOME; /* authorization carries on in the background */
+        break;
+    case QUOTA_SCREEN_CONFIRM:
+        navigation->factory_failed = false;
+        navigation->screen = navigation->return_screen;
+        break;
+    default: /* option lists and device information */
+        enter_menu(navigation, context.account_count);
+        break;
+    }
+    return QUOTA_ACTION_NONE;
+}
+
+static quota_action_t handle_ok(quota_navigation_t *navigation, quota_navigation_context_t context)
+{
+    switch (navigation->screen) {
+    case QUOTA_SCREEN_HOME:
+        if (context.auth_active) {
+            navigation->screen = QUOTA_SCREEN_AUTH;
+        } else if (context.account_count == 0) {
+            return enter_hotspot(navigation, QUOTA_SCREEN_HOME, context);
+        } else if (navigation->configured) {
+            return QUOTA_ACTION_REFRESH;
+        }
+        break;
+    case QUOTA_SCREEN_MENU:
+        switch (navigation->menu_focus) {
+        case 0:
+            return enter_hotspot(navigation, QUOTA_SCREEN_MENU, context);
+        case 1:
+            navigation->return_screen = QUOTA_SCREEN_MENU;
+            navigation->screen = QUOTA_SCREEN_USB;
+            /* An open window keeps its session and its clock: opening again would replace both. */
+            return context.usb_window_open ? QUOTA_ACTION_NONE : QUOTA_ACTION_OPEN_USB;
+        case 2:
+            enter_option_list(navigation, QUOTA_SCREEN_REFRESH);
+            break;
+        case 3:
+            enter_option_list(navigation, QUOTA_SCREEN_SLEEP);
+            break;
+        default:
+            navigation->screen = QUOTA_SCREEN_INFO;
+            break;
+        }
+        break;
+    case QUOTA_SCREEN_REFRESH:
+        if (navigation->option_focus == 0) {
+            navigation->auto_refresh = false;
+        } else if (navigation->option_focus < QUOTA_REFRESH_OPTIONS) {
+            navigation->refresh_seconds = quota_refresh_intervals[navigation->option_focus - 1];
             navigation->auto_refresh = true;
         }
-        navigation->screen = QUOTA_SCREEN_SETTINGS;
+        enter_menu(navigation, context.account_count);
         return QUOTA_ACTION_APPLY_SETTINGS;
-    }
-    case QUOTA_SCREEN_SETUP:
-        return QUOTA_ACTION_NONE;
-    case QUOTA_SCREEN_NETWORK:
-        return QUOTA_ACTION_NONE;
-    case QUOTA_SCREEN_DEVICE_SETTINGS:
-        navigation->phone_step = 0;
-        navigation->setup_return_screen = QUOTA_SCREEN_DEVICE_SETTINGS;
-        if (navigation->device_settings_focus == 0) {
-            navigation->screen = QUOTA_SCREEN_PHONE;
-            return QUOTA_ACTION_OPEN_PHONE;
-        }
-        navigation->screen = QUOTA_SCREEN_SETUP;
-        return QUOTA_ACTION_NONE;
-    case QUOTA_SCREEN_PHONE:
-        navigation->phone_step = wrap_index(navigation->phone_step, 1, 3);
-        return QUOTA_ACTION_RENEW_PHONE;
-    case QUOTA_SCREEN_AUTH:
-        navigation->setup_return_screen = QUOTA_SCREEN_AUTH;
-        navigation->screen = QUOTA_SCREEN_SETUP;
-        return QUOTA_ACTION_NONE;
     case QUOTA_SCREEN_SLEEP:
-        if (navigation->sleep_focus >= QUOTA_SCREEN_TIMEOUT_COUNT)
-            return QUOTA_ACTION_NONE;
-        navigation->screen_timeout_seconds = quota_screen_timeouts[navigation->sleep_focus];
-        navigation->screen = QUOTA_SCREEN_SETTINGS;
+        if (navigation->option_focus < QUOTA_SCREEN_TIMEOUT_COUNT)
+            navigation->screen_timeout_seconds = quota_screen_timeouts[navigation->option_focus];
+        enter_menu(navigation, context.account_count);
         return QUOTA_ACTION_APPLY_SETTINGS;
+    case QUOTA_SCREEN_HOTSPOT:
+        if (context.hotspot == QUOTA_HOTSPOT_SHOWING) {
+            navigation->hotspot_page = wrap_index(navigation->hotspot_page, 1, QUOTA_HOTSPOT_PAGES);
+        } else if (context.hotspot == QUOTA_HOTSPOT_CLOSED) {
+            navigation->hotspot_page = 0;
+            return QUOTA_ACTION_RENEW_HOTSPOT;
+        }
+        break; /* busy: nothing, so nothing can restart a validation */
+    case QUOTA_SCREEN_USB:
+        return context.usb_window_open ? QUOTA_ACTION_NONE : QUOTA_ACTION_OPEN_USB;
+    case QUOTA_SCREEN_INFO:
+        enter_confirm(navigation, QUOTA_CONFIRM_FACTORY_RESET);
+        break;
+    case QUOTA_SCREEN_AUTH:
+        if (context.auth_active)
+            enter_confirm(navigation, QUOTA_CONFIRM_CANCEL_AUTH);
+        else
+            navigation->screen = QUOTA_SCREEN_HOME;
+        break;
+    case QUOTA_SCREEN_CONFIRM:
+        if (navigation->factory_failed)
+            break;
+        if (navigation->confirm_focus == 0) {
+            navigation->screen = navigation->return_screen;
+            break;
+        }
+        if (navigation->confirm_kind == QUOTA_CONFIRM_CANCEL_AUTH) {
+            navigation->screen = QUOTA_SCREEN_HOME;
+            return QUOTA_ACTION_CANCEL_AUTH;
+        }
+        navigation->factory_resetting = true;
+        return QUOTA_ACTION_FACTORY_RESET;
     default:
-        return QUOTA_ACTION_NONE;
+        break;
     }
+    return QUOTA_ACTION_NONE;
+}
+
+quota_action_t quota_navigation_handle(quota_navigation_t *navigation, quota_input_t input,
+                                       quota_navigation_context_t context)
+{
+    if (navigation == NULL || context.account_count > QUOTA_MAX_ACCOUNTS)
+        return QUOTA_ACTION_NONE;
+    if (navigation->factory_resetting)
+        return QUOTA_ACTION_NONE; /* the erase is under way: the device restarts, or says it failed
+                                   */
+    if (input == QUOTA_INPUT_UP)
+        return handle_move(navigation, -1, context);
+    if (input == QUOTA_INPUT_DOWN)
+        return handle_move(navigation, 1, context);
+    if (input == QUOTA_INPUT_OK_LONG)
+        return handle_back(navigation, context);
+    if (input == QUOTA_INPUT_OK_SHORT)
+        return handle_ok(navigation, context);
+    return QUOTA_ACTION_NONE;
+}
+
+quota_status_line_t quota_status_line_select(const quota_status_input_t *input)
+{
+    if (input == NULL)
+        return QUOTA_STATUS_LINE_NO_DATA;
+    if (input->storage_error)
+        return QUOTA_STATUS_LINE_STORAGE_ERROR;
+    if (input->authorizing)
+        return QUOTA_STATUS_LINE_AUTHORIZING;
+    if (input->reauth_needed)
+        return QUOTA_STATUS_LINE_REAUTH;
+    if (input->unverified_items > 0)
+        return QUOTA_STATUS_LINE_UNVERIFIED;
+    if (input->wifi_failed)
+        return QUOTA_STATUS_LINE_WIFI_FAILED;
+    if (input->rate_limited)
+        return QUOTA_STATUS_LINE_RATE_LIMITED;
+    if (input->update_failed)
+        return QUOTA_STATUS_LINE_UPDATE_FAILED;
+    if (input->refreshing)
+        return QUOTA_STATUS_LINE_REFRESHING;
+    return input->has_observed_at ? QUOTA_STATUS_LINE_UPDATED : QUOTA_STATUS_LINE_NO_DATA;
+}
+
+quota_hotspot_state_t quota_hotspot_state(bool storage_error, bool validating, bool active,
+                                          bool ready, bool opening)
+{
+    if (storage_error || validating)
+        return QUOTA_HOTSPOT_BUSY;
+    if (active)
+        return ready ? QUOTA_HOTSPOT_SHOWING : QUOTA_HOTSPOT_BUSY;
+    return opening ? QUOTA_HOTSPOT_BUSY : QUOTA_HOTSPOT_CLOSED;
+}
+
+bool quota_text_is_displayable(const char *text, bool (*has_glyph)(uint32_t codepoint))
+{
+    if (text == NULL || !quota_utf8_is_valid(text, strlen(text)))
+        return false;
+    const unsigned char *p = (const unsigned char *)text;
+    while (*p != '\0') {
+        uint32_t codepoint = *p;
+        size_t length = 1;
+        if (codepoint >= 0xf0) {
+            codepoint &= 0x07;
+            length = 4;
+        } else if (codepoint >= 0xe0) {
+            codepoint &= 0x0f;
+            length = 3;
+        } else if (codepoint >= 0xc0) {
+            codepoint &= 0x1f;
+            length = 2;
+        }
+        for (size_t i = 1; i < length; i++)
+            codepoint = (codepoint << 6) | (p[i] & 0x3f);
+        p += length;
+        if (codepoint < 0x20 || codepoint == 0x7f)
+            return false;
+        if (codepoint > 0x7e && (has_glyph == NULL || !has_glyph(codepoint)))
+            return false;
+    }
+    return true;
+}
+
+void quota_mask_email(const char *email, char *output, size_t capacity)
+{
+    if (output == NULL || capacity == 0)
+        return;
+    char plain[QUOTA_EMAIL_MAX_BYTES + 1];
+    quota_copy_display_ascii(email, plain, sizeof(plain));
+    const char *at = strchr(plain, '@');
+    if (at == NULL || at == plain) {
+        snprintf(output, capacity, "%s", plain);
+        return;
+    }
+    snprintf(output, capacity, "%c***%s", plain[0], at);
 }
 
 int quota_find_account_by_id(const quota_snapshot_t *snapshot, const char *id)

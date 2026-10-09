@@ -47,6 +47,7 @@ int main(void) {
     host_time_us = 1000000;
     s_navigation.configured = true; /* Home + short OK is a refresh action. */
     fake_view.configured = true;
+    fake_view.snapshot.account_count = 1; /* no account would be the welcome screen */
     /* A full event reads the view twice: once in process_event, once in render_application. */
     quota_app_event_t event = {.kind = QUOTA_APP_EVENT_BUTTON, .button = BSP_BTN_OK,
                                .button_event = BSP_BTN_PRESS};
@@ -163,10 +164,9 @@ static void reset(quota_portable_login_state_t login) {
     memset(&fake_view, 0, sizeof(fake_view));
     fake_view.refresh_seconds = 300; fake_view.screen_timeout_seconds = 120;
     fake_view.configured = true; fake_view.portable.login_state = login;
-    fake_view.portable.setup_active = true;
     s_view_work = fake_view;
     s_display = (quota_display_state_t){0};
-    quota_navigation_init(&s_navigation, true, 300, true, 120, 0);
+    quota_navigation_init(&s_navigation, true, 300, true, 120);
     observe_login_navigation(login, false); /* Baseline preexisting state on startup. */
 }
 static void key(bsp_btn_ev_t event) {
@@ -176,11 +176,11 @@ static void key(bsp_btn_ev_t event) {
     process_button(&button, &s_view_work); render_application();
 }
 static void open_setup(void) {
-    s_navigation.screen = QUOTA_SCREEN_DEVICE_SETTINGS; s_navigation.device_settings_focus = 0;
-    key(BSP_BTN_CLICK); assert(s_navigation.screen == QUOTA_SCREEN_PHONE);
+    s_navigation.screen = QUOTA_SCREEN_MENU; s_navigation.menu_focus = 0;
+    key(BSP_BTN_CLICK); assert(s_navigation.screen == QUOTA_SCREEN_HOTSPOT);
     render_application(); render_application();
-    assert(s_navigation.screen == QUOTA_SCREEN_PHONE);
-    key(BSP_BTN_LONG); assert(s_navigation.screen == QUOTA_SCREEN_DEVICE_SETTINGS);
+    assert(s_navigation.screen == QUOTA_SCREEN_HOTSPOT);
+    key(BSP_BTN_LONG); assert(s_navigation.screen == QUOTA_SCREEN_MENU);
 }
 int main(void) {
     host_time_us = 1000000;
@@ -191,27 +191,27 @@ int main(void) {
         reset(QUOTA_PORTABLE_LOGIN_WAITING);
         fake_view.portable.login_state = terminal[i];
         open_setup(); /* Consume terminal in button view before the first render. */
-        reset(QUOTA_PORTABLE_LOGIN_IDLE); s_navigation.screen = QUOTA_SCREEN_PHONE;
+        reset(QUOTA_PORTABLE_LOGIN_IDLE); s_navigation.screen = QUOTA_SCREEN_HOTSPOT;
         fake_view.portable.login_state = terminal[i]; render_application();
         assert(s_navigation.screen == (terminal[i] == QUOTA_PORTABLE_LOGIN_SUCCESS ?
             QUOTA_SCREEN_HOME : QUOTA_SCREEN_AUTH));
         if (s_navigation.screen == QUOTA_SCREEN_AUTH) {
-            key(BSP_BTN_LONG); assert(s_navigation.screen == QUOTA_SCREEN_ACCOUNTS);
+            key(BSP_BTN_LONG); assert(s_navigation.screen == QUOTA_SCREEN_HOME);
         }
         open_setup(); /* Back then reopen cannot replay the same result. */
     }
     quota_portable_login_state_t active[] = {QUOTA_PORTABLE_LOGIN_CONNECTING,
         QUOTA_PORTABLE_LOGIN_WAITING, QUOTA_PORTABLE_LOGIN_EXCHANGING};
     for (unsigned i = 0; i < sizeof(active) / sizeof(active[0]); i++) {
-        reset(QUOTA_PORTABLE_LOGIN_QUEUED); s_navigation.screen = QUOTA_SCREEN_PHONE;
+        reset(QUOTA_PORTABLE_LOGIN_QUEUED); s_navigation.screen = QUOTA_SCREEN_HOTSPOT;
         fake_view.portable.login_state = active[i]; render_application();
         assert(s_navigation.screen == QUOTA_SCREEN_AUTH);
         fake_view.portable.login_state = QUOTA_PORTABLE_LOGIN_SUCCESS;
         render_application(); assert(s_navigation.screen == QUOTA_SCREEN_HOME); open_setup();
     }
-    reset(QUOTA_PORTABLE_LOGIN_IDLE); s_navigation.screen = QUOTA_SCREEN_ACCOUNTS;
+    reset(QUOTA_PORTABLE_LOGIN_IDLE); s_navigation.screen = QUOTA_SCREEN_MENU;
     fake_view.portable.login_state = QUOTA_PORTABLE_LOGIN_ERROR;
-    render_application(); assert(s_navigation.screen == QUOTA_SCREEN_ACCOUNTS);
+    render_application(); assert(s_navigation.screen == QUOTA_SCREEN_MENU);
     open_setup(); /* An edge consumed elsewhere cannot capture a later setup page. */
     assert(opened == closed && opened >= 12);
     puts("login navigation edge, reopen and Back tests passed");
@@ -219,9 +219,135 @@ int main(void) {
 '''
         compile_and_run(harness, "ai-quota-login-navigation-", MAIN_SOURCES, host_sdk=True)
 
+    def test_keys_reach_the_service_and_setup_blocks_sleep(self):
+        harness = HARNESS_HEAD + r'''
+static unsigned factory, usb_opened, usb_closed, renewed, cancelled;
+void quota_service_set_display_sleeping(bool sleeping) { assert(!sleeping); }
+void bsp_display_backlight(uint8_t percent) { assert(percent == 100); }
+void quota_service_factory_reset(void) { factory++; }
+void quota_usb_open_window(void) { usb_opened++; }
+void quota_usb_close_window(void) { usb_closed++; }
+void quota_service_renew_phone(void) { renewed++; }
+void quota_service_cancel_auth(void) { cancelled++; }
+static void key(bsp_btn_t button, bsp_btn_ev_t event) {
+    quota_app_event_t press = {.kind = QUOTA_APP_EVENT_BUTTON, .button = button,
+                               .button_event = event};
+    s_view_work = fake_view;
+    process_button(&press, &s_view_work);
+}
+int main(void) {
+    host_time_us = 1000000;
+    fake_view.refresh_seconds = 300; fake_view.screen_timeout_seconds = 120;
+    fake_view.configured = true; fake_view.snapshot.account_count = 2;
+    s_view_work = fake_view;
+    quota_navigation_init(&s_navigation, true, 300, true, 120);
+    /* J9: long OK, UP, OK, OK, DOWN, OK. Only the last key resets anything. */
+    key(BSP_BTN_OK, BSP_BTN_LONG); assert(s_navigation.screen == QUOTA_SCREEN_MENU);
+    key(BSP_BTN_UP, BSP_BTN_CLICK); key(BSP_BTN_OK, BSP_BTN_CLICK);
+    assert(s_navigation.screen == QUOTA_SCREEN_INFO);
+    key(BSP_BTN_OK, BSP_BTN_CLICK); assert(s_navigation.screen == QUOTA_SCREEN_CONFIRM);
+    key(BSP_BTN_OK, BSP_BTN_LONG); assert(s_navigation.screen == QUOTA_SCREEN_INFO && !factory);
+    key(BSP_BTN_OK, BSP_BTN_CLICK); key(BSP_BTN_OK, BSP_BTN_CLICK); /* default: cancel */
+    assert(!factory && s_navigation.screen == QUOTA_SCREEN_INFO);
+    key(BSP_BTN_OK, BSP_BTN_CLICK); key(BSP_BTN_DOWN, BSP_BTN_CLICK);
+    key(BSP_BTN_OK, BSP_BTN_CLICK);
+    assert(factory == 1 && s_navigation.factory_resetting);
+    key(BSP_BTN_OK, BSP_BTN_CLICK); assert(factory == 1); /* no second request while it runs */
+
+    /* USB opens and closes with its screen. */
+    quota_navigation_init(&s_navigation, true, 300, true, 120);
+    key(BSP_BTN_OK, BSP_BTN_LONG); key(BSP_BTN_DOWN, BSP_BTN_CLICK); key(BSP_BTN_OK, BSP_BTN_CLICK);
+    assert(s_navigation.screen == QUOTA_SCREEN_USB && usb_opened == 1);
+    key(BSP_BTN_OK, BSP_BTN_LONG);
+    assert(s_navigation.screen == QUOTA_SCREEN_MENU && usb_closed == 1);
+
+    /* Hotspot: OK turns the page; with the hotspot closed it also asks for a new one. */
+    key(BSP_BTN_UP, BSP_BTN_CLICK); key(BSP_BTN_OK, BSP_BTN_CLICK);
+    assert(s_navigation.screen == QUOTA_SCREEN_HOTSPOT && opened == 1);
+    fake_view.portable.setup_active = false;
+    key(BSP_BTN_OK, BSP_BTN_CLICK); assert(renewed == 1 && s_navigation.hotspot_page == 0);
+    fake_view.portable.setup_active = true; fake_view.portable.setup_ready = true;
+    key(BSP_BTN_OK, BSP_BTN_CLICK); assert(renewed == 1 && s_navigation.hotspot_page == 1);
+    key(BSP_BTN_OK, BSP_BTN_LONG); assert(closed == 1 && s_navigation.screen == QUOTA_SCREEN_MENU);
+
+    /* Opening, validating and error: OK does nothing, so it cannot restart a validation; and
+     * entering the screen from the menu does not open a second hotspot over a busy one. */
+    s_navigation.screen = QUOTA_SCREEN_HOTSPOT; s_navigation.return_screen = QUOTA_SCREEN_MENU;
+    unsigned before_open = opened, before_renew = renewed;
+    fake_view.portable.setup_active = false; fake_view.portable.validating = true;
+    key(BSP_BTN_OK, BSP_BTN_CLICK); assert(opened == before_open && renewed == before_renew);
+    fake_view.portable.validating = false; fake_view.portable.setup_opening = true;
+    key(BSP_BTN_OK, BSP_BTN_CLICK); assert(opened == before_open && renewed == before_renew);
+    fake_view.portable.setup_opening = false; fake_view.portable.storage_error[0] = 'x';
+    key(BSP_BTN_OK, BSP_BTN_CLICK); assert(opened == before_open && renewed == before_renew);
+    fake_view.portable.storage_error[0] = 0;
+    s_navigation.screen = QUOTA_SCREEN_MENU; s_navigation.menu_focus = 0;
+    fake_view.portable.validating = true;
+    key(BSP_BTN_OK, BSP_BTN_CLICK);
+    assert(s_navigation.screen == QUOTA_SCREEN_HOTSPOT && opened == before_open);
+    fake_view.portable.validating = false;
+    s_navigation.screen = QUOTA_SCREEN_MENU;
+    fake_view.portable.setup_active = true; fake_view.portable.setup_ready = false;
+    key(BSP_BTN_OK, BSP_BTN_CLICK); /* a hotspot that is still opening is not opened again */
+    assert(s_navigation.screen == QUOTA_SCREEN_HOTSPOT && opened == before_open);
+    fake_view.portable.setup_active = false;
+    s_navigation.screen = QUOTA_SCREEN_MENU;
+
+    /* USB: an open window keeps its session; the screen is only shown. A closed one reopens. */
+    unsigned usb_before = usb_opened;
+    s_navigation.menu_focus = 1;
+    fake_view.usb_window_active = true;
+    key(BSP_BTN_OK, BSP_BTN_CLICK);
+    assert(s_navigation.screen == QUOTA_SCREEN_USB && usb_opened == usb_before);
+    key(BSP_BTN_OK, BSP_BTN_CLICK); assert(usb_opened == usb_before); /* OK: nothing while open */
+    fake_view.usb_window_active = false; fake_view.usb_window_preparing = true;
+    key(BSP_BTN_OK, BSP_BTN_CLICK); assert(usb_opened == usb_before);
+    fake_view.usb_window_preparing = false;
+    key(BSP_BTN_OK, BSP_BTN_CLICK); assert(usb_opened == usb_before + 1); /* ended: reopens */
+    s_navigation.screen = QUOTA_SCREEN_MENU; s_navigation.menu_focus = 0;
+
+    /* An open setup session keeps the screen on and long DOWN says why instead of sleeping. */
+    fake_view.portable.setup_active = true;
+    render_application();
+    assert(s_display.session_open && !s_display.sleeping);
+    key(BSP_BTN_DOWN, BSP_BTN_PRESS); key(BSP_BTN_DOWN, BSP_BTN_LONG);
+    assert(!s_display.sleeping && s_navigation.sleep_notice && !s_display.sleep_blocked);
+    host_time_us += (QUOTA_NOTICE_MS + 100) * 1000LL;
+    render_application(); assert(!s_navigation.sleep_notice);
+    fake_view.portable.setup_active = false;
+    render_application(); assert(!s_display.session_open);
+
+    unsigned usb_before_cancel = usb_closed;
+    /* Authorization: OK on the home screen shows it, a second OK asks, only the third cancels. */
+    fake_view.portable.login_state = QUOTA_PORTABLE_LOGIN_WAITING;
+    s_navigation.screen = QUOTA_SCREEN_HOME;
+    render_application(); assert(s_navigation.screen == QUOTA_SCREEN_AUTH); /* it takes over */
+    key(BSP_BTN_OK, BSP_BTN_LONG); assert(s_navigation.screen == QUOTA_SCREEN_HOME);
+    /* Later phases of the same authorization do not pull the user back. */
+    fake_view.portable.login_state = QUOTA_PORTABLE_LOGIN_EXCHANGING;
+    render_application(); assert(s_navigation.screen == QUOTA_SCREEN_HOME);
+    fake_view.portable.login_state = QUOTA_PORTABLE_LOGIN_WAITING;
+    render_application(); assert(s_navigation.screen == QUOTA_SCREEN_HOME);
+    s_navigation.screen = QUOTA_SCREEN_MENU;
+    fake_view.portable.login_state = QUOTA_PORTABLE_LOGIN_REQUESTING_CODE;
+    render_application(); assert(s_navigation.screen == QUOTA_SCREEN_MENU);
+    s_navigation.screen = QUOTA_SCREEN_HOME;
+    key(BSP_BTN_OK, BSP_BTN_CLICK); assert(s_navigation.screen == QUOTA_SCREEN_AUTH);
+    key(BSP_BTN_OK, BSP_BTN_CLICK);
+    assert(s_navigation.screen == QUOTA_SCREEN_CONFIRM && !cancelled);
+    key(BSP_BTN_DOWN, BSP_BTN_CLICK); key(BSP_BTN_OK, BSP_BTN_CLICK);
+    assert(cancelled == 1 && s_navigation.screen == QUOTA_SCREEN_HOME);
+    assert(usb_closed == usb_before_cancel); /* cancelling does not end the USB window */
+    puts("keys reach the service, setup blocks sleep");
+}
+'''
+        compile_and_run(harness, "ai-quota-key-actions-", MAIN_SOURCES, host_sdk=True)
+
     def test_resource_log_reports_both_task_stacks_and_heap(self):
         # The debug-only path (CONFIG_QUOTA_RESOURCE_LOG) is built here so it cannot rot.
         harness = r"""
+#include "bsp_display.h"
+#include "lvgl.h"
 #include "quota_service.h"
 #include <assert.h>
 #include <stdio.h>
@@ -250,13 +376,24 @@ UBaseType_t uxTaskGetStackHighWaterMark(TaskHandle_t task) {
     assert(stack_reads < 2); read_tasks[stack_reads++] = task; return 2048;
 }
 uint32_t esp_get_minimum_free_heap_size(void) { heap_reads++; return 40000; }
+static bool lvgl_locked;
+static unsigned pool_reads;
+bool bsp_lvgl_lock(int timeout_ms) {
+    assert(timeout_ms > 0 && !lvgl_locked); lvgl_locked = true; return true;
+}
+void bsp_lvgl_unlock(void) { assert(lvgl_locked); lvgl_locked = false; }
+void lv_mem_monitor(lv_mem_monitor_t *monitor) {
+    assert(lvgl_locked); /* the pool is only read under the LVGL lock */
+    pool_reads++; monitor->total_size = 24576; monitor->free_size = 10000;
+    monitor->max_used = 17000;
+}
 
 int main(void) {
     app_main();
     assert(created.callback && !strcmp(created.name, "quota_resources"));
     assert(period == 30LL * 1000 * 1000);
     created.callback(created.arg);
-    assert(stack_reads == 2 && heap_reads == 1);
+    assert(stack_reads == 2 && heap_reads == 1 && pool_reads == 1 && !lvgl_locked);
     assert(read_tasks[0] == (TaskHandle_t)0x10 && read_tasks[1] == (TaskHandle_t)0x20);
     puts("resource log passed");
 }

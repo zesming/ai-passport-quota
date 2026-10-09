@@ -26,6 +26,14 @@ jobs:
           actionlint_bin="$(./tools/install-actionlint.sh "$RUNNER_TEMP/actionlint")"
           echo "ACTIONLINT_BIN=${actionlint_bin}" >> "$GITHUB_ENV"
 
+      # The UI preview test needs LVGL 9.5.0 source; CI has no managed_components, so it downloads
+      # the pinned release archive (about 100 MB) into build/lvgl. Cache it, keyed by the pin.
+      - name: Cache LVGL source for the UI preview
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: build/lvgl
+          key: lvgl-${{ hashFiles('tools/fetch_lvgl.py') }}
+
       - name: Install pinned formatter
         run: pipx install clang-format==23.1.3
 

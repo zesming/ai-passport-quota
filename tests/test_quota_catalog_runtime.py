@@ -45,6 +45,16 @@ esp_err_t nvs_flash_init_partition(const char *p)
     (void)p;
     return ESP_OK;
 }
+esp_err_t nvs_flash_deinit_partition(const char *part)
+{
+    (void)part;
+    return ESP_OK;
+}
+esp_err_t nvs_flash_erase_partition(const char *part)
+{
+    (void)part;
+    return ESP_OK;
+}
 esp_err_t nvs_open_from_partition(const char *p, const char *s, int mode, nvs_handle_t *h)
 {
     (void)p;
@@ -334,6 +344,8 @@ esp_err_t nvs_erase_key(nvs_handle_t,const char*);
             (path / "nvs.h").write_text(nvs)
             (path / "nvs_flash.h").write_text(
                 '#pragma once\n#include "nvs.h"\nesp_err_t nvs_flash_init_partition(const char*);\n'
+                "esp_err_t nvs_flash_deinit_partition(const char*);\n"
+                "esp_err_t nvs_flash_erase_partition(const char*);\n"
             )
             (path / "test.c").write_text(harness)
             executable = path / "test"

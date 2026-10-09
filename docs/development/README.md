@@ -11,7 +11,7 @@
 | USB 设置窗口、会话与帧解析 | `main/quota_usb.c`、`main/quota_json.c` |
 | 账户目录、控制器、授权/查询与存储 | `main/quota_catalog.c`、`main/quota_portable_service.c`、`main/quota_direct*.c`、`main/quota_store.c` |
 | 设置页（热点与 USB 共用） | 源码 `main/setup/`（`page.html`、`style.css`、`app.mjs`、`transport_http.mjs`、`transport_serial.mjs`），生成文件 `main/setup_page.html`；热点服务端 `main/quota_portal.c` |
-| 看板与显示资源 | `main/quota_ui.c`、`main/quota_brand_assets.c`、`assets/` |
+| 看板与显示资源 | `main/quota_ui.c`（固定对象池）、`main/quota_brand_assets.c`、`assets/`；主机预览 `tools/ui_preview/` |
 | 板卡驱动 | `components/bsp/include/`、`components/bsp/src/` |
 | 主机检查与固件打包 | `tests/`、`tools/` |
 
@@ -34,7 +34,13 @@ idf.py --version
 
 C 用 `.clang-format`（LLVM 基础，4 空格，100 列），JS 用根目录 `package.json` 锁定的 prettier，二者随 `--static` 检查。clang-format 固定为 23.1.3（`pipx install clang-format==23.1.3`）。数据数组用 `// clang-format off` 包住。`tools/check_repo.py` 另检查 `main/`、`components/`、`tests/` 的行宽，豁免项写在该脚本里。
 
-主机测试把固件源文件整体编译并链接，不再从源码中抽取函数。固件内部需要给测试看的符号用 `QUOTA_TESTABLE`（`main/quota_testable.h`）标记：固件里是 `static`，测试以 `-DQUOTA_HOST_TEST` 构建时对外可见。`tests/host_sdk/` 提供 ESP-IDF、FreeRTOS 和 LVGL 的主机替身，以及可被测试覆盖的弱默认实现。`tests/runtime_helpers.py` 的 `compile_and_run(..., host_sdk=True)` 负责接线。仅两项 SDK 测试仍从第三方源码（IDF 的 USB 控制台、按键组件）截取函数，用 `vendor_function`。
+主机测试把固件源文件整体编译并链接，不再从源码中抽取函数。固件内部需要给测试看的符号用 `QUOTA_TESTABLE`（`main/quota_testable.h`）标记：固件里是 `static`，测试以 `-DQUOTA_HOST_TEST` 构建时对外可见。`tests/host_sdk/` 提供 ESP-IDF 和 FreeRTOS 的主机替身，以及可被测试覆盖的弱默认实现。`tests/runtime_helpers.py` 的 `compile_and_run(..., host_sdk=True)` 负责接线。仅两项 SDK 测试仍从第三方源码（IDF 的 USB 控制台、按键组件）截取函数，用 `vendor_function`。
+
+## 设备界面预览
+
+`python3 tools/ui_preview/build.py --sheets` 在主机上用真实 LVGL 9.5.0 编译 `main/quota_ui.c`、`main/quota_logic.c`、子集字体和品牌图，按固件的 LVGL 选项（`tools/ui_preview/sdkconfig.h`，取自固件构建的 sdkconfig：RGB565、240 × 20 局部缓冲、30 像素圆角遮罩）渲染 `tools/ui_preview/fixtures.json` 的每个界面。输出在 `build/ui-preview/png/`：每个界面一张 PNG，`--sheets` 另生成拼图 `sheet-N.png`（用 `--scale 2` 放大）。LVGL 取自 `managed_components/lvgl__lvgl`，不存在时（例如 CI）`tools/fetch_lvgl.py` 下载 GitHub 的 v9.5.0 标签包（约 100 MB）并校验固定的 SHA-256，下载结果放在 `build/lvgl/`，CI 用 `actions/cache` 缓存它。GitHub 不发布标签包的校验值，这个 SHA-256 是本仓库自己下载计算的（包内 `src/lv_conf_internal.h` 与锁定组件一致），它固定的是“审阅过的那份包”，不是上游签名；升级 LVGL 须重新计算。新增界面或文案时在 `fixtures.json` 加一条，`tests/test_quota_ui_preview.py` 会断言它渲染成功、全部界面共用同一组对象。
+
+每个界面的输出行带有 LVGL 内存：`used` 是当前占用，`summary` 行的 `max_used` 是峰值。主机池为 64 KB 且指针为 64 位，对象、样式和指针比设备大，对本界面逐块估算的结果是设备约为主机的 0.7 倍，所以设备门限 20 KB 大致对应主机 28 KB：测试以 28 KB 为主机上限，作为回退告警，不是测量值；门限以真机 `lv_mem_monitor().max_used ≤ 20 KB` 为准。每个界面渲染两遍，第二遍不得重绘任何像素（预览程序检查）。调试构建用 `sdkconfig.resource_log` 时，每 30 秒的日志包含 `lvgl_pool: total/used/max_used`，在 LVGL 锁内读取。`sdkconfig.defaults` 关闭了界面用不到的 `CONFIG_LV_USE_SPAN` 和 `CONFIG_LV_USE_THEME_DEFAULT`（所有对象自己设样式，预览逐像素对比渲染未变）。预览不能证明字体在面板上的观感、二维码的可扫性或真实堆余量。改动界面文案后运行 `python3 tools/font_glyphs.py --build` 更新字形表并重新生成两种字体（见[资源](../../assets/README.md)）。
 
 ## 资源余量
 

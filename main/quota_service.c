@@ -312,3 +312,7 @@ void quota_service_reconnect(void)
 {
     quota_portable_service_reconnect();
 }
+void quota_service_factory_reset(void)
+{
+    quota_portable_service_factory_reset();
+}

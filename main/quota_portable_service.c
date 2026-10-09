@@ -11,6 +11,7 @@
 #include "esp_netif.h"
 #include "esp_netif_sntp.h"
 #include "esp_random.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/task.h"
@@ -66,7 +67,8 @@ static quota_portable_command_t *s_queue;
 static unsigned s_head, s_count, s_job_count;
 static job_t s_jobs[QUEUE_DEPTH];
 static bool s_store_ready, s_clock_ready, s_sntp, s_sleeping, s_wifi_active;
-static bool s_open, s_close, s_cancel, s_refresh, s_reconnect, s_selection_dirty;
+static bool s_open, s_close, s_cancel, s_refresh, s_reconnect, s_selection_dirty, s_factory_reset,
+    s_factory_reset_failed, s_setup_result;
 static uint64_t s_open_retry_at;
 static uint8_t s_open_failures;
 static bool s_refreshing, s_failed, s_cache_dirty;
@@ -1306,6 +1308,10 @@ static void sync_public_locked(void)
                       s_view.network_state == QUOTA_PORTABLE_NETWORK_CONNECTED;
     view->refreshing = !s_sleeping && s_refreshing;
     s_view.validating = s_validation.active;
+    s_view.setup_opening = s_open && !s_view.setup_active;
+    s_view.setup_result = s_setup_result;
+    s_view.saving = s_dirty_model || s_operation.kind == OP_SAVE;
+    s_view.factory_reset_failed = s_factory_reset_failed;
     view->request_failed = s_failed || s_storage_error[0];
     view->refresh_seconds = s_model.refresh_seconds;
     view->auto_refresh = s_model.auto_refresh;
@@ -1340,6 +1346,17 @@ static void sync_public_locked(void)
     if (s_login_queue.present) {
         pending += s_login_queue.error[0] == 0;
         failed += s_login_queue.error[0] != 0;
+    }
+    copy(s_view.firmware, sizeof(s_view.firmware), quota_portable_service_firmware());
+    memset(s_view.account_validation, 0, sizeof(s_view.account_validation));
+    for (unsigned i = 0; i < s_snapshot.account_count; i++) {
+        int row = quota_catalog_find(&s_model, s_snapshot.accounts[i].id);
+        if (row < 0)
+            continue;
+        s_view.account_validation[i] =
+            s_accounts[row].auth == QUOTA_PORTABLE_AUTH_READY     ? QUOTA_VALIDATION_OK
+            : s_accounts[row].auth == QUOTA_PORTABLE_AUTH_PENDING ? QUOTA_VALIDATION_PENDING
+                                                                  : QUOTA_VALIDATION_FAILED;
     }
     s_view.pending_items = pending > UINT8_MAX ? UINT8_MAX : (uint8_t)pending;
     s_view.failed_items = failed > UINT8_MAX ? UINT8_MAX : (uint8_t)failed;
@@ -2627,7 +2644,6 @@ bool quota_portable_service_init(const quota_portable_service_hooks_t *hooks)
     }
     (void)ensure_direct();
     s_next_refresh = millis() + 1000;
-    s_open = s_model_ready && s_model.network_count == 0;
     lock();
     sync_public_locked();
     unlock();
@@ -2646,6 +2662,26 @@ bool quota_portable_service_prepare_usb(void)
         close_setup();
     return !s_view.setup_active;
 }
+/* Between ticks nothing else touches storage, so this is the one place an erase is safe. Setup
+ * and USB end first; whatever is still queued dies with the restart. Returns true when the device
+ * is restarting (a host test build returns), false when the erase failed and was reported. */
+static bool factory_reset(void)
+{
+    quota_usb_close_window();
+    close_setup();
+    quota_factory_reset_result_t result = quota_store_factory_reset();
+    if (result != QUOTA_FACTORY_RESET_FAILED) {
+        /* A catalog that is gone makes this a new device even if the rest could not be erased:
+         * restart before anything saves the catalog in memory back. */
+        esp_restart();
+        return true;
+    }
+    lock();
+    s_factory_reset_failed = true;
+    sync_public_locked();
+    unlock();
+    return false;
+}
 void quota_portable_service_tick(bool sleeping, uint32_t generation)
 {
     if (!s_initialized)
@@ -2654,9 +2690,11 @@ void quota_portable_service_tick(bool sleeping, uint32_t generation)
     s_sleeping = sleeping;
     s_display_generation = generation;
     bool open = s_open, open_due = s_open && millis() >= s_open_retry_at, close = s_close,
-         cancel = s_cancel, reconnect = s_reconnect;
-    s_close = s_cancel = s_reconnect = false;
+         cancel = s_cancel, reconnect = s_reconnect, reset = s_factory_reset;
+    s_close = s_cancel = s_reconnect = s_factory_reset = false;
     unlock();
+    if (reset && factory_reset())
+        return;
     retry_dirty();
     save_tick();
     if ((!s_model_ready || s_authority_retry) && !s_dirty_model && s_operation.kind == OP_NONE) {
@@ -2681,8 +2719,12 @@ void quota_portable_service_tick(bool sleeping, uint32_t generation)
         close_setup();
         s_close_at = 0;
         s_validate_after_close = false;
-        if (validate)
+        if (validate) {
+            lock();
+            s_setup_result = true; /* this session's 完成设置: its result goes on the screen */
+            unlock();
             (void)quota_portable_validate_pending();
+        }
     }
     if (s_usb_close_at && millis() >= s_usb_close_at) {
         s_usb_close_at = 0;
@@ -2889,6 +2931,7 @@ void quota_portable_service_open(void)
         return;
     lock();
     if (!s_view.setup_active) {
+        s_setup_result = false;
         s_open = true;
         s_open_failures = 0;
         s_open_retry_at = 0;
@@ -2911,6 +2954,7 @@ void quota_portable_service_renew(void)
         return;
     lock();
     if (!s_view.setup_active) {
+        s_setup_result = false;
         s_open = true;
         s_open_failures = 0;
         s_open_retry_at = 0;
@@ -2924,6 +2968,17 @@ void quota_portable_service_cancel_auth(void)
         return;
     lock();
     s_cancel = true;
+    unlock();
+    wake();
+}
+void quota_portable_service_factory_reset(void)
+{
+    if (!s_initialized)
+        return;
+    lock();
+    s_factory_reset = true;
+    s_factory_reset_failed = false;
+    sync_public_locked();
     unlock();
     wake();
 }

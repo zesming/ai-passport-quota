@@ -78,6 +78,14 @@ typedef struct {
     bool setup_ready;
     /* A validation pass is running; the display stays on until it ends. */
     bool validating;
+    /* A hotspot open is requested and has not started yet. */
+    bool setup_opening;
+    /* This hotspot session was closed with 完成设置: the validation result is on show. */
+    bool setup_result;
+    /* A device-side write is waiting for storage or has just been started (not a login state). */
+    bool saving;
+    /* The last factory reset request failed to erase; cleared by the next request. */
+    bool factory_reset_failed;
     uint32_t setup_seconds_left;
     char setup_ssid[QUOTA_SSID_MAX_BYTES + 1];
     char setup_password[QUOTA_PASSWORD_MAX_BYTES + 1];
@@ -107,6 +115,9 @@ typedef struct {
     uint8_t saved_network_validation[QUOTA_PORTABLE_NETWORKS];
     char saved_network_errors[QUOTA_PORTABLE_NETWORKS][QUOTA_PORTABLE_ERROR_BYTES + 1];
     uint8_t pending_items, failed_items;
+    /* Validation result of each account, indexed like the active snapshot (quota_validation_t). */
+    uint8_t account_validation[QUOTA_MAX_ACCOUNTS];
+    char firmware[QUOTA_FIRMWARE_VERSION_BYTES + 1];
 } quota_portable_view_t;
 
 typedef struct {

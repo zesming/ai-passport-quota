@@ -195,6 +195,18 @@ void quota_portal_stop(void)
     unlocked();
     portal_active = false;
 }
+static unsigned factory_resets, restarts;
+static quota_factory_reset_result_t factory_reset_result = QUOTA_FACTORY_RESET_OK;
+quota_factory_reset_result_t quota_store_factory_reset(void)
+{
+    unlocked();
+    factory_resets++;
+    return factory_reset_result;
+}
+void esp_restart(void)
+{
+    restarts++;
+}
 bool quota_store_init(void)
 {
     unlocked();
@@ -1445,17 +1457,23 @@ int main(int argc, char **argv)
         tick(false);
         assert(query_calls > calls); /* scheduled polling resumes once the window ends */
     } else if (!strcmp(argv[1], "fresh-device")) {
-        /* No catalog (new device, or one that only had retired data): start empty and open setup.
-         */
+        /* No catalog (new device, or one that only had retired data): start empty. The hotspot is
+         * not opened by itself: the welcome screen waits for OK. */
         fresh_device = true;
         boot();
         assert(durable_sequence == 1 && public_view.configured && public_view.snapshot_valid);
         assert(public_view.snapshot.account_count == 0 && durable_model.entry_count == 0 &&
-               durable_model.network_count == 0 && s_open);
+               durable_model.network_count == 0 && !s_open);
         assert(orphan_releases == 1 && credentials[0].tombstone && credentials[1].tombstone &&
                !credentials[1].api_key[0]); /* Stale credentials are freed, never adopted. */
         tick(false);
+        assert(!portal_active && !public_view.portable.setup_active &&
+               !public_view.portable.setup_opening);
+        quota_portable_service_open(); /* what OK on the welcome screen does */
+        assert(public_view.portable.setup_opening || s_open);
+        tick(false);
         assert(portal_active && public_view.portable.setup_ready && !s_open);
+        assert(!public_view.portable.setup_opening);
     } else if (!strcmp(argv[1], "fresh-orphan-retry")) {
         /* A failed release blocks the new catalog and is retried; nothing is committed meanwhile.
          */
@@ -1716,12 +1734,19 @@ int main(int argc, char **argv)
         now_ms += 500;
         tick(false);
         assert(!portal_active && s_validate_runs == 1 && s_validation.active);
+        /* This session's 完成设置 puts the result on the device screen; the account rows follow. */
+        assert(public_view.portable.validating && public_view.portable.setup_result);
         settle();
+        assert(!public_view.portable.validating && public_view.portable.setup_result);
+        assert(public_view.portable.account_validation[0] == QUOTA_VALIDATION_OK);
         assert(!strcmp(network_state(1, NULL), "ok") && s_model.selected_network == 1);
         assert(!strcmp(account_state(2, NULL), "ok") &&
                credentials[2].auth_state == QUOTA_PORTABLE_AUTH_READY);
+        /* Opening the hotspot again drops the old result: it is not this session's. */
+        quota_portable_service_open();
         /* No validation when the access point closes for another reason. */
         phone();
+        assert(!public_view.portable.setup_result && !public_view.portable.setup_opening);
         quota_portable_command_t more = {.op = QUOTA_PORTABLE_OP_DEEPSEEK_SAVE};
         strcpy(more.request_id, "42345678");
         strcpy(more.api_key, "later-key");
@@ -2162,6 +2187,59 @@ int main(int argc, char **argv)
         strcpy(drop.request_id, "72345678");
         submit_usb(&drop);
         assert(!s_staged.present && durable_model.network_count == 0);
+    } else if (!strcmp(argv[1], "factory-reset")) {
+        boot();
+        ready();
+        usb_open();
+        phone();
+        /* The request is only a flag: nothing is erased until the network task ticks. */
+        quota_portable_service_factory_reset();
+        assert(factory_resets == 0 && restarts == 0);
+        tick(false);
+        assert(factory_resets == 1 && restarts == 1);
+        assert(!public_view.portable.setup_active && !portal_active && !usb_window);
+        tick(false); /* one request, one erase */
+        assert(factory_resets == 1 && restarts == 1);
+        /* The catalog is deleted but erasing the rest failed: restart, never carry on writing. */
+        factory_reset_result = QUOTA_FACTORY_RESET_CATALOG_GONE;
+        quota_portable_service_factory_reset();
+        tick(false);
+        assert(factory_resets == 2 && restarts == 2 && !public_view.portable.factory_reset_failed);
+        /* Nothing deleted: the device carries on, with its own flag, no storage error. */
+        factory_reset_result = QUOTA_FACTORY_RESET_FAILED;
+        quota_portable_service_factory_reset();
+        tick(false);
+        assert(factory_resets == 3 && restarts == 2);
+        assert(public_view.portable.factory_reset_failed && !public_view.portable.storage_error[0]);
+        /* A new request clears the old failure before it is tried again. */
+        factory_reset_result = QUOTA_FACTORY_RESET_OK;
+        quota_portable_service_factory_reset();
+        assert(!public_view.portable.factory_reset_failed);
+        tick(false);
+        assert(factory_resets == 4 && restarts == 3);
+    } else if (!strcmp(argv[1], "view-results")) {
+        boot();
+        ready();
+        /* The device screen gets the firmware version and a result for every account. */
+        assert(!strcmp(public_view.portable.firmware, "3.0.0-test"));
+        assert(public_view.snapshot.account_count > 0);
+        for (unsigned i = 0; i < public_view.snapshot.account_count; i++)
+            assert(public_view.portable.account_validation[i] == QUOTA_VALIDATION_OK);
+        assert(public_view.portable.saved_network_validation[0] == QUOTA_VALIDATION_OK);
+        usb_open();
+        quota_portable_command_t key = {.op = QUOTA_PORTABLE_OP_DEEPSEEK_SAVE};
+        strcpy(key.request_id, "12345678");
+        strcpy(key.api_key, "sk-new-key");
+        strcpy(key.label, "new");
+        submit_usb(&key);
+        bool pending = false;
+        for (unsigned i = 0; i < public_view.snapshot.account_count; i++)
+            pending =
+                pending || public_view.portable.account_validation[i] == QUOTA_VALIDATION_PENDING;
+        assert(pending || public_view.portable.pending_items > 0);
+        /* At rest nothing is being saved; "saving" follows storage work, not a login state. */
+        assert(!public_view.portable.saving);
+        assert(!public_view.portable.setup_result && !public_view.portable.setup_opening);
     } else
         assert(false);
     puts("whole controller runtime passed");

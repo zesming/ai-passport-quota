@@ -36,6 +36,7 @@ typedef struct {
     bool request_failed;
     bool usb_window_active;
     bool usb_window_preparing;
+    bool usb_page_connected; /* a settings page has opened its session in the USB window */
     uint32_t usb_window_seconds_left;
     uint64_t now_epoch;
     bool clock_synchronized;
@@ -62,6 +63,8 @@ void quota_service_close_phone(void);
 void quota_service_renew_phone(void);
 void quota_service_cancel_auth(void);
 void quota_service_reconnect(void);
+/* Posts the request; the network task erases storage and restarts the device. */
+void quota_service_factory_reset(void);
 
 /* Internals shared with quota_wifi.c and quota_usb.c. The lock guards the view. */
 void quota_service_lock(void);

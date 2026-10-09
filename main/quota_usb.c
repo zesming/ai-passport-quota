@@ -142,6 +142,7 @@ void quota_usb_fill_view_locked(quota_service_view_t *view)
     view->usb_window_active = quota_usb_window_active(s_usb_window_open, now, deadline);
     view->usb_window_seconds_left =
         view->usb_window_active ? (uint32_t)((deadline - now + 999) / 1000) : 0;
+    view->usb_page_connected = view->usb_window_active && s_usb_opener[0] != 0;
 }
 
 QUOTA_TESTABLE void release_usb_decoder(void)
