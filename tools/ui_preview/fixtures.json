@@ -1,0 +1,5603 @@
+{
+ "fixtures": [
+  {
+   "name": "home-chatgpt",
+   "note": "主页：ChatGPT 账户卡",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "home-deepseek",
+   "note": "主页：DeepSeek 余额",
+   "nav": {
+    "screen": "home",
+    "selected_account": 1
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "home-single-window",
+   "note": "只有 5 小时额度时，7 天额度整块隐藏",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "credits": "120",
+      "resets": 2
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "home-low-quota",
+   "note": "低额度：琥珀/红色",
+   "nav": {
+    "screen": "home",
+    "selected_account": 2
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "home-zero-percent",
+   "note": "真实 0% 照常显示",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 0,
+       "resets_in": 600
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "home-clock-unsynced",
+   "note": "未校时：状态栏 --:--，倒计时“待校时”",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    },
+    "clock_synchronized": false
+   },
+   "battery": -1
+  },
+  {
+   "name": "home-welcome",
+   "note": "欢迎屏（没有账户）",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "home-welcome-no-wifi",
+   "note": "欢迎屏（没有 Wi-Fi，无 Wi-Fi 图标）",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [],
+    "portable": {
+     "network_state": "off",
+     "ssid": "",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": []
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "status-1-storage-error",
+   "note": "状态行 1：存储错误",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ],
+     "storage_error": "storage_invalid"
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "status-2-authorizing",
+   "note": "状态行 2：授权中，OK 查看",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ],
+     "login_state": "waiting"
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "status-3-reauth",
+   "note": "状态行 3：需要重新授权",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2,
+      "error": "codex_expired",
+      "status": "expired"
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "status-4-unverified",
+   "note": "状态行 4：待验证",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ],
+     "pending": 2
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "status-4-verify-failed",
+   "note": "状态行 4：验证失败",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "failed"
+      }
+     ],
+     "failed": 1
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "status-5-wifi-failed",
+   "note": "状态行 5：Wi-Fi 连接失败",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "error",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ],
+     "network_error": "wifi_auth_failed"
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "status-6-rate-limited",
+   "note": "状态行 6：请求过多",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2,
+      "error": "rate_limited",
+      "retry_in": 42
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "status-7-update-failed",
+   "note": "状态行 7：更新失败",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2,
+      "error": "network_unavailable"
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "status-8-refreshing",
+   "note": "状态行 8：正在刷新",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    },
+    "refreshing": true
+   },
+   "battery": 82
+  },
+  {
+   "name": "status-9-updated",
+   "note": "状态行 9：更新于",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "status-9-stale",
+   "note": "数据过期：琥珀色文字、灰色进度条",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 10800,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "status-10-no-data",
+   "note": "状态行 10：尚无数据",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "status": "waiting"
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "home-sleep-notice",
+   "note": "设置会话中长按下键：不息屏",
+   "nav": {
+    "screen": "home",
+    "sleep_notice": true
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ],
+     "setup_active": true,
+     "setup_ready": true
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "menu",
+   "note": "菜单：焦点在热点设置",
+   "nav": {
+    "screen": "menu",
+    "menu_focus": 0
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "menu-usb-open",
+   "note": "菜单：USB 设置已打开",
+   "nav": {
+    "screen": "menu",
+    "menu_focus": 1
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    },
+    "usb": {
+     "active": true,
+     "seconds_left": 107
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "menu-manual-refresh",
+   "note": "菜单：手动刷新、从不息屏",
+   "nav": {
+    "screen": "menu",
+    "menu_focus": 2
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    },
+    "auto_refresh": false,
+    "screen_timeout_seconds": 0
+   },
+   "battery": 82
+  },
+  {
+   "name": "options-refresh",
+   "note": "刷新频率",
+   "nav": {
+    "screen": "refresh",
+    "option_focus": 2
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "options-sleep",
+   "note": "自动息屏",
+   "nav": {
+    "screen": "sleep",
+    "option_focus": 3
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "hotspot-1",
+   "note": "热点设置 第 1 页",
+   "nav": {
+    "screen": "hotspot",
+    "hotspot_page": 0
+   },
+   "view": {
+    "accounts": [],
+    "portable": {
+     "network_state": "ap",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ],
+     "setup_active": true,
+     "setup_ready": true,
+     "setup_seconds_left": 581,
+     "setup_ssid": "Passport-7F3A",
+     "setup_password": "k4xm-29qa",
+     "setup_secret": "K7QM-2X9D-PA4T-Z8RW",
+     "setup_page_url": "http://192.168.4.1/#K7QM-2X9D-PA4T-Z8RW"
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "hotspot-2",
+   "note": "热点设置 第 2 页",
+   "nav": {
+    "screen": "hotspot",
+    "hotspot_page": 1
+   },
+   "view": {
+    "accounts": [],
+    "portable": {
+     "network_state": "ap",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ],
+     "setup_active": true,
+     "setup_ready": true,
+     "setup_seconds_left": 581,
+     "setup_ssid": "Passport-7F3A",
+     "setup_password": "k4xm-29qa",
+     "setup_secret": "K7QM-2X9D-PA4T-Z8RW",
+     "setup_page_url": "http://192.168.4.1/#K7QM-2X9D-PA4T-Z8RW"
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "hotspot-3",
+   "note": "热点设置 第 3 页",
+   "nav": {
+    "screen": "hotspot",
+    "hotspot_page": 2
+   },
+   "view": {
+    "accounts": [],
+    "portable": {
+     "network_state": "ap",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ],
+     "setup_active": true,
+     "setup_ready": true,
+     "setup_seconds_left": 581,
+     "setup_ssid": "Passport-7F3A",
+     "setup_password": "k4xm-29qa",
+     "setup_secret": "K7QM-2X9D-PA4T-Z8RW",
+     "setup_page_url": "http://192.168.4.1/#K7QM-2X9D-PA4T-Z8RW"
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "hotspot-opening",
+   "note": "热点正在打开",
+   "nav": {
+    "screen": "hotspot"
+   },
+   "view": {
+    "accounts": [],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ],
+     "setup_active": true,
+     "setup_ready": false,
+     "setup_seconds_left": 600
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "hotspot-closed",
+   "note": "热点已关闭，没有结果",
+   "nav": {
+    "screen": "hotspot"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "hotspot-result-failed",
+   "note": "完成设置后的验证结果：有失败项",
+   "nav": {
+    "screen": "hotspot"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45",
+      "validation": "failed"
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "failed"
+      },
+      {
+       "ssid": "Office",
+       "validation": "ok"
+      }
+     ],
+     "failed": 2,
+     "setup_result": true
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "hotspot-result-ok",
+   "note": "验证结果：全部正常",
+   "nav": {
+    "screen": "hotspot"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "Office",
+       "validation": "ok"
+      }
+     ],
+     "setup_result": true
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "hotspot-validating",
+   "note": "验证中",
+   "nav": {
+    "screen": "hotspot"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45",
+      "validation": "pending"
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "Office",
+       "validation": "ok"
+      }
+     ],
+     "validating": true,
+     "pending": 1,
+     "setup_result": true
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "hotspot-result-many",
+   "note": "验证结果：项目多于 6 行时失败项优先",
+   "nav": {
+    "screen": "hotspot"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "deepseek",
+      "label": "Acct 0",
+      "observed_ago": 120,
+      "balance": "123.45",
+      "validation": "failed"
+     },
+     {
+      "provider": "deepseek",
+      "label": "Acct 1",
+      "observed_ago": 120,
+      "balance": "123.45",
+      "validation": "ok"
+     },
+     {
+      "provider": "deepseek",
+      "label": "Acct 2",
+      "observed_ago": 120,
+      "balance": "123.45",
+      "validation": "failed"
+     },
+     {
+      "provider": "deepseek",
+      "label": "Acct 3",
+      "observed_ago": 120,
+      "balance": "123.45",
+      "validation": "ok"
+     },
+     {
+      "provider": "deepseek",
+      "label": "Acct 4",
+      "observed_ago": 120,
+      "balance": "123.45",
+      "validation": "failed"
+     },
+     {
+      "provider": "deepseek",
+      "label": "Acct 5",
+      "observed_ago": 120,
+      "balance": "123.45",
+      "validation": "ok"
+     },
+     {
+      "provider": "deepseek",
+      "label": "Acct 6",
+      "observed_ago": 120,
+      "balance": "123.45",
+      "validation": "failed"
+     },
+     {
+      "provider": "deepseek",
+      "label": "Acct 7",
+      "observed_ago": 120,
+      "balance": "123.45",
+      "validation": "ok"
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "failed"
+      },
+      {
+       "ssid": "Office",
+       "validation": "ok"
+      }
+     ],
+     "failed": 4,
+     "setup_result": true
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "usb-waiting",
+   "note": "USB 设置：等待连接",
+   "nav": {
+    "screen": "usb"
+   },
+   "view": {
+    "accounts": [],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    },
+    "usb": {
+     "active": true,
+     "seconds_left": 107
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "usb-connected",
+   "note": "USB 设置：已连接",
+   "nav": {
+    "screen": "usb"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    },
+    "usb": {
+     "active": true,
+     "seconds_left": 300,
+     "connected": true
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "usb-validating",
+   "note": "USB 设置：验证中",
+   "nav": {
+    "screen": "usb"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ],
+     "validating": true,
+     "pending": 1
+    },
+    "usb": {
+     "active": true,
+     "seconds_left": 300,
+     "connected": true
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "usb-ended",
+   "note": "USB 设置：已结束",
+   "nav": {
+    "screen": "usb"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "auth-waiting",
+   "note": "ChatGPT 授权：等待批准",
+   "nav": {
+    "screen": "auth"
+   },
+   "view": {
+    "accounts": [],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ],
+     "login_state": "waiting",
+     "login_url": "https://auth.openai.com/codex/device?user_code=ABCD-EFGH",
+     "login_user_code": "ABCD-EFGH",
+     "login_seconds_left": 861
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "auth-connecting",
+   "note": "ChatGPT 授权：连接中",
+   "nav": {
+    "screen": "auth"
+   },
+   "view": {
+    "accounts": [],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ],
+     "login_state": "connecting",
+     "login_seconds_left": 890
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "auth-expired",
+   "note": "ChatGPT 授权：超时",
+   "nav": {
+    "screen": "auth"
+   },
+   "view": {
+    "accounts": [],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ],
+     "login_state": "expired",
+     "login_error": "codex_expired"
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "auth-saving",
+   "note": "ChatGPT 授权：保存中",
+   "nav": {
+    "screen": "auth"
+   },
+   "view": {
+    "accounts": [],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ],
+     "login_state": "exchanging",
+     "login_error": "storage_failed",
+     "login_seconds_left": 600,
+     "saving": true
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "info",
+   "note": "设备信息",
+   "nav": {
+    "screen": "info"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "info-offline",
+   "note": "设备信息：未联网",
+   "nav": {
+    "screen": "info"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "off",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    },
+    "clock_synchronized": false
+   },
+   "battery": -1
+  },
+  {
+   "name": "confirm-factory-reset",
+   "note": "恢复出厂：默认焦点在取消",
+   "nav": {
+    "screen": "confirm",
+    "confirm_kind": "factory_reset",
+    "confirm_focus": 0
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "confirm-factory-reset-delete",
+   "note": "恢复出厂：焦点在确认删除",
+   "nav": {
+    "screen": "confirm",
+    "confirm_kind": "factory_reset",
+    "confirm_focus": 1
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "confirm-cancel-auth",
+   "note": "取消授权确认框",
+   "nav": {
+    "screen": "confirm",
+    "confirm_kind": "cancel_auth",
+    "confirm_focus": 0
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ],
+     "login_state": "waiting",
+     "login_url": "https://auth.openai.com/codex/device?user_code=ABCD-EFGH",
+     "login_user_code": "ABCD-EFGH",
+     "login_seconds_left": 861
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "confirm-resetting",
+   "note": "正在恢复出厂设置",
+   "nav": {
+    "screen": "confirm",
+    "confirm_kind": "factory_reset",
+    "confirm_focus": 1,
+    "factory_resetting": true
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "hotspot-closed-stale-result",
+   "note": "热点已关闭：不是本次完成设置，旧结果不显示",
+   "nav": {
+    "screen": "hotspot"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45",
+      "validation": "failed"
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "failed"
+      },
+      {
+       "ssid": "Office",
+       "validation": "ok"
+      }
+     ],
+     "failed": 2,
+     "setup_result": false
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "hotspot-busy-opening",
+   "note": "热点正在打开（OK 无操作）",
+   "nav": {
+    "screen": "hotspot"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ],
+     "setup_opening": true
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "hotspot-storage-error",
+   "note": "热点设置遇到存储错误",
+   "nav": {
+    "screen": "hotspot"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ],
+     "storage_error": "storage_failed"
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "confirm-factory-reset-failed",
+   "note": "恢复出厂擦除失败：只能长按 OK 返回",
+   "nav": {
+    "screen": "confirm",
+    "confirm_kind": "factory_reset",
+    "confirm_focus": 0,
+    "factory_failed": true
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ],
+     "factory_reset_failed": true
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "welcome-storage-error",
+   "note": "欢迎屏遇到存储错误：底栏仍写 OK 的作用",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ],
+     "storage_error": "storage_invalid"
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "usb-saving",
+   "note": "USB 设置：保存中",
+   "nav": {
+    "screen": "usb"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ],
+     "saving": true
+    },
+    "usb": {
+     "active": true,
+     "seconds_left": 300,
+     "connected": true
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "usb-preparing",
+   "note": "USB 设置：准备中",
+   "nav": {
+    "screen": "usb"
+   },
+   "view": {
+    "accounts": [],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    },
+    "usb": {
+     "preparing": true
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "auth-requesting",
+   "note": "ChatGPT 授权：获取验证码",
+   "nav": {
+    "screen": "auth"
+   },
+   "view": {
+    "accounts": [],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ],
+     "login_state": "requesting",
+     "login_seconds_left": 890
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "auth-exchanging",
+   "note": "ChatGPT 授权：已批准，正在保存",
+   "nav": {
+    "screen": "auth"
+   },
+   "view": {
+    "accounts": [],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ],
+     "login_state": "exchanging",
+     "login_seconds_left": 400,
+     "saving": true
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "auth-success",
+   "note": "ChatGPT 授权：成功",
+   "nav": {
+    "screen": "auth"
+   },
+   "view": {
+    "accounts": [],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ],
+     "login_state": "success",
+     "login_seconds_left": 890
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "home-deepseek-chinese",
+   "note": "DeepSeek 备注名“工作笔记”：汉字直接显示",
+   "nav": {
+    "screen": "home",
+    "selected_account": 1
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "工作笔记",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "info-chinese-ssid",
+   "note": "设备信息：Wi-Fi 名“家里的网络”直接显示",
+   "nav": {
+    "screen": "info"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "家里的网络",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "hotspot-result-chinese",
+   "note": "验证结果：中文 Wi-Fi 名和备注名直接显示",
+   "nav": {
+    "screen": "hotspot"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "工作",
+      "observed_ago": 120,
+      "balance": "123.45",
+      "validation": "failed"
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "家里的网络",
+       "validation": "failed"
+      },
+      {
+       "ssid": "Office",
+       "validation": "ok"
+      }
+     ],
+     "failed": 2,
+     "setup_result": true
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "menu-sleep-notice",
+   "note": "菜单：设置中长按下键，底栏提示",
+   "nav": {
+    "screen": "menu",
+    "menu_focus": 0,
+    "sleep_notice": true
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "hotspot-1-sleep-notice",
+   "note": "热点第 1 页：底栏提示",
+   "nav": {
+    "screen": "hotspot",
+    "hotspot_page": 0,
+    "sleep_notice": true
+   },
+   "view": {
+    "accounts": [],
+    "portable": {
+     "network_state": "ap",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ],
+     "setup_active": true,
+     "setup_ready": true,
+     "setup_seconds_left": 581,
+     "setup_ssid": "Passport-7F3A",
+     "setup_password": "k4xm-29qa",
+     "setup_secret": "K7QM-2X9D-PA4T-Z8RW",
+     "setup_page_url": "http://192.168.4.1/#K7QM-2X9D-PA4T-Z8RW"
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "usb-sleep-notice",
+   "note": "USB 设置：底栏提示",
+   "nav": {
+    "screen": "usb",
+    "sleep_notice": true
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    },
+    "usb": {
+     "active": true,
+     "seconds_left": 300,
+     "connected": true
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "auth-sleep-notice",
+   "note": "授权：底栏提示",
+   "nav": {
+    "screen": "auth",
+    "sleep_notice": true
+   },
+   "view": {
+    "accounts": [],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ],
+     "login_state": "waiting",
+     "login_url": "https://auth.openai.com/codex/device?user_code=ABCD-EFGH",
+     "login_user_code": "ABCD-EFGH",
+     "login_seconds_left": 861
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "info-sleep-notice",
+   "note": "设备信息：底栏提示",
+   "nav": {
+    "screen": "info",
+    "sleep_notice": true
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "home-deepseek-rare",
+   "note": "备注名含字库没有的字（生僻字、表情）：显示 DeepSeek 2",
+   "nav": {
+    "screen": "home",
+    "selected_account": 1
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "龘龘😀",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "info-rare-ssid",
+   "note": "Wi-Fi 名含字库没有的字：显示 Wi-Fi 1",
+   "nav": {
+    "screen": "info"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "龘龘😀",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "hotspot-result-rare",
+   "note": "验证结果：字库没有的字回退为 Wi-Fi N / DeepSeek N",
+   "nav": {
+    "screen": "hotspot"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "😀",
+      "observed_ago": 120,
+      "balance": "123.45",
+      "validation": "failed"
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "龘龘",
+       "validation": "failed"
+      },
+      {
+       "ssid": "Office",
+       "validation": "ok"
+      }
+     ],
+     "failed": 2,
+     "setup_result": true
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "bar-battery-100",
+   "note": "状态栏：电量 100%",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 100
+  },
+  {
+   "name": "bar-battery-50",
+   "note": "状态栏：电量 50%",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 50
+  },
+  {
+   "name": "bar-battery-15",
+   "note": "状态栏：电量 15%",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 15
+  },
+  {
+   "name": "bar-battery-0",
+   "note": "状态栏：电量 0%",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 0
+  },
+  {
+   "name": "bar-battery-unavailable",
+   "note": "状态栏：电量读数不可用",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": -1
+  },
+  {
+   "name": "bar-battery-usb-50",
+   "note": "状态栏：USB 已连接，电量 50%（绿色）",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 50,
+   "usb_powered": true
+  },
+  {
+   "name": "bar-battery-usb-15",
+   "note": "状态栏：USB 已连接，电量 15%（绿色，不显示低电量红色）",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 15,
+   "usb_powered": true
+  },
+  {
+   "name": "bar-battery-usb-unavailable",
+   "note": "状态栏：USB 已连接但没有电量读数",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": -1,
+   "usb_powered": true
+  },
+  {
+   "name": "bar-wifi-strong",
+   "note": "状态栏：Wi-Fi 信号强",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ],
+     "rssi": -45
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "bar-wifi-medium",
+   "note": "状态栏：Wi-Fi 信号中",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ],
+     "rssi": -68
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "bar-wifi-weak",
+   "note": "状态栏：Wi-Fi 信号弱",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ],
+     "rssi": -82
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "bar-wifi-connecting",
+   "note": "状态栏：Wi-Fi 连接中",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "connecting",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "bar-wifi-failed",
+   "note": "状态栏：Wi-Fi 连接失败",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "error",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ],
+     "network_error": "wifi_auth_failed"
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "bar-wifi-none",
+   "note": "状态栏：没有保存的 Wi-Fi（不显示图标）",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "off",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": []
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "home-deepseek-cny",
+   "note": "DeepSeek：人民币余额（¥）",
+   "nav": {
+    "screen": "home",
+    "selected_account": 1
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45",
+      "currency": "CNY"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "home-deepseek-usd",
+   "note": "DeepSeek：美元余额（$）",
+   "nav": {
+    "screen": "home",
+    "selected_account": 1
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "12.30",
+      "currency": "USD"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "home-deepseek-eur",
+   "note": "DeepSeek：其他币种（金额后加币种代码）",
+   "nav": {
+    "screen": "home",
+    "selected_account": 1
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45",
+      "currency": "EUR"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "home-deepseek-negative",
+   "note": "DeepSeek：负余额",
+   "nav": {
+    "screen": "home",
+    "selected_account": 1
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "-0.12345678",
+      "currency": "CNY"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "home-deepseek-long-amount",
+   "note": "DeepSeek：很长的金额自动缩小",
+   "nav": {
+    "screen": "home",
+    "selected_account": 1
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "1234567890.123456",
+      "currency": "CNY"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "home-chatgpt-credits-decimal",
+   "note": "ChatGPT：额度余额 120.75 显示为 120",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120.75",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "home-chatgpt-credits-small",
+   "note": "ChatGPT：额度余额 0.9 显示为 0",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "0.9",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "home-chatgpt-long-email",
+   "note": "ChatGPT：长邮箱完整显示，放不下才用省略号",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "very.long.email.address.for.testing@example-company.org",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "home-chatgpt-email-fits",
+   "note": "ChatGPT：较长但放得下的邮箱不遮蔽",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "hotspot-result-email",
+   "note": "验证结果：邮箱不遮蔽",
+   "nav": {
+    "screen": "hotspot"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "Office",
+       "validation": "ok"
+      }
+     ],
+     "setup_result": true
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "reset-one-line-no-expiry",
+   "note": "额度与重置次数同一行（无到期时间）",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "reset-two-lines-expiry",
+   "note": "额度与重置到期放不下，分两行",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120.75",
+      "resets": 2,
+      "reset_expires_in": 277207
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "reset-expiry-only",
+   "note": "只有重置次数和到期时间",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "resets": 2,
+      "reset_expires_in": 277200
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "reset-no-expiry-only",
+   "note": "只有重置次数，无到期时间",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "resets": 3
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "reset-expiry-unsynced",
+   "note": "重置到期遇到未校时",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2,
+      "reset_expires_in": 259200
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    },
+    "clock_synchronized": false
+   },
+   "battery": 82
+  },
+  {
+   "name": "reset-expiry-hours",
+   "note": "到期以小时和分钟显示",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "5",
+      "resets": 1,
+      "reset_expires_in": 8040
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "reset-expiry-unlimited",
+   "note": "不限量额度加重置到期",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "0",
+      "resets": 2,
+      "reset_expires_in": 864000,
+      "unlimited_credits": true
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "title-plan-enterprise",
+   "note": "标题：套餐 enterprise",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "enterprise",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "title-plan-business",
+   "note": "标题：套餐 business",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "business",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "title-plan-team",
+   "note": "标题：套餐 team",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "team",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  },
+  {
+   "name": "title-plan-longest",
+   "note": "标题：套餐 self_serve_business_usage_based",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "self_serve_business_usage_based",
+      "observed_ago": 120,
+      "five_hour": {
+       "remaining": 73,
+       "resets_in": 8040
+      },
+      "seven_day": {
+       "remaining": 41,
+       "resets_in": 277200
+      },
+      "credits": "120",
+      "resets": 2
+     },
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "observed_ago": 120,
+      "balance": "123.45"
+     },
+     {
+      "provider": "codex",
+      "email": "b.long.name@example.org",
+      "plan": "plus",
+      "observed_ago": 300,
+      "five_hour": {
+       "remaining": 18,
+       "resets_in": 2820
+      },
+      "seven_day": {
+       "remaining": 4,
+       "resets_in": 97200
+      }
+     }
+    ],
+    "portable": {
+     "network_state": "ready",
+     "ssid": "HomeWiFi",
+     "ip": "192.168.1.23",
+     "firmware": "0.2.0",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "battery": 82
+  }
+ ]
+}

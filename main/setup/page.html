@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+<!--@CSP-->
+<title>Passport 设置</title>
+<style>/*@STYLE*/</style>
+</head>
+<body>
+<div class="shell">
+  <header class="top">
+    <h1>Passport 设置</h1>
+    <span id="remaining" class="remaining" hidden></span>
+  </header>
+  <div id="notice" class="notice" role="status" aria-live="polite" hidden>
+    <span id="notice-text"></span>
+    <div class="notice-action"><button id="notice-action" type="button" hidden></button></div>
+  </div>
+  <section id="connection" class="card" aria-label="连接">
+    <div class="status-line">
+      <span id="conn-dot" class="dot"></span><span id="conn-text"></span>
+    </div>
+    <p id="conn-help" class="muted" hidden></p>
+    <ol id="conn-steps" class="steps" hidden>
+      <li>用 USB 线连接 Passport</li>
+      <li>点下面的“连接 Passport”，选择它的串口</li>
+      <li>在 Passport 上打开 USB 设置，页面会自动连接</li>
+    </ol>
+    <form id="code-form" autocomplete="off" hidden>
+      <label class="field"><span>访问码（Passport 屏幕上的热点设置第 3 页）</span>
+        <input id="code-input" class="code-input" inputmode="text" autocapitalize="characters"
+          autocomplete="off" spellcheck="false" placeholder="XXXX-XXXX-XXXX-XXXX" maxlength="24">
+      </label>
+      <button id="code-submit" class="primary wide" type="submit">连接</button>
+    </form>
+    <div class="actions">
+      <button id="usb-connect" class="primary" type="button" hidden>连接 Passport</button>
+      <button id="usb-disconnect" type="button" hidden>断开 USB</button>
+    </div>
+  </section>
+  <div id="content" hidden>
+    <section id="accounts-section" class="card" aria-labelledby="accounts-title">
+      <div class="section-head">
+        <h2 id="accounts-title">账户</h2>
+        <button id="add-account" class="small" type="button">+ 添加</button>
+      </div>
+      <p id="accounts-hint" class="muted" hidden>先添加 Wi‑Fi</p>
+      <p id="accounts-empty" class="muted">还没有账户</p>
+      <ul id="account-list" class="rows"></ul>
+    </section>
+    <section id="wifi-section" class="card" aria-labelledby="wifi-title">
+      <div class="section-head">
+        <h2 id="wifi-title">Wi‑Fi</h2>
+        <button id="add-wifi" class="small" type="button">+ 添加</button>
+      </div>
+      <p id="wifi-empty" class="muted">Passport 联网用的网络，最多 3 个，普通 2.4 GHz</p>
+      <ul id="wifi-list" class="rows"></ul>
+      <form id="wifi-form" autocomplete="off" hidden>
+        <label class="field"><span>名称</span>
+          <input id="wifi-ssid" autocomplete="off" autocapitalize="none" spellcheck="false">
+        </label>
+        <label class="field"><span>密码（无密码的网络请留空）</span>
+          <input id="wifi-password" type="password" autocomplete="new-password"
+            autocapitalize="none" spellcheck="false">
+        </label>
+        <label class="check"><input id="wifi-show" type="checkbox">显示密码</label>
+        <p id="wifi-error" class="row-error" hidden></p>
+        <div class="actions">
+          <button id="wifi-cancel" type="button">取消</button>
+          <button id="wifi-save" class="primary" type="submit">保存</button>
+        </div>
+      </form>
+    </section>
+    <section id="device-section" class="card" aria-labelledby="device-title">
+      <div class="section-head"><h2 id="device-title">Passport</h2></div>
+      <div class="settings-grid">
+        <label class="field"><span>刷新频率</span>
+          <select id="refresh-select">
+            <option value="manual">手动</option>
+            <option value="60">1 分钟</option>
+            <option value="300">5 分钟</option>
+            <option value="900">15 分钟</option>
+            <option value="1800">30 分钟</option>
+          </select>
+        </label>
+        <label class="field"><span>自动息屏</span>
+          <select id="sleep-select">
+            <option value="0">从不</option>
+            <option value="30">30 秒</option>
+            <option value="60">1 分钟</option>
+            <option value="120">2 分钟</option>
+            <option value="300">5 分钟</option>
+            <option value="600">10 分钟</option>
+          </select>
+        </label>
+      </div>
+    </section>
+  </div>
+</div>
+<footer id="bar" class="bar" hidden>
+  <div class="bar-inner">
+    <p id="bar-text" class="bar-text"></p>
+    <div class="actions">
+      <button id="cancel-auth" type="button" hidden>取消授权</button>
+      <button id="finish" class="primary" type="button">完成设置</button>
+    </div>
+  </div>
+</footer>
+<div id="sheet" class="sheet" hidden>
+  <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+    <h2 id="sheet-title">添加账户</h2>
+    <div class="segmented">
+      <button id="pick-codex" type="button" class="on">ChatGPT</button>
+      <button id="pick-deepseek" type="button">DeepSeek</button>
+    </div>
+    <form id="codex-form" autocomplete="off">
+      <p class="muted">统计 Codex 用量；点完成设置后在 Passport 上授权</p>
+      <label class="field"><span>备注名（可不填）</span>
+        <input id="codex-label" autocomplete="off" maxlength="32">
+      </label>
+      <button id="codex-add" class="primary wide" type="submit">添加</button>
+    </form>
+    <form id="deepseek-form" autocomplete="off" hidden>
+      <p class="muted">统计可用余额</p>
+      <label class="field"><span>备注名</span>
+        <input id="deepseek-label" autocomplete="off" maxlength="32">
+      </label>
+      <label class="field"><span>密钥</span>
+        <input id="deepseek-key" type="password" autocomplete="new-password"
+          autocapitalize="none" spellcheck="false">
+      </label>
+      <label class="check"><input id="deepseek-show" type="checkbox">显示密钥</label>
+      <p id="deepseek-error" class="row-error" hidden></p>
+      <button id="deepseek-add" class="primary wide" type="submit">添加</button>
+    </form>
+    <button id="sheet-cancel" class="wide gap" type="button">取消</button>
+  </div>
+</div>
+<script type="module">/*@SCRIPT*/</script>
+</body>
+</html>

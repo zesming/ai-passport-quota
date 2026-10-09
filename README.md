@@ -1,64 +1,78 @@
-[简体中文](README.zh_CN.md) · English
-
 # AI Passport Quota
 
-A quota dashboard for the FoloToy AI Passport: ESP32-C3, 240 × 320 display, 8 MB Flash, no PSRAM. It shows Codex/Claude usage windows, reset countdowns, available banked resets/credits when provided, and DeepSeek CNY balance. Missing windows are hidden; actual 0% remains visible.
+FoloToy AI Passport 额度看板：ESP32-C3、240 × 320 屏幕、8 MB Flash、无 PSRAM。展示 ChatGPT（统计 Codex 用量）的额度窗口、重置倒计时、来源提供的可用重置与剩余额度，以及 DeepSeek 可用余额。缺失窗口隐藏，真实 0% 保留。
 
-## Set up the device
+Passport 自己联网刷新全部账户，不需要电脑常驻任何服务。
 
-Passport owns its accounts, Wi-Fi and refresh settings. Phones use the device hotspot; computers can open the same settings page over USB; no computer service is required for device-managed accounts. Up to eight active accounts and three personal 2.4 GHz networks are supported.
+## 配置设备
 
-1. Install firmware using the [developer guide](docs/development/README.md).
-2. Long-press OK → **Device settings → Hotspot**. Join the temporary hotspot using the first QR or the displayed network name/password.
-3. Short-press OK to show the page QR. Scan it after joining, or use the manual-entry step to enter the complete address and temporary setup key in a computer browser.
-4. Save Internet-capable Wi-Fi or a compatible phone hotspot. Add Codex or a DeepSeek API key, then finish setup so Passport can connect and validate.
-5. Codex authorization closes the device hotspot. Restore Internet access on the phone/computer, open the official authorization page shown on Passport, and enter its code. Passport saves its independently issued credentials.
+Passport 保存账户、Wi-Fi 和刷新设置。最多八个账户、三个普通 2.4 GHz Wi-Fi。账户只有两种：ChatGPT（Codex 设备码授权）和 DeepSeek（API 密钥）。
 
-The local page has Accounts, Network and Settings tabs and no hosted backend. A bare address loads a setup-key prompt. Hotspot setup lasts ten minutes; USB setup lasts two minutes. Reopening requires a physical action. API keys/tokens are never returned to the page. Device credentials are stored in a dedicated NVS partition; this build does not encrypt Flash against physical access.
+1. 按[开发指南](docs/development/README.md)安装固件。
+2. 还没有账户时，欢迎屏上短按 OK 打开热点设置；已有账户时长按 OK 打开菜单，选**热点设置**。热点设置有三页：第 1 页扫 Wi-Fi 二维码（或照屏幕上的名称、密码）加入临时热点。
+3. 短按 OK 翻到第 2 页，连上热点后扫网页二维码。第 3 页给出手动输入的方式：在浏览器输入 `http://192.168.4.1`，再输入屏幕上的 16 位访问码（`XXXX-XXXX-XXXX-XXXX`）。
+4. 添加可联网的 Wi-Fi 或兼容手机热点，再添加 ChatGPT 或 DeepSeek 账户。保存只是接收，行状态显示“待验证”。
+5. 点页面底部的“完成设置”。热点会关闭，Passport 联网验证 Wi-Fi 和 DeepSeek 密钥；ChatGPT 需要在 Passport 上授权：手机或电脑恢复互联网连接，打开 Passport 显示的官方授权页并输入验证码。热点关闭后，Passport 的热点设置屏幕显示验证结果：每个 Wi-Fi 和账户一行，“正常”“验证失败”“验证中”，失败的排在最前面。要修改失败的项，在菜单里重新打开热点设置；USB 设置下页面自己逐项显示结果，可以直接改。
 
-Codex uses an experimental reproduction of the official client's device-code flow, not a registered third-party OAuth integration or stable public quota API. It displays **Codex usage**, not all ChatGPT messaging limits. DeepSeek displays total available CNY balance; its balance API does not expose spending history, requests or token totals. Claude subscription collection still requires the optional computer collector.
+设置页是一份静态网页，无需云端服务，也不写浏览器存储。热点窗口开放十分钟，每次修改补到至少五分钟，总共最多二十分钟；重新打开需要操作设备。连续输错五次访问码，热点会锁定，直到在设备上重新开启。网页不返回 API 密钥或令牌。设备凭据存独立 NVS 分区；本固件未加密 Flash，不能防止物理读取。
 
-## Use
+Codex 采用官方客户端设备码流程的实验性兼容实现，并非已注册的第三方 OAuth 集成或稳定公开额度 API。展示的是 **Codex 用量**，不代表全部 ChatGPT 消息限制。DeepSeek 显示总可用余额（有人民币时显示人民币，否则显示美元）；余额 API 不提供消费历史、请求次数或累计 Tokens。
 
-Up/Down switches accounts, short OK refreshes/confirms, and long OK opens settings/returns. Long Down turns the display off; the first complete function-key gesture only wakes it. The hardware power key retains long-press shutdown.
+### USB 设置
 
-Refresh intervals are 1/5/15/30 minutes; auto-sleep options are never/30 seconds/1/2/5/10 minutes. Screen-off stops Wi-Fi and new network requests; received credentials still finish saving. Wake shows cached values, restores Wi-Fi and refreshes when manually requested or due. Network/clock readiness and account errors are reported separately.
+有电脑时可以用 USB 设置，不必加入设备热点。在桌面版 Chrome 或 Edge 里打开设置页（GitHub Pages 的 `zesming.github.io/ai-passport-quota`，或本地保存的 `setup_page.html`），然后按顺序做三步：
 
-Network information shows connection status and saved Wi-Fi names. Device settings offers Hotspot and USB for the same account, network and settings controls.
+1. 用 USB 线连接 Passport。
+2. 点页面里的“连接 Passport”，选择它的串口。
+3. 在 Passport 上打开 USB 设置（长按 OK 打开菜单，选 **USB 设置**；还没有账户时菜单总是停在第一项，所以是长按 OK、按下键、再按 OK）。页面显示“请在 Passport 上打开 USB 设置”，并自动连接。Passport 的 USB 设置屏幕显示剩余时间，状态为准备中、等待连接、已连接、保存中、验证中或已结束；窗口已经打开时再进入这个屏幕只是查看，窗口结束后短按 OK 重新打开。页面连上前 Passport 若重启，再打开一次 USB 设置即可。
 
-The status bar shows Wi-Fi, synchronized UTC+8 time and a green battery fill proportional to charge. Green is styling, not verified charging detection. Enterprise certificate Wi-Fi and Bluetooth Internet relay are not implemented; use personal Wi-Fi or a compatible hotspot.
+顺序不要反：打开串口可能让 Passport 重启，先开 USB 设置再点“连接”会被重启关掉。USB 设置开两分钟，每次修改补到至少五分钟；到期后串口保持打开，在 Passport 上重新打开 USB 设置，页面会自动再连上。
 
-## Computer setup over USB
+USB 下“完成设置”不会断开：页面逐项显示验证结果，失败的行可以直接修改，再点“完成设置”只验证待验证和失败的行。例如 Wi-Fi 密码输错时，改好密码再验证即可，不用碰 Passport 的按键。设置页版本与固件版本不一致时，页面会提示升级固件，或打开匹配版本的页面（`/p<协议版本>/`）。
 
-Start the local page with the commands below, then open **http://127.0.0.1:4317/** in desktop Chrome/Edge. Choose USB device settings, connect the USB port and wait for Passport to start. On Passport, long-press OK → **Device settings → USB**, then connect the settings window in the same browser tab.
+## 使用
 
-Use the Accounts, Network and Settings tabs. Codex starts a new device authorization: approve the displayed code on the official page. DeepSeek sends its API key directly to Passport and verifies it over the saved Wi-Fi. The computer keeps its Internet connection; Passport still needs Internet-capable Wi-Fi. Existing computer OAuth credentials are not copied. Closing or expiry ends setup access, while accepted work continues.
+按键在所有界面含义一致：
 
-## Optional computer collector
+| 手势 | 作用 |
+| --- | --- |
+| 上/下 | 移动焦点，列表首尾循环；主页上切换账户；热点设置里翻页 |
+| 短按 OK | 执行屏幕底栏写的操作；主页上刷新当前账户 |
+| 长按 OK（半秒） | 返回上一层；主页没有上一层，所以打开菜单 |
+| 长按下键 | 息屏；设置会话（热点、USB、授权）开着时不息屏，底栏提示“设置中不能息屏” |
+| 息屏时按任意键 | 只亮屏，不执行操作 |
 
-Computer-sourced accounts share the same device list and settings. An unavailable collector affects only those accounts. Existing accounts are preserved during migration; history beyond the eight-active limit can be deactivated/activated without deleting credentials. Codex/DeepSeek can be explicitly reauthorized on Passport to change their source; desktop tokens are not imported or automatically merged by email.
+息屏时 Passport 进入浅睡眠：想接 USB，请先按任意键亮屏再插线，熄屏状态下插入可能无法被电脑识别。
 
-Requires Node.js 22+, npm and OpenSSL; Codex/Claude also require their official clients. Start manually:
+长按不会做破坏性操作。恢复出厂设置和取消授权都要经过确认框，确认框默认停在“取消”。
 
-```bash
-git clone https://github.com/zesming/ai-passport-quota.git
-cd ai-passport-quota/companion
-npm ci
-npm run build
-npm start
-```
+菜单共五项，顺序固定：**热点设置、USB 设置、刷新频率、自动息屏、设备信息**。有账户时菜单记住上次的位置（重启后清零）；没有账户时每次都从第一项开始。刷新频率可选手动、1、5、15、30 分钟；自动息屏可选从不、30 秒、1、2、5、10 分钟。选项列表里短按 OK 保存并回到菜单，长按 OK 放弃。息屏关闭 Wi-Fi、停止新网络请求，收到的新凭据仍完成保存。亮屏先显示缓存，再恢复联网；手动刷新或到点时才查询来源。
 
-Open **http://127.0.0.1:4317/**. The optional compatibility collector uses isolated private profiles. Claude's official statusline supplies observations during normal usage; refreshing sends no paid model prompt. In USB device settings, explicitly pair this computer collector, wait for verified discovery, then import the required account. Importing a Claude row keeps the computer as its source; it does not transfer provider credentials. The device uses pinned HTTPS on port **4318**. No autostart is installed. Private computer data lives in `~/.local/share/ai-passport-quota/` or `AIQ_STATE_DIR`.
+主页显示账户卡：ChatGPT 的 5 小时和 7 天额度（没有数据的周期隐藏，真实 0% 照常显示）、剩余额度（取整数，舍去小数，不会多报）和可用重置次数，有到期时间时同一行显示还剩多久过期（放不下时换到下一行）；DeepSeek 的可用余额，金额带货币符号（人民币 ¥，美元 $）。ChatGPT 账户显示完整邮箱，放不下时用省略号。卡片底部的状态行只显示最要紧的一条，优先级依次为：存储错误、授权中（OK 查看）、需要重新授权、待验证或验证失败、Wi-Fi 连接失败、请求过多、更新失败、正在刷新、更新于某时、尚无数据。数据过期时文字变琥珀色、进度条变灰。状态栏显示校时后的 UTC+8 时间（未校时为 `--:--`，倒计时显示“待校时”）、Wi-Fi 图标和电池图标。Wi-Fi 图标按信号强弱点亮 1 至 3 道弧线；连接中或未连接时变暗，连接失败时变暗并带琥珀色斜线，没有保存 Wi-Fi 时不显示。电池图标按电量计读数填充，20% 及以下为红色，读不到电量时显示带斜线的空框。**绿色填充表示 Passport 连接着 USB 主机（如电脑）**，此时不再显示低电量红色。绿色不代表正在充电，充满后仍为绿色；只接充电器不会变绿，电脑休眠或 USB 挂起时也不变绿。
 
-## Screenshots and development
+**设备信息**列出 Wi-Fi、IP、时间、电量和固件版本。在这里短按 OK 进入**恢复出厂设置**确认框：先按下键选“确认删除”，再按 OK。这会清空全部账户、Wi-Fi 和设置并重启，只能在 Passport 上操作，设置页不提供。ChatGPT 授权时 Passport 显示二维码和验证码；长按 OK 回到主页，授权仍在后台继续，主页状态行提示“授权中 · OK 查看”；在授权屏上短按 OK 才会询问是否取消授权。
 
-Screenshots use isolated synthetic accounts; browser previews do not establish hardware telemetry.
+独立电源键保持硬件长按关机。企业证书网络与蓝牙网络中转尚未实现，请使用普通 Wi-Fi 或兼容手机热点。
 
-![Device setup](docs/screenshots/phone-setup.jpg)
-![ChatGPT Pro](docs/screenshots/quota-pro.jpg)
-![Claude](docs/screenshots/claude.jpg)
-![DeepSeek](docs/screenshots/deepseek.jpg)
+## 升级数据影响
 
-Read [AGENTS](AGENTS.md), the [developer guide](docs/development/README.md) and [application contracts](docs/applications/ai-quota-monitor.md) to continue development. Validation history belongs in the [changelog](docs/CHANGELOG.md).
+从旧固件升级后首次启动会清理已删除功能的数据，其余数据保留：
 
-Based on the MIT-licensed [FoloToy AI Passport](https://gitee.com/FoloToy/ai-passport), commit `0b9e4c81ee4421c0bac39ca3561d65a8285acd4a`. See [LICENSE](LICENSE) and [asset licenses](assets/README.md).
+| 数据 | 升级后 |
+| --- | --- |
+| 设备上的 ChatGPT、DeepSeek 账户及其凭据 | 保留 |
+| 前 3 个 Wi-Fi、刷新间隔、息屏时间 | 保留 |
+| 当前选中账户 | 保留；若它已被删除，改为第一个剩余账户，没有剩余账户时置空 |
+| 旧版本支持的其他服务账户、由电脑提供数据的账户 | 删除，缓存的额度数据一并清零 |
+| 待启用账户（历史账户）及其凭据 | 删除 |
+| 待启用的第 4 个 Wi-Fi | 删除 |
+| 电脑采集器端点和配对信息 | 删除 |
+| 只有旧版本 v1 数据的设备 | 按全新设备处理，没有账户和 Wi-Fi，需重新设置 |
+
+清理是幂等的：中途断电后，下次启动会继续完成。
+
+## 开发
+
+继续开发先读 [AGENTS](AGENTS.md)、[开发指南](docs/development/README.md)和[应用契约](docs/applications/ai-quota-monitor.md)。验证历史放在[变更日志](docs/CHANGELOG.md)。
+
+基于 MIT 许可的 [FoloToy AI Passport](https://gitee.com/FoloToy/ai-passport)，提交 `0b9e4c81ee4421c0bac39ca3561d65a8285acd4a`。见 [LICENSE](LICENSE)和[素材许可](assets/README.md)。

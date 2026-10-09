@@ -29,6 +29,13 @@ void bsp_display_backlight(uint8_t percent);
 // 已阻止 LVGL 刷屏，调用后必须立即进入 deep sleep 或重启。
 esp_err_t bsp_display_prepare_deep_sleep(void);
 
+// 息屏浅睡眠专用（自动浅睡眠 + PM_SLP_DISABLE_GPIO 会让引脚在睡眠中浮空）：
+// enter 关背光 PWM（空闲低电平）并配置睡眠态引脚——背光脚下拉、LCD CS 上拉，让 ST7789
+// 保持未选中；exit 恢复默认睡眠配置并重新使能 PWM 输出（占空比 0，亮度由调用方再设）。
+// 两者幂等，调用前面板必须已 Sleep In、LVGL 已停止刷屏。显示未初始化时返回 ESP_ERR_INVALID_STATE。
+esp_err_t bsp_display_enter_light_sleep(void);
+esp_err_t bsp_display_exit_light_sleep(void);
+
 // ---------------------------------------------------------------------------
 // LVGL 接入(可选层)。必须先 bsp_display_init() 成功后再调。
 // 不想用 LVGL 的开发者可忽略本段,直接用 bsp_display_panel() 自己画。
@@ -50,6 +57,13 @@ void bsp_lvgl_unlock(void);
 // Reversible LCD sleep and refresh pause; call once per transition from a task.
 // Wake restores rendering; caller redraws cached UI before enabling backlight.
 bool bsp_lvgl_set_sleeping(bool sleeping);
+
+// 息屏深度静默：在 bsp_lvgl_set_sleeping(true) 之后调用。暂停所有正在运行的 LVGL 定时器
+// （最多记录 16 个，多出的保持运行），停掉 port 的 tick，再使能 lv_timer，使 port 任务按
+// task_max_sleep_ms 阻塞而不是每 2 ms 轮询。resume 重启 tick、恢复记录的定时器（只恢复仍存在
+// 的）并唤醒 port 任务，须在 bsp_lvgl_set_sleeping(false) 之前调用。两者幂等，失败不改变状态。
+bool bsp_lvgl_suspend(void);
+bool bsp_lvgl_resume(void);
 
 // Render pending UI and wait for queued SPI pixels before lighting the screen.
 bool bsp_lvgl_refresh(void);

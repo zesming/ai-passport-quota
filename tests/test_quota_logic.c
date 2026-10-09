@@ -1,37 +1,8 @@
 #include "quota_logic.h"
 
 #include <assert.h>
-#include <stdarg.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-
-static const char *valid_account =
-    "{\"id\":\"0123456789abcdef0123456789abcdef\",\"provider\":\"codex\","
-    "\"email\":\"alex@example.com\",\"plan\":\"Plus\",\"status\":\"ok\","
-    "\"observed_at\":1700000000,\"five_hour\":{\"remaining_percent\":0,"
-    "\"resets_at\":1700000100},\"seven_day\":null}";
-
-static void appendf(char *buffer, size_t capacity, size_t *length, const char *format, ...)
-{
-    assert(*length < capacity);
-    va_list arguments;
-    va_start(arguments, format);
-    int count = vsnprintf(buffer + *length, capacity - *length, format, arguments);
-    va_end(arguments);
-    assert(count >= 0 && (size_t)count < capacity - *length);
-    *length += (size_t)count;
-}
-
-static size_t make_snapshot(char *buffer, size_t capacity, const char *accounts,
-                            const char *settings)
-{
-    int count = snprintf(buffer, capacity,
-        "{\"v\":1,\"server_time\":1700000000,\"revision\":12,"
-        "\"settings\":%s,\"accounts\":[%s]}", settings, accounts);
-    assert(count >= 0 && (size_t)count < capacity);
-    return (size_t)count;
-}
 
 static void test_utf8_and_identifiers(void)
 {
@@ -46,24 +17,8 @@ static void test_utf8_and_identifiers(void)
     assert(!quota_id_is_valid("0123456789abcdef0123456789abcde"));
 }
 
-static void test_urls_tokens_and_display(void)
+static void test_display_text(void)
 {
-    char host[16];
-    assert(quota_url_is_private_ipv4("https://192.168.1.20:4318", host));
-    assert(strcmp(host, "192.168.1.20") == 0);
-    assert(quota_url_is_private_ipv4("https://10.0.0.3:4318", host));
-    assert(quota_url_is_private_ipv4("https://172.31.255.254:4318", host));
-    assert(!quota_url_is_private_ipv4("https://172.32.0.1:4318", host));
-    assert(!quota_url_is_private_ipv4("https://8.8.8.8:4318", host));
-    assert(!quota_url_is_private_ipv4("https://192.168.1.20:443", host));
-    assert(!quota_url_is_private_ipv4("https://192.168.1.20:4318/", host));
-    assert(!quota_url_is_private_ipv4("https://user@192.168.1.20:4318", host));
-    assert(!quota_url_is_private_ipv4("https://192.168.001.20:4318", host));
-    assert(!quota_url_is_private_ipv4("https://[fd00::1]:4318", host));
-    assert(quota_pair_token_is_valid("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq"));
-    assert(!quota_pair_token_is_valid("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq="));
-    assert(!quota_pair_token_is_valid("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq/"));
-
     char display[32];
     quota_copy_display_plan("pro", display, sizeof(display));
     assert(strcmp(display, "Pro") == 0);
@@ -77,185 +32,16 @@ static void test_urls_tokens_and_display(void)
     assert(strcmp(display, "name?@example.com") == 0);
 }
 
-static void test_snapshot_validation_and_null_semantics(void)
+static void test_account_lookup(void)
 {
-    char json[1024];
-    size_t length = make_snapshot(json, sizeof(json), valid_account,
-                                  "{\"refresh_seconds\":300,\"auto_refresh\":true}");
     quota_snapshot_t snapshot = {0};
-    assert(quota_parse_snapshot(json, length, &snapshot));
-    assert(snapshot.account_count == 1 && snapshot.refresh_seconds == 300);
-    assert(snapshot.accounts[0].five_hour.present);
-    assert(snapshot.accounts[0].five_hour.remaining_percent == 0);
-    assert(snapshot.accounts[0].five_hour.has_resets_at);
-    assert(snapshot.accounts[0].five_hour.resets_at == 1700000100);
-    assert(!snapshot.accounts[0].seven_day.present);
-
-    char absent_metric[] =
-        "{\"v\":1,\"server_time\":1,\"revision\":0,"
-        "\"settings\":{\"refresh_seconds\":60,\"auto_refresh\":false},"
-        "\"accounts\":[{\"id\":\"0123456789abcdef0123456789abcdef\","
-        "\"provider\":\"claude\",\"email\":\"\",\"plan\":\"\","
-        "\"status\":\"waiting\",\"observed_at\":null,\"five_hour\":null,"
-        "\"seven_day\":{\"remaining_percent\":100,\"resets_at\":null}}]}";
-    assert(quota_parse_snapshot(absent_metric, strlen(absent_metric), &snapshot));
-    assert(!snapshot.accounts[0].has_observed_at);
-    assert(!snapshot.accounts[0].five_hour.present);
-    assert(snapshot.accounts[0].seven_day.present);
-    assert(snapshot.accounts[0].seven_day.remaining_percent == 100);
-    assert(!snapshot.accounts[0].seven_day.has_resets_at);
-
-    char bad[1100];
-    size_t bad_length = make_snapshot(bad, sizeof(bad), valid_account,
-                                      "{\"refresh_seconds\":61,\"auto_refresh\":true}");
-    assert(!quota_parse_snapshot(bad, bad_length, &snapshot));
-    bad_length = make_snapshot(bad, sizeof(bad), valid_account,
-                               "{\"refresh_seconds\":300,\"auto_refresh\":1}");
-    assert(!quota_parse_snapshot(bad, bad_length, &snapshot));
-    bad_length = make_snapshot(bad, sizeof(bad), valid_account,
-                               "{\"refresh_seconds\":300,\"auto_refresh\":true,"
-                               "\"auto_refresh\":false}");
-    assert(!quota_parse_snapshot(bad, bad_length, &snapshot));
-    bad_length = make_snapshot(bad, sizeof(bad), valid_account,
-                               "{\"refresh_seconds\":300,\"auto_refresh\":true}");
-    bad[bad_length++] = 'x';
-    assert(!quota_parse_snapshot(bad, bad_length, &snapshot));
-
-    char invalid_percent[] =
-        "{\"v\":1,\"server_time\":1,\"revision\":0,"
-        "\"settings\":{\"refresh_seconds\":300,\"auto_refresh\":true},"
-        "\"accounts\":[{\"id\":\"0123456789abcdef0123456789abcdef\","
-        "\"provider\":\"codex\",\"email\":\"x@example.com\",\"plan\":\"P\","
-        "\"status\":\"ok\",\"observed_at\":1,\"five_hour\":{"
-        "\"remaining_percent\":101,\"resets_at\":null},\"seven_day\":null}]}";
-    assert(!quota_parse_snapshot(invalid_percent, strlen(invalid_percent), &snapshot));
-    char upper_id[sizeof(invalid_percent)];
-    memcpy(upper_id, invalid_percent, sizeof(invalid_percent));
-    char *id = strstr(upper_id, "0123456789abcdef");
-    assert(id != NULL);
-    id[0] = 'A';
-    assert(!quota_parse_snapshot(upper_id, strlen(upper_id), &snapshot));
-}
-
-static void test_account_limit_and_identity(void)
-{
-    char accounts[8000] = {0};
-    size_t length = 0;
-    for (int i = 0; i < 9; i++) {
-        appendf(accounts, sizeof(accounts), &length,
-            "%s{\"id\":\"%08x0123456789abcdef01234567\","
-            "\"provider\":\"codex\",\"email\":\"x@example.com\","
-            "\"plan\":\"Plus\",\"status\":\"ok\",\"observed_at\":1,"
-            "\"five_hour\":null,\"seven_day\":null}", i == 0 ? "" : ",", (unsigned)i);
+    snapshot.account_count = QUOTA_MAX_ACCOUNTS;
+    for (int i = 0; i < QUOTA_MAX_ACCOUNTS; i++) {
+        snprintf(snapshot.accounts[i].id, sizeof(snapshot.accounts[i].id),
+                 "%08x0123456789abcdef01234567", (unsigned)i);
     }
-    char json[QUOTA_MAX_SNAPSHOT_BYTES + 1];
-    size_t json_length = make_snapshot(json, sizeof(json), accounts,
-                                       "{\"refresh_seconds\":300,\"auto_refresh\":true}");
-    quota_snapshot_t snapshot;
-    assert(!quota_parse_snapshot(json, json_length, &snapshot));
-
-    length = 0;
-    for (int i = 0; i < 8; i++) {
-        appendf(accounts, sizeof(accounts), &length,
-            "%s{\"id\":\"%08x0123456789abcdef01234567\","
-            "\"provider\":\"codex\",\"email\":\"x@example.com\","
-            "\"plan\":\"Plus\",\"status\":\"ok\",\"observed_at\":1,"
-            "\"five_hour\":null,\"seven_day\":null}", i == 0 ? "" : ",", (unsigned)i);
-    }
-    json_length = make_snapshot(json, sizeof(json), accounts,
-                                "{\"refresh_seconds\":1800,\"auto_refresh\":false}");
-    assert(quota_parse_snapshot(json, json_length, &snapshot));
-    assert(snapshot.account_count == 8);
     assert(quota_find_account_by_id(&snapshot, "000000070123456789abcdef01234567") == 7);
     assert(quota_find_account_by_id(&snapshot, "abcdefabcdefabcdefabcdefabcdefab") == -1);
-}
-
-static void test_utf8_field_byte_boundaries(void)
-{
-    char email[131];
-    for (size_t i = 0; i < 64; i++) {
-        email[i * 2] = (char)0xc3;
-        email[i * 2 + 1] = (char)0xa9;
-    }
-    email[128] = '\0';
-    char account[1024];
-    int account_length = snprintf(account, sizeof(account),
-        "{\"id\":\"0123456789abcdef0123456789abcdef\",\"provider\":\"codex\","
-        "\"email\":\"%s\",\"plan\":\"Plus\",\"status\":\"ok\","
-        "\"observed_at\":1,\"five_hour\":null,\"seven_day\":null}", email);
-    assert(account_length > 0 && (size_t)account_length < sizeof(account));
-    char json[1200];
-    size_t json_length = make_snapshot(json, sizeof(json), account,
-                                       "{\"refresh_seconds\":300,\"auto_refresh\":true}");
-    quota_snapshot_t snapshot;
-    assert(quota_parse_snapshot(json, json_length, &snapshot));
-    assert(strlen(snapshot.accounts[0].email) == QUOTA_EMAIL_MAX_BYTES);
-
-    email[128] = (char)0xc3;
-    email[129] = (char)0xa9;
-    email[130] = '\0';
-    account_length = snprintf(account, sizeof(account),
-        "{\"id\":\"0123456789abcdef0123456789abcdef\",\"provider\":\"codex\","
-        "\"email\":\"%s\",\"plan\":\"Plus\",\"status\":\"ok\","
-        "\"observed_at\":1,\"five_hour\":null,\"seven_day\":null}", email);
-    assert(account_length > 0 && (size_t)account_length < sizeof(account));
-    json_length = make_snapshot(json, sizeof(json), account,
-                                "{\"refresh_seconds\":300,\"auto_refresh\":true}");
-    assert(!quota_parse_snapshot(json, json_length, &snapshot));
-}
-
-static void test_provision_frame(void)
-{
-    static const char token[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq";
-    char frame[1024];
-    int count = snprintf(frame, sizeof(frame),
-        "@AIQ:{\"v\":1,\"op\":\"configure\",\"request_id\":\"a1b2c3d4\","
-        "\"ssid\":\"Office\",\"password\":\"p\\\"ass\\\\word\","
-        "\"base_url\":\"https://192.168.1.20:4318\",\"pair_token\":\"%s\","
-        "\"server_cert_pem\":\"-----BEGIN CERTIFICATE-----\\nabc\\n"
-        "-----END CERTIFICATE-----\\n\",\"server_time\":1790899200}", token);
-    assert(count > 0 && (size_t)count < sizeof(frame));
-    quota_device_config_t config = {0};
-    char request_id[9];
-    const char *error = NULL;
-    assert(quota_parse_provision_frame(frame, (size_t)count, &config, request_id, &error));
-    assert(strcmp(request_id, "a1b2c3d4") == 0);
-    assert(strcmp(config.ssid, "Office") == 0);
-    assert(strcmp(config.password, "p\"ass\\word") == 0);
-    assert(strcmp(config.base_url, "https://192.168.1.20:4318") == 0);
-    assert(config.refresh_seconds == 300 && config.auto_refresh);
-    assert(config.server_time == 1790899200 && error == NULL);
-
-    quota_device_config_t preserved = config;
-    int changed = snprintf(frame, sizeof(frame),
-        "@AIQ:{\"v\":1,\"op\":\"configure\",\"request_id\":\"a1b2c3d4\","
-        "\"ssid\":\"%s\",\"password\":\"\","
-        "\"base_url\":\"https://192.168.1.20:4318\",\"pair_token\":\"%s\","
-        "\"server_cert_pem\":\"-----BEGIN CERTIFICATE-----x"
-        "-----END CERTIFICATE-----\",\"server_time\":1790899200}",
-        "123456789012345678901234567890123", token);
-    assert(changed > 0 && (size_t)changed < sizeof(frame));
-    assert(!quota_parse_provision_frame(frame, (size_t)changed, &config,
-                                        request_id, &error));
-    assert(strcmp(error, "invalid_config") == 0);
-    assert(memcmp(&config, &preserved, sizeof(config)) == 0);
-
-    size_t too_long = QUOTA_MAX_PROVISION_FRAME_BYTES + 1;
-    char *overlong = (char *)malloc(too_long);
-    assert(overlong != NULL);
-    memset(overlong, 'x', too_long);
-    assert(!quota_parse_provision_frame(overlong, too_long, &config, request_id, &error));
-    assert(strcmp(error, "invalid_frame") == 0);
-    free(overlong);
-
-    const char malformed[] = "@AIQ:{bad}";
-    assert(!quota_parse_provision_frame(malformed, sizeof(malformed) - 1,
-                                        &config, request_id, &error));
-    assert(strcmp(error, "invalid_json") == 0);
-    const char bad_version[] = "@AIQ:{\"v\":2,\"op\":\"configure\",\"request_id\":\"a1b2c3d4\"}";
-    assert(!quota_parse_provision_frame(bad_version, sizeof(bad_version) - 1,
-                                        &config, request_id, &error));
-    assert(strcmp(error, "unsupported_version") == 0);
 }
 
 static void test_serial_framing_recovers_after_overlong_line(void)
@@ -265,11 +51,9 @@ static void test_serial_framing_recovers_after_overlong_line(void)
     const char *frame = NULL;
     size_t length = 0;
     for (size_t i = 0; i < QUOTA_MAX_PROVISION_FRAME_BYTES + 1; i++) {
-        assert(quota_frame_decoder_feed(&decoder, 'x', &frame, &length) ==
-               QUOTA_FRAME_PENDING);
+        assert(quota_frame_decoder_feed(&decoder, 'x', &frame, &length) == QUOTA_FRAME_PENDING);
     }
-    assert(quota_frame_decoder_feed(&decoder, '\n', &frame, &length) ==
-           QUOTA_FRAME_TOO_LONG);
+    assert(quota_frame_decoder_feed(&decoder, '\n', &frame, &length) == QUOTA_FRAME_TOO_LONG);
     static const char next_frame[] = "@AIQ:{}\r\n";
     quota_frame_result_t result = QUOTA_FRAME_PENDING;
     for (size_t i = 0; i < sizeof(next_frame) - 1; i++) {
@@ -288,173 +72,600 @@ static void test_freshness_and_reset_states(void)
     assert(!quota_data_is_stale(4599, true, 1000, 1800));
     assert(quota_data_is_stale(4601, true, 1000, 1800));
     assert(quota_data_is_stale(999, true, 1000, 300));
-    assert(quota_pairing_window_active(true, 1000, 1000));
-    assert(quota_pairing_window_active(true, 120999, 1000));
-    assert(!quota_pairing_window_active(true, 121000, 1000));
-    assert(!quota_pairing_window_active(false, 2000, 1000));
+    assert(quota_usb_window_active(true, 1000, 121000));
+    assert(quota_usb_window_active(true, 120999, 121000));
+    assert(!quota_usb_window_active(true, 121000, 121000));
+    assert(!quota_usb_window_active(true, 1000, 0));
+    assert(!quota_usb_window_active(false, 2000, 121000));
 
-    quota_window_t window = {.present = true, .remaining_percent = 0,
-                             .has_resets_at = true, .resets_at = 1500};
+    quota_window_t window = {
+        .present = true, .remaining_percent = 0, .has_resets_at = true, .resets_at = 1500};
     assert(quota_metric_state(&window, 1499) == QUOTA_METRIC_VALUE);
     assert(quota_metric_state(&window, 1500) == QUOTA_METRIC_WAITING_FOR_SOURCE);
     window.present = false;
     assert(quota_metric_state(&window, 1500) == QUOTA_METRIC_UNAVAILABLE);
 }
 
-static void test_navigation(void)
+/* Drive the navigation from the home screen as the keys would. */
+static quota_navigation_context_t ctx(uint8_t accounts, bool auth_active)
 {
-    quota_navigation_t navigation;
-    quota_navigation_init(&navigation, true, 300, true, 120, 3);
-    assert(navigation.screen == QUOTA_SCREEN_HOME);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_UP, 3) ==
-           QUOTA_ACTION_PERSIST_SELECTION);
-    assert(navigation.selected_account == 2);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_DOWN, 3) ==
-           QUOTA_ACTION_PERSIST_SELECTION);
-    assert(navigation.selected_account == 0);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 3) ==
-           QUOTA_ACTION_REFRESH);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 3) ==
-           QUOTA_ACTION_NONE);
-    assert(navigation.screen == QUOTA_SCREEN_SETTINGS);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_UP, 3) == QUOTA_ACTION_NONE);
-    assert(navigation.settings_focus == 5);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 3) == QUOTA_ACTION_NONE);
-    assert(navigation.screen == QUOTA_SCREEN_DEVICE_SETTINGS);
-    assert(navigation.device_settings_focus == 0);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 3) == QUOTA_ACTION_NONE);
-    assert(navigation.screen == QUOTA_SCREEN_SETTINGS);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_DOWN, 3) == QUOTA_ACTION_NONE);
-    assert(navigation.settings_focus == 0);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 3) == QUOTA_ACTION_NONE);
-    assert(navigation.screen == QUOTA_SCREEN_ACCOUNTS);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_UP, 3) == QUOTA_ACTION_NONE);
-    assert(navigation.account_focus == 3);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 3) == QUOTA_ACTION_OPEN_PHONE);
-    assert(navigation.screen == QUOTA_SCREEN_PHONE);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 3) == QUOTA_ACTION_CLOSE_PHONE);
-    assert(navigation.screen == QUOTA_SCREEN_ACCOUNTS);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 3) == QUOTA_ACTION_NONE);
-    assert(navigation.screen == QUOTA_SCREEN_SETTINGS);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 3) == QUOTA_ACTION_NONE);
-    assert(navigation.screen == QUOTA_SCREEN_HOME);
-
-    quota_navigation_init(&navigation, true, 300, true, 120, 1);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 1) == QUOTA_ACTION_NONE);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_DOWN, 1) == QUOTA_ACTION_NONE);
-    assert(navigation.settings_focus == 1);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 1) == QUOTA_ACTION_NONE);
-    assert(navigation.screen == QUOTA_SCREEN_INTERVAL);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_DOWN, 1) == QUOTA_ACTION_NONE);
-    assert(navigation.interval_focus == 1);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 1) ==
-           QUOTA_ACTION_APPLY_SETTINGS);
-    assert(navigation.screen == QUOTA_SCREEN_SETTINGS && navigation.refresh_seconds == 60);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 1) == QUOTA_ACTION_NONE);
-    assert(navigation.screen == QUOTA_SCREEN_INTERVAL);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 1) ==
-           QUOTA_ACTION_APPLY_SETTINGS);
-    assert(!navigation.auto_refresh);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 1) == QUOTA_ACTION_NONE);
-    assert(navigation.screen == QUOTA_SCREEN_HOME);
-
-    quota_navigation_init(&navigation, false, 300, true, 120, 0);
-    assert(navigation.screen == QUOTA_SCREEN_PHONE);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 0) == QUOTA_ACTION_CLOSE_PHONE);
-    assert(navigation.screen == QUOTA_SCREEN_HOME);
+    return (quota_navigation_context_t){.account_count = accounts, .auth_active = auth_active};
 }
 
-static void test_portable_navigation(void)
+static quota_action_t press(quota_navigation_t *n, quota_input_t input, uint8_t accounts)
 {
-    quota_navigation_t navigation;
-    quota_navigation_init(&navigation, true, 300, true, 120, 2);
-    navigation.screen = QUOTA_SCREEN_SETTINGS;
-    navigation.settings_focus = 4;
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_NONE);
-    assert(navigation.screen == QUOTA_SCREEN_NETWORK);
-    /* Network details are passive: button input causes no action or page change. */
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_UP, 2) == QUOTA_ACTION_NONE);
-    assert(navigation.screen == QUOTA_SCREEN_NETWORK);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_DOWN, 2) == QUOTA_ACTION_NONE);
-    assert(navigation.screen == QUOTA_SCREEN_NETWORK);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_NONE);
-    assert(navigation.screen == QUOTA_SCREEN_NETWORK);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 2) == QUOTA_ACTION_NONE);
-    assert(navigation.screen == QUOTA_SCREEN_SETTINGS);
+    return quota_navigation_handle(n, input, ctx(accounts, false));
+}
 
-    navigation.settings_focus = 5;
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_NONE);
-    assert(navigation.screen == QUOTA_SCREEN_DEVICE_SETTINGS);
-    assert(navigation.device_settings_focus == 0); /* Hotspot is the default choice. */
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) ==
-           QUOTA_ACTION_OPEN_PHONE);
-    assert(navigation.screen == QUOTA_SCREEN_PHONE && navigation.phone_step == 0);
-    assert(navigation.setup_return_screen == QUOTA_SCREEN_DEVICE_SETTINGS);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_RENEW_PHONE);
-    assert(navigation.phone_step == 1);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_RENEW_PHONE);
-    assert(navigation.phone_step == 2); /* Manual address and full session secret. */
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_RENEW_PHONE);
-    assert(navigation.phone_step == 0);
-    quota_navigation_handle(&navigation, QUOTA_INPUT_UP, 2);
-    assert(navigation.phone_step == 2);
-    quota_navigation_handle(&navigation, QUOTA_INPUT_DOWN, 2);
-    assert(navigation.phone_step == 0);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 2) == QUOTA_ACTION_CLOSE_PHONE);
-    assert(navigation.screen == QUOTA_SCREEN_DEVICE_SETTINGS);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 2) == QUOTA_ACTION_NONE);
-    assert(navigation.screen == QUOTA_SCREEN_SETTINGS);
+static void test_home_keys(void)
+{
+    quota_navigation_t n;
+    quota_navigation_init(&n, true, 300, true, 120);
+    assert(n.screen == QUOTA_SCREEN_HOME);
+    /* UP/DOWN switch accounts and wrap; OK refreshes; long OK opens the menu. */
+    assert(press(&n, QUOTA_INPUT_UP, 3) == QUOTA_ACTION_PERSIST_SELECTION);
+    assert(n.selected_account == 2);
+    assert(press(&n, QUOTA_INPUT_DOWN, 3) == QUOTA_ACTION_PERSIST_SELECTION);
+    assert(n.selected_account == 0);
+    assert(press(&n, QUOTA_INPUT_OK_SHORT, 3) == QUOTA_ACTION_REFRESH);
+    assert(press(&n, QUOTA_INPUT_UP, 1) == QUOTA_ACTION_NONE); /* one account: nothing to switch */
+    assert(press(&n, QUOTA_INPUT_OK_LONG, 3) == QUOTA_ACTION_NONE && n.screen == QUOTA_SCREEN_MENU);
+    /* The home screen has no level above it: from the menu a long OK returns to it. */
+    assert(press(&n, QUOTA_INPUT_OK_LONG, 3) == QUOTA_ACTION_NONE && n.screen == QUOTA_SCREEN_HOME);
+    assert(press(&n, QUOTA_INPUT_OTHER, 3) == QUOTA_ACTION_NONE);
+    /* While authorization runs, OK shows it instead of refreshing. */
+    assert(quota_navigation_handle(&n, QUOTA_INPUT_OK_SHORT, ctx(3, true)) == QUOTA_ACTION_NONE);
+    assert(n.screen == QUOTA_SCREEN_AUTH);
+}
 
-    navigation.settings_focus = 5;
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_NONE);
-    assert(navigation.screen == QUOTA_SCREEN_DEVICE_SETTINGS &&
-           navigation.device_settings_focus == 0);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_UP, 2) == QUOTA_ACTION_NONE);
-    assert(navigation.device_settings_focus == 1);
-    navigation.configured = false;
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_NONE);
-    assert(navigation.screen == QUOTA_SCREEN_SETUP);
-    assert(navigation.setup_return_screen == QUOTA_SCREEN_DEVICE_SETTINGS);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 2) == QUOTA_ACTION_NONE);
-    assert(navigation.screen == QUOTA_SCREEN_DEVICE_SETTINGS);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 2) == QUOTA_ACTION_NONE);
-    assert(navigation.screen == QUOTA_SCREEN_SETTINGS);
+static void test_welcome_screen(void)
+{
+    quota_navigation_t n;
+    quota_navigation_init(&n, true, 300, true, 120);
+    /* No account: OK opens the hotspot setup; long OK goes back to the welcome screen. */
+    assert(press(&n, QUOTA_INPUT_OK_SHORT, 0) == QUOTA_ACTION_OPEN_HOTSPOT);
+    assert(n.screen == QUOTA_SCREEN_HOTSPOT && n.hotspot_page == 0);
+    assert(press(&n, QUOTA_INPUT_OK_LONG, 0) == QUOTA_ACTION_CLOSE_HOTSPOT);
+    assert(n.screen == QUOTA_SCREEN_HOME);
+    /* "Long OK, DOWN, OK" reaches USB setup from the welcome screen, every time. */
+    for (int round = 0; round < 3; round++) {
+        assert(press(&n, QUOTA_INPUT_OK_LONG, 0) == QUOTA_ACTION_NONE);
+        assert(n.screen == QUOTA_SCREEN_MENU && n.menu_focus == 0);
+        assert(press(&n, QUOTA_INPUT_DOWN, 0) == QUOTA_ACTION_NONE);
+        assert(press(&n, QUOTA_INPUT_OK_SHORT, 0) == QUOTA_ACTION_OPEN_USB);
+        assert(n.screen == QUOTA_SCREEN_USB);
+        assert(press(&n, QUOTA_INPUT_OK_LONG, 0) == QUOTA_ACTION_CLOSE_USB);
+        assert(n.screen == QUOTA_SCREEN_MENU && n.menu_focus == 0); /* reset: no account */
+        assert(press(&n, QUOTA_INPUT_OK_LONG, 0) == QUOTA_ACTION_NONE);
+        assert(n.screen == QUOTA_SCREEN_HOME);
+    }
+}
 
-    navigation.screen = QUOTA_SCREEN_AUTH;
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 0) == QUOTA_ACTION_NONE);
-    assert(navigation.screen == QUOTA_SCREEN_SETUP && navigation.setup_return_screen == QUOTA_SCREEN_AUTH);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 0) == QUOTA_ACTION_NONE);
-    assert(navigation.screen == QUOTA_SCREEN_AUTH);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_LONG, 2) == QUOTA_ACTION_CANCEL_AUTH);
-    assert(navigation.screen == QUOTA_SCREEN_ACCOUNTS);
-    /* Appended screens/actions must not renumber the legacy USB state contract. */
-    assert(QUOTA_SCREEN_SETUP == 5 && QUOTA_SCREEN_NETWORK == 6 &&
-           QUOTA_SCREEN_PHONE == 7 && QUOTA_SCREEN_AUTH == 8 &&
-           QUOTA_SCREEN_DEVICE_SETTINGS == 9 && QUOTA_ACTION_PERSIST_SELECTION == 3);
+static void test_menu_order_wrap_and_memory(void)
+{
+    quota_navigation_t n;
+    quota_navigation_init(&n, true, 300, true, 120);
+    assert(QUOTA_MENU_ITEMS == 5);
+    press(&n, QUOTA_INPUT_OK_LONG, 2);
+    assert(n.screen == QUOTA_SCREEN_MENU && n.menu_focus == 0);
+    /* Order: hotspot, USB, refresh rate, auto sleep, device information. */
+    const struct {
+        quota_screen_t screen;
+        quota_action_t action;
+    } items[QUOTA_MENU_ITEMS] = {
+        {QUOTA_SCREEN_HOTSPOT, QUOTA_ACTION_OPEN_HOTSPOT},
+        {QUOTA_SCREEN_USB, QUOTA_ACTION_OPEN_USB},
+        {QUOTA_SCREEN_REFRESH, QUOTA_ACTION_NONE},
+        {QUOTA_SCREEN_SLEEP, QUOTA_ACTION_NONE},
+        {QUOTA_SCREEN_INFO, QUOTA_ACTION_NONE},
+    };
+    for (uint8_t i = 0; i < QUOTA_MENU_ITEMS; i++) {
+        n.screen = QUOTA_SCREEN_MENU;
+        n.menu_focus = i;
+        assert(press(&n, QUOTA_INPUT_OK_SHORT, 2) == items[i].action);
+        assert(n.screen == items[i].screen);
+    }
+    /* UP from the first item wraps to device information; DOWN from the last wraps back. */
+    n.screen = QUOTA_SCREEN_MENU;
+    n.menu_focus = 0;
+    press(&n, QUOTA_INPUT_UP, 2);
+    assert(n.menu_focus == 4);
+    press(&n, QUOTA_INPUT_DOWN, 2);
+    assert(n.menu_focus == 0);
+    /* With an account the menu remembers its focus across leaving and re-entering it. */
+    n.menu_focus = 3;
+    press(&n, QUOTA_INPUT_OK_SHORT, 2);
+    assert(n.screen == QUOTA_SCREEN_SLEEP);
+    press(&n, QUOTA_INPUT_OK_LONG, 2);
+    assert(n.screen == QUOTA_SCREEN_MENU && n.menu_focus == 3);
+    press(&n, QUOTA_INPUT_OK_LONG, 2);
+    assert(n.screen == QUOTA_SCREEN_HOME);
+    press(&n, QUOTA_INPUT_OK_LONG, 2);
+    assert(n.menu_focus == 3);
+    /* Without an account it opens on the first item whatever was remembered. */
+    n.screen = QUOTA_SCREEN_HOME;
+    press(&n, QUOTA_INPUT_OK_LONG, 0);
+    assert(n.menu_focus == 0);
+}
+
+static void test_option_lists(void)
+{
+    quota_navigation_t n;
+    quota_navigation_init(&n, true, 300, true, 120);
+    n.screen = QUOTA_SCREEN_MENU;
+    n.menu_focus = 2;
+    press(&n, QUOTA_INPUT_OK_SHORT, 1);
+    assert(n.screen == QUOTA_SCREEN_REFRESH && n.option_focus == 2); /* starts on 5 minutes */
+    press(&n, QUOTA_INPUT_UP, 1);
+    assert(n.option_focus == 1);
+    assert(press(&n, QUOTA_INPUT_OK_SHORT, 1) == QUOTA_ACTION_APPLY_SETTINGS);
+    assert(n.screen == QUOTA_SCREEN_MENU && n.menu_focus == 2 && n.refresh_seconds == 60 &&
+           n.auto_refresh);
+    /* The list is manual, 1, 5, 15, 30 minutes and wraps in both directions. */
+    press(&n, QUOTA_INPUT_OK_SHORT, 1);
+    assert(n.option_focus == 1);
+    press(&n, QUOTA_INPUT_UP, 1);
+    press(&n, QUOTA_INPUT_UP, 1);
+    assert(n.option_focus == QUOTA_REFRESH_OPTIONS - 1);
+    press(&n, QUOTA_INPUT_DOWN, 1);
+    assert(n.option_focus == 0);
+    assert(press(&n, QUOTA_INPUT_OK_SHORT, 1) == QUOTA_ACTION_APPLY_SETTINGS);
+    assert(!n.auto_refresh && n.refresh_seconds == 60);
+    /* Manual is the current value now, so the list opens on it; choosing an interval clears it. */
+    press(&n, QUOTA_INPUT_OK_SHORT, 1);
+    assert(n.option_focus == 0);
+    for (int i = 0; i < 4; i++)
+        press(&n, QUOTA_INPUT_DOWN, 1);
+    assert(n.option_focus == 4);
+    assert(press(&n, QUOTA_INPUT_OK_SHORT, 1) == QUOTA_ACTION_APPLY_SETTINGS);
+    assert(n.auto_refresh && n.refresh_seconds == 1800);
+    /* A long OK leaves the list without saving. */
+    press(&n, QUOTA_INPUT_OK_SHORT, 1);
+    press(&n, QUOTA_INPUT_UP, 1);
+    assert(press(&n, QUOTA_INPUT_OK_LONG, 1) == QUOTA_ACTION_NONE);
+    assert(n.screen == QUOTA_SCREEN_MENU && n.refresh_seconds == 1800);
+
+    n.menu_focus = 3;
+    press(&n, QUOTA_INPUT_OK_SHORT, 1);
+    assert(n.screen == QUOTA_SCREEN_SLEEP && n.option_focus == 3); /* starts on 2 minutes */
+    press(&n, QUOTA_INPUT_UP, 1);
+    assert(press(&n, QUOTA_INPUT_OK_SHORT, 1) == QUOTA_ACTION_APPLY_SETTINGS);
+    assert(n.screen_timeout_seconds == 60 && n.screen == QUOTA_SCREEN_MENU);
+    n.screen = QUOTA_SCREEN_SLEEP;
+    n.option_focus = 0;
+    press(&n, QUOTA_INPUT_UP, 1);
+    assert(n.option_focus == QUOTA_SCREEN_TIMEOUT_COUNT - 1); /* never ... 10 minutes, wrapped */
+}
+
+static quota_action_t press_hotspot(quota_navigation_t *n, quota_input_t input,
+                                    quota_hotspot_state_t state)
+{
+    quota_navigation_context_t context = ctx(2, false);
+    context.hotspot = state;
+    return quota_navigation_handle(n, input, context);
+}
+
+static void test_hotspot_pages(void)
+{
+    quota_navigation_t n;
+    quota_navigation_init(&n, true, 300, true, 120);
+    n.screen = QUOTA_SCREEN_MENU;
+    n.menu_focus = 0;
+    quota_navigation_context_t closed = ctx(2, false);
+    closed.hotspot = QUOTA_HOTSPOT_CLOSED;
+    assert(quota_navigation_handle(&n, QUOTA_INPUT_OK_SHORT, closed) == QUOTA_ACTION_OPEN_HOTSPOT);
+    assert(n.screen == QUOTA_SCREEN_HOTSPOT && n.hotspot_page == 0 &&
+           n.return_screen == QUOTA_SCREEN_MENU);
+    /* While the pages show, OK turns them and wraps; it never asks the service for anything. */
+    for (int i = 1; i <= 3; i++) {
+        assert(press_hotspot(&n, QUOTA_INPUT_OK_SHORT, QUOTA_HOTSPOT_SHOWING) == QUOTA_ACTION_NONE);
+        assert(n.hotspot_page == i % 3);
+    }
+    /* UP and DOWN turn pages too, in a loop. */
+    press(&n, QUOTA_INPUT_UP, 2);
+    assert(n.hotspot_page == 2);
+    press(&n, QUOTA_INPUT_DOWN, 2);
+    assert(n.hotspot_page == 0);
+    /* Opening, validating or in error, OK does nothing at all: a second open would abort the
+     * validation that is still using the Wi-Fi credentials. */
+    n.hotspot_page = 1;
+    assert(press_hotspot(&n, QUOTA_INPUT_OK_SHORT, QUOTA_HOTSPOT_BUSY) == QUOTA_ACTION_NONE);
+    assert(n.hotspot_page == 1 && n.screen == QUOTA_SCREEN_HOTSPOT);
+    /* A closed hotspot (with or without a result) is reopened by OK, from page one. */
+    assert(press_hotspot(&n, QUOTA_INPUT_OK_SHORT, QUOTA_HOTSPOT_CLOSED) ==
+           QUOTA_ACTION_RENEW_HOTSPOT);
+    assert(n.hotspot_page == 0);
+    assert(press(&n, QUOTA_INPUT_OK_LONG, 2) == QUOTA_ACTION_CLOSE_HOTSPOT);
+    assert(n.screen == QUOTA_SCREEN_MENU);
+    /* Entering from the menu only opens a closed hotspot, never one that is showing or busy. */
+    n.menu_focus = 0;
+    assert(quota_navigation_handle(&n, QUOTA_INPUT_OK_SHORT, closed) == QUOTA_ACTION_OPEN_HOTSPOT);
+    n.screen = QUOTA_SCREEN_MENU;
+    for (quota_hotspot_state_t state = QUOTA_HOTSPOT_SHOWING; state <= QUOTA_HOTSPOT_BUSY;
+         state++) {
+        n.screen = QUOTA_SCREEN_MENU;
+        assert(press_hotspot(&n, QUOTA_INPUT_OK_SHORT, state) == QUOTA_ACTION_NONE);
+        assert(n.screen == QUOTA_SCREEN_HOTSPOT);
+    }
+    /* The welcome screen opens the hotspot the same way. */
+    n.screen = QUOTA_SCREEN_HOME;
+    assert(quota_navigation_handle(&n, QUOTA_INPUT_OK_SHORT,
+                                   (quota_navigation_context_t){.hotspot = QUOTA_HOTSPOT_CLOSED}) ==
+           QUOTA_ACTION_OPEN_HOTSPOT);
+    n.screen = QUOTA_SCREEN_HOME;
+    assert(quota_navigation_handle(&n, QUOTA_INPUT_OK_SHORT,
+                                   (quota_navigation_context_t){.hotspot = QUOTA_HOTSPOT_BUSY}) ==
+           QUOTA_ACTION_NONE);
+    assert(n.screen == QUOTA_SCREEN_HOTSPOT);
+}
+
+static void test_hotspot_state(void)
+{
+    assert(quota_hotspot_state(false, false, true, true, false) == QUOTA_HOTSPOT_SHOWING);
+    assert(quota_hotspot_state(false, false, true, false, false) == QUOTA_HOTSPOT_BUSY);
+    assert(quota_hotspot_state(false, false, false, false, true) == QUOTA_HOTSPOT_BUSY);
+    assert(quota_hotspot_state(false, true, false, false, false) == QUOTA_HOTSPOT_BUSY);
+    assert(quota_hotspot_state(true, false, false, false, false) == QUOTA_HOTSPOT_BUSY);
+    assert(quota_hotspot_state(true, false, true, true, false) == QUOTA_HOTSPOT_BUSY);
+    assert(quota_hotspot_state(false, false, false, false, false) == QUOTA_HOTSPOT_CLOSED);
+}
+
+static bool font_has(uint32_t codepoint)
+{
+    return codepoint == 0x5de5 || codepoint == 0x4f5c; /* 工 and 作 */
+}
+
+static void test_displayable_text(void)
+{
+    assert(quota_text_is_displayable("Work 1", NULL) && quota_text_is_displayable("", NULL));
+    assert(!quota_text_is_displayable("工作", NULL)); /* no font: nothing above ASCII is drawn */
+    assert(quota_text_is_displayable("工作", font_has));
+    assert(!quota_text_is_displayable("工作笔", font_has)); /* one missing glyph is enough */
+    assert(!quota_text_is_displayable("a\tb", font_has) &&
+           !quota_text_is_displayable("a\x7f", NULL));
+    assert(!quota_text_is_displayable("caf\xc3", font_has));          /* truncated UTF-8 */
+    assert(!quota_text_is_displayable("\xf0\x9f\x98\x80", font_has)); /* an emoji */
+    assert(!quota_text_is_displayable(NULL, font_has));
+}
+
+static void test_usb_screen_and_auth_screen(void)
+{
+    quota_navigation_t n;
+    quota_navigation_init(&n, true, 300, true, 120);
+    n.screen = QUOTA_SCREEN_USB;
+    n.return_screen = QUOTA_SCREEN_MENU;
+    /* The window is closed or ended: OK opens it again. While it is open or being prepared, OK
+     * and a menu visit leave its session and clock alone. */
+    assert(press(&n, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_OPEN_USB &&
+           n.screen == QUOTA_SCREEN_USB);
+    quota_navigation_context_t open = ctx(2, false);
+    open.usb_window_open = true;
+    assert(quota_navigation_handle(&n, QUOTA_INPUT_OK_SHORT, open) == QUOTA_ACTION_NONE);
+    assert(press(&n, QUOTA_INPUT_UP, 2) == QUOTA_ACTION_NONE && n.screen == QUOTA_SCREEN_USB);
+    n.screen = QUOTA_SCREEN_MENU;
+    n.menu_focus = 1;
+    assert(quota_navigation_handle(&n, QUOTA_INPUT_OK_SHORT, open) == QUOTA_ACTION_NONE);
+    assert(n.screen == QUOTA_SCREEN_USB);
+    n.screen = QUOTA_SCREEN_MENU;
+    assert(press(&n, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_OPEN_USB);
+    n.screen = QUOTA_SCREEN_USB;
+    assert(press(&n, QUOTA_INPUT_OK_LONG, 2) == QUOTA_ACTION_CLOSE_USB &&
+           n.screen == QUOTA_SCREEN_MENU);
+
+    /* Authorization: OK asks to cancel, long OK goes home and leaves it running. */
+    n.screen = QUOTA_SCREEN_AUTH;
+    assert(press(&n, QUOTA_INPUT_OK_LONG, 2) == QUOTA_ACTION_NONE && n.screen == QUOTA_SCREEN_HOME);
+    n.screen = QUOTA_SCREEN_AUTH;
+    assert(quota_navigation_handle(&n, QUOTA_INPUT_OK_SHORT, ctx(2, true)) == QUOTA_ACTION_NONE);
+    assert(n.screen == QUOTA_SCREEN_CONFIRM && n.confirm_kind == QUOTA_CONFIRM_CANCEL_AUTH &&
+           n.confirm_focus == 0);
+    /* Long OK in the box goes back to the authorization screen: nothing was cancelled. */
+    assert(quota_navigation_handle(&n, QUOTA_INPUT_OK_LONG, ctx(2, true)) == QUOTA_ACTION_NONE);
+    assert(n.screen == QUOTA_SCREEN_AUTH);
+    /* OK on the harmless default also leaves it alone. */
+    quota_navigation_handle(&n, QUOTA_INPUT_OK_SHORT, ctx(2, true));
+    assert(quota_navigation_handle(&n, QUOTA_INPUT_OK_SHORT, ctx(2, true)) == QUOTA_ACTION_NONE);
+    assert(n.screen == QUOTA_SCREEN_AUTH);
+    /* Down to "取消授权", OK: cancelled, back to home. */
+    quota_navigation_handle(&n, QUOTA_INPUT_OK_SHORT, ctx(2, true));
+    quota_navigation_handle(&n, QUOTA_INPUT_DOWN, ctx(2, true));
+    assert(n.confirm_focus == 1);
+    assert(quota_navigation_handle(&n, QUOTA_INPUT_OK_SHORT, ctx(2, true)) ==
+           QUOTA_ACTION_CANCEL_AUTH);
+    assert(n.screen == QUOTA_SCREEN_HOME);
+    /* A finished authorization: OK just returns home. */
+    n.screen = QUOTA_SCREEN_AUTH;
+    assert(press(&n, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_NONE &&
+           n.screen == QUOTA_SCREEN_HOME);
+}
+
+static void test_factory_reset_confirmation(void)
+{
+    quota_navigation_t n;
+    quota_navigation_init(&n, true, 300, true, 120);
+    n.screen = QUOTA_SCREEN_MENU;
+    /* Fresh device, J9: long OK (menu), UP (wraps to device info), OK, OK, DOWN, OK = 6 keys. */
+    n.screen = QUOTA_SCREEN_HOME;
+    int keys = 0;
+    press(&n, QUOTA_INPUT_OK_LONG, 2), keys++;
+    press(&n, QUOTA_INPUT_UP, 2), keys++;
+    press(&n, QUOTA_INPUT_OK_SHORT, 2), keys++;
+    assert(n.screen == QUOTA_SCREEN_INFO);
+    press(&n, QUOTA_INPUT_OK_SHORT, 2), keys++;
+    assert(n.screen == QUOTA_SCREEN_CONFIRM && n.confirm_kind == QUOTA_CONFIRM_FACTORY_RESET);
+    assert(n.confirm_focus == 0); /* the default is cancel */
+    press(&n, QUOTA_INPUT_DOWN, 2), keys++;
+    assert(n.confirm_focus == 1);
+    assert(press(&n, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_FACTORY_RESET);
+    keys++;
+    assert(keys == 6 && n.factory_resetting);
+    /* While erasing every key is ignored, a long OK too, and nothing repeats the reset. */
+    assert(press(&n, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_NONE);
+    assert(press(&n, QUOTA_INPUT_DOWN, 2) == QUOTA_ACTION_NONE);
+    assert(press(&n, QUOTA_INPUT_OK_LONG, 2) == QUOTA_ACTION_NONE);
+    assert(n.screen == QUOTA_SCREEN_CONFIRM && n.factory_resetting);
+    /* The erase failed (the caller says so): the box reports it; only a long OK works. */
+    n.factory_resetting = false;
+    n.factory_failed = true;
+    assert(press(&n, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_NONE &&
+           n.screen == QUOTA_SCREEN_CONFIRM);
+    press(&n, QUOTA_INPUT_UP, 2);
+    assert(n.confirm_focus == 1 && n.screen == QUOTA_SCREEN_CONFIRM);
+    assert(press(&n, QUOTA_INPUT_OK_LONG, 2) == QUOTA_ACTION_NONE);
+    assert(n.screen == QUOTA_SCREEN_INFO && !n.factory_failed);
+
+    /* OK on cancel, UP/DOWN in a loop of two, and a long OK never reset anything. */
+    press(&n, QUOTA_INPUT_OK_SHORT, 2);
+    assert(press(&n, QUOTA_INPUT_OK_SHORT, 2) == QUOTA_ACTION_NONE &&
+           n.screen == QUOTA_SCREEN_INFO);
+    press(&n, QUOTA_INPUT_OK_SHORT, 2);
+    press(&n, QUOTA_INPUT_UP, 2);
+    assert(n.confirm_focus == 1);
+    assert(press(&n, QUOTA_INPUT_OK_LONG, 2) == QUOTA_ACTION_NONE && n.screen == QUOTA_SCREEN_INFO);
+    /* The box always opens on its harmless choice, also after the delete choice was left. */
+    press(&n, QUOTA_INPUT_OK_SHORT, 2);
+    assert(n.confirm_focus == 0);
+}
+
+static void test_no_long_press_is_destructive(void)
+{
+    /* Over every screen and every focus, a long OK can only go back: never reset or cancel. */
+    for (int screen = QUOTA_SCREEN_HOME; screen <= QUOTA_SCREEN_CONFIRM; screen++) {
+        for (int focus = 0; focus < 6; focus++) {
+            quota_navigation_t n;
+            quota_navigation_init(&n, true, 300, true, 120);
+            n.screen = (quota_screen_t)screen;
+            n.return_screen = QUOTA_SCREEN_MENU;
+            n.menu_focus = n.option_focus = n.confirm_focus = (uint8_t)(focus % 2);
+            for (int auth = 0; auth < 2; auth++) {
+                quota_action_t action =
+                    quota_navigation_handle(&n, QUOTA_INPUT_OK_LONG, ctx(2, auth));
+                assert(action != QUOTA_ACTION_FACTORY_RESET && action != QUOTA_ACTION_CANCEL_AUTH &&
+                       action != QUOTA_ACTION_APPLY_SETTINGS && action != QUOTA_ACTION_REFRESH &&
+                       !n.factory_resetting);
+            }
+        }
+    }
 }
 
 static void test_navigation_after_external_settings_change(void)
 {
     quota_navigation_t navigation;
-    quota_navigation_init(&navigation, true, 300, true, 120, 1);
-    navigation.screen = QUOTA_SCREEN_INTERVAL;
-    navigation.interval_focus = 0;
+    quota_navigation_init(&navigation, true, 300, true, 120);
+    navigation.screen = QUOTA_SCREEN_REFRESH;
+    navigation.option_focus = 0;
 
     quota_navigation_sync_settings(&navigation, 900, false, 120);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 1) ==
-           QUOTA_ACTION_APPLY_SETTINGS);
-    assert(navigation.auto_refresh && navigation.refresh_seconds == 900);
+    assert(press(&navigation, QUOTA_INPUT_OK_SHORT, 1) == QUOTA_ACTION_APPLY_SETTINGS);
+    assert(!navigation.auto_refresh && navigation.refresh_seconds == 900);
 
     /* A later remote change must survive editing just the interval. */
     quota_navigation_sync_settings(&navigation, 1800, false, 120);
-    navigation.screen = QUOTA_SCREEN_INTERVAL;
-    navigation.interval_focus = 2;
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 1) ==
-           QUOTA_ACTION_APPLY_SETTINGS);
-    assert(!navigation.auto_refresh && navigation.refresh_seconds == 300);
+    navigation.screen = QUOTA_SCREEN_REFRESH;
+    navigation.option_focus = 2;
+    assert(press(&navigation, QUOTA_INPUT_OK_SHORT, 1) == QUOTA_ACTION_APPLY_SETTINGS);
+    assert(navigation.auto_refresh && navigation.refresh_seconds == 300);
 
-    quota_navigation_sync_settings(&navigation, 61, true, 120);
-    assert(!navigation.auto_refresh && navigation.refresh_seconds == 300);
+    quota_navigation_sync_settings(&navigation, 61, false, 120);
+    assert(navigation.auto_refresh && navigation.refresh_seconds == 300);
+}
+
+static void test_status_line_priority(void)
+{
+    quota_status_input_t input = {0};
+    assert(quota_status_line_select(&input) == QUOTA_STATUS_LINE_NO_DATA);
+    input.has_observed_at = true;
+    assert(quota_status_line_select(&input) == QUOTA_STATUS_LINE_UPDATED);
+    input.refreshing = true;
+    assert(quota_status_line_select(&input) == QUOTA_STATUS_LINE_REFRESHING);
+    input.update_failed = true;
+    assert(quota_status_line_select(&input) == QUOTA_STATUS_LINE_UPDATE_FAILED);
+    input.rate_limited = true;
+    assert(quota_status_line_select(&input) == QUOTA_STATUS_LINE_RATE_LIMITED);
+    input.wifi_failed = true;
+    assert(quota_status_line_select(&input) == QUOTA_STATUS_LINE_WIFI_FAILED);
+    input.unverified_items = 1;
+    assert(quota_status_line_select(&input) == QUOTA_STATUS_LINE_UNVERIFIED);
+    input.reauth_needed = true;
+    assert(quota_status_line_select(&input) == QUOTA_STATUS_LINE_REAUTH);
+    input.authorizing = true;
+    assert(quota_status_line_select(&input) == QUOTA_STATUS_LINE_AUTHORIZING);
+    input.storage_error = true;
+    assert(quota_status_line_select(&input) == QUOTA_STATUS_LINE_STORAGE_ERROR);
+    assert(quota_status_line_select(NULL) == QUOTA_STATUS_LINE_NO_DATA);
+}
+
+static void check_credits(const char *input, const char *expected)
+{
+    char out[QUOTA_CREDITS_BALANCE_BYTES + 1];
+    quota_format_credits(input, out, sizeof(out));
+    if (strcmp(out, expected) != 0) {
+        fprintf(stderr, "credits \"%s\": got \"%s\", want \"%s\"\n", input, out, expected);
+        assert(false);
+    }
+}
+
+static void test_credits_are_whole_numbers_and_never_overstated(void)
+{
+    check_credits("120", "120");
+    check_credits("120.75", "120");
+    check_credits("120.999999", "120");
+    check_credits("0.9", "0");
+    check_credits("0", "0");
+    check_credits("007.5", "7");
+    check_credits("5.", "5");
+    /* A negative balance with a fraction goes to the lower whole number. */
+    check_credits("-0.5", "-1");
+    check_credits("-3.25", "-4");
+    check_credits("-3", "-3");
+    check_credits("-3.0", "-3");
+    check_credits("-0.0", "0");
+    check_credits("-9.1", "-10");
+    check_credits("-99.5", "-100");
+    /* Not a plain decimal: shown as it is (ASCII only), never guessed at. */
+    check_credits("1e3", "1e3");
+    check_credits(".5", ".5");
+    check_credits("abc", "abc");
+    check_credits("", "");
+    char small[4];
+    quota_format_credits("123456.7", small, sizeof(small));
+    assert(strcmp(small, "123") == 0);
+}
+
+static void test_money_keeps_the_decimal_string(void)
+{
+    char out[48];
+    quota_format_money("CNY", "123.45", out, sizeof(out));
+    assert(strcmp(out, "¥123.45") == 0);
+    quota_format_money("USD", "12.30", out, sizeof(out));
+    assert(strcmp(out, "$12.30") == 0);
+    quota_format_money("EUR", "123.45", out, sizeof(out));
+    assert(strcmp(out, "123.45 EUR") == 0);
+    quota_format_money("CNY", "-0.12345678", out, sizeof(out));
+    assert(strcmp(out, "-¥0.12345678") == 0);
+    quota_format_money("", "1.50", out, sizeof(out));
+    assert(strcmp(out, "1.50") == 0);
+    quota_money_t money;
+    quota_money_parts("USD", "-7.1", &money);
+    assert(strcmp(money.prefix, "-$") == 0 && strcmp(money.number, "7.1") == 0 &&
+           money.suffix[0] == '\0');
+    quota_money_parts("EUR", "9", &money);
+    assert(money.prefix[0] == '\0' && strcmp(money.suffix, " EUR") == 0);
+
+    quota_balance_t balance = {.present = true, .currency_count = 2};
+    strcpy(balance.balance_infos[0].currency, "USD");
+    strcpy(balance.balance_infos[0].total_balance, "1.00");
+    strcpy(balance.balance_infos[1].currency, "CNY");
+    strcpy(balance.balance_infos[1].total_balance, "2.00");
+    assert(quota_balance_primary(&balance) == &balance.balance_infos[1]);
+    balance.currency_count = 1;
+    assert(quota_balance_primary(&balance) == &balance.balance_infos[0]);
+    balance.currency_count = 0;
+    assert(quota_balance_primary(&balance) == NULL);
+    assert(quota_balance_primary(NULL) == NULL);
+}
+
+static void test_battery_icon_state(void)
+{
+    quota_battery_icon_t icon = quota_battery_icon(100, false, 18);
+    assert(icon.tone == QUOTA_BATTERY_NORMAL && icon.fill == 18);
+    icon = quota_battery_icon(50, false, 18);
+    assert(icon.tone == QUOTA_BATTERY_NORMAL && icon.fill == 9);
+    icon = quota_battery_icon(21, false, 18);
+    assert(icon.tone == QUOTA_BATTERY_NORMAL);
+    icon = quota_battery_icon(20, false, 18);
+    assert(icon.tone == QUOTA_BATTERY_LOW && icon.fill == 4);
+    icon = quota_battery_icon(1, false, 18);
+    assert(icon.tone == QUOTA_BATTERY_LOW && icon.fill == 1); /* any charge is visible */
+    icon = quota_battery_icon(0, false, 18);
+    assert(icon.tone == QUOTA_BATTERY_LOW && icon.fill == 0);
+    /* A missing reading is its own state, not 0%. */
+    icon = quota_battery_icon(-1, false, 18);
+    assert(icon.tone == QUOTA_BATTERY_UNAVAILABLE && icon.fill == 0);
+    icon = quota_battery_icon(101, false, 18);
+    assert(icon.tone == QUOTA_BATTERY_UNAVAILABLE);
+    /* USB power turns the fill green and drops the low-battery red; it does not invent a level. */
+    icon = quota_battery_icon(15, true, 18);
+    assert(icon.tone == QUOTA_BATTERY_USB && icon.fill == 3);
+    icon = quota_battery_icon(100, true, 18);
+    assert(icon.tone == QUOTA_BATTERY_USB && icon.fill == 18);
+    icon = quota_battery_icon(-1, true, 18);
+    assert(icon.tone == QUOTA_BATTERY_UNAVAILABLE);
+}
+
+static void test_wifi_icon_state(void)
+{
+    quota_wifi_icon_t none = QUOTA_WIFI_ICON_OFFLINE;
+    assert(quota_wifi_icon(false, false, false, 0, none) == QUOTA_WIFI_ICON_HIDDEN);
+    assert(quota_wifi_icon(false, true, false, -40, none) == QUOTA_WIFI_ICON_HIDDEN);
+    assert(quota_wifi_icon(true, false, false, 0, none) == QUOTA_WIFI_ICON_OFFLINE);
+    assert(quota_wifi_icon(true, false, true, 0, none) == QUOTA_WIFI_ICON_FAILED);
+    assert(quota_wifi_icon(true, true, true, -50, none) == QUOTA_WIFI_ICON_SIGNAL_3);
+    assert(quota_wifi_icon(true, true, false, 0, none) == QUOTA_WIFI_ICON_SIGNAL_3); /* unknown */
+    assert(quota_wifi_icon(true, true, false, -60, none) == QUOTA_WIFI_ICON_SIGNAL_3);
+    assert(quota_wifi_icon(true, true, false, -61, none) == QUOTA_WIFI_ICON_SIGNAL_2);
+    assert(quota_wifi_icon(true, true, false, -72, none) == QUOTA_WIFI_ICON_SIGNAL_2);
+    assert(quota_wifi_icon(true, true, false, -73, none) == QUOTA_WIFI_ICON_SIGNAL_1);
+    assert(quota_wifi_icon(true, true, false, -95, none) == QUOTA_WIFI_ICON_SIGNAL_1);
+    /* Hysteresis: a shown level is held until 3 dB below its threshold. */
+    quota_wifi_icon_t s3 = QUOTA_WIFI_ICON_SIGNAL_3, s2 = QUOTA_WIFI_ICON_SIGNAL_2;
+    assert(quota_wifi_icon(true, true, false, -63, s3) == QUOTA_WIFI_ICON_SIGNAL_3);
+    assert(quota_wifi_icon(true, true, false, -64, s3) == QUOTA_WIFI_ICON_SIGNAL_2);
+    assert(quota_wifi_icon(true, true, false, -61, s2) == QUOTA_WIFI_ICON_SIGNAL_2);
+    assert(quota_wifi_icon(true, true, false, -60, s2) == QUOTA_WIFI_ICON_SIGNAL_3);
+    assert(quota_wifi_icon(true, true, false, -75, s2) == QUOTA_WIFI_ICON_SIGNAL_2);
+    assert(quota_wifi_icon(true, true, false, -76, s2) == QUOTA_WIFI_ICON_SIGNAL_1);
+    assert(quota_wifi_icon(true, true, false, -75, s3) == QUOTA_WIFI_ICON_SIGNAL_2);
+    assert(quota_wifi_icon(true, true, false, -74, QUOTA_WIFI_ICON_SIGNAL_1) ==
+           QUOTA_WIFI_ICON_SIGNAL_1);
+}
+
+static void check_banked(const quota_codex_extras_t *extras, uint64_t now, bool synced,
+                         const char *expected)
+{
+    char out[80];
+    quota_format_banked_resets(extras, now, synced, out, sizeof(out));
+    if (strcmp(out, expected) != 0) {
+        fprintf(stderr, "banked resets: got \"%s\", want \"%s\"\n", out, expected);
+        assert(false);
+    }
+}
+
+static void test_banked_reset_note(void)
+{
+    uint64_t now = 1791527520;
+    quota_codex_extras_t extras = {.has_banked_reset = true, .available_resets = 2};
+    check_banked(&extras, now, true, "可用重置 2 次");
+    extras.has_next_reset_expiry = true;
+    extras.next_reset_expires_at = now + 3 * 86400 + 5 * 3600 + 7;
+    check_banked(&extras, now, true, "可用重置 2 次 · 3 天 5 小时后过期");
+    extras.next_reset_expires_at = now + 2 * 3600 + 14 * 60;
+    check_banked(&extras, now, true, "可用重置 2 次 · 2 小时 14 分后过期");
+    extras.next_reset_expires_at = now + 20;
+    check_banked(&extras, now, true, "可用重置 2 次 · 不到 1 分钟后过期");
+    /* The same formatter as window resets. */
+    quota_window_t window = {.present = true, .has_resets_at = true, .resets_at = now + 9000};
+    char reset[48], expiry[80];
+    quota_format_reset_time(&window, now, true, reset, sizeof(reset));
+    extras.next_reset_expires_at = now + 9000;
+    quota_format_banked_resets(&extras, now, true, expiry, sizeof(expiry));
+    assert(strstr(expiry, "2 小时 30 分") != NULL && strstr(reset, "2 小时 30 分") != NULL);
+    check_banked(&extras, now, false, "可用重置 2 次 · 待校时");
+    extras.next_reset_expires_at = now;
+    check_banked(&extras, now, true, "可用重置 2 次 · 等待新数据");
+    extras.has_next_reset_expiry = false;
+    check_banked(&extras, now, false, "可用重置 2 次");
+    extras.available_resets = 0;
+    check_banked(&extras, now, true, "");
+    extras.available_resets = 1;
+    extras.has_banked_reset = false;
+    check_banked(&extras, now, true, "");
+    char tiny[8];
+    extras.has_banked_reset = true;
+    quota_format_banked_resets(&extras, now, true, tiny, sizeof(tiny));
+    assert(strlen(tiny) < sizeof(tiny));
+    quota_format_banked_resets(NULL, now, true, tiny, sizeof(tiny));
+    assert(tiny[0] == '\0');
 }
 
 static void test_display_sleep_and_wake_gestures(void)
@@ -500,199 +711,96 @@ static void test_display_sleep_and_wake_gestures(void)
     assert(!display.sleeping && !display.consume_wake_gesture);
 }
 
-static void test_screen_timeout_settings_compatibility(void)
+static void test_long_down_is_refused_during_a_session(void)
 {
-    char json[1024];
-    quota_snapshot_t snapshot;
-    quota_settings_t settings;
-    size_t length = make_snapshot(json, sizeof(json), valid_account,
-        "{\"refresh_seconds\":300,\"auto_refresh\":true}");
-    assert(quota_parse_snapshot(json, length, &snapshot));
-    assert(!snapshot.has_screen_timeout_seconds);
-    for (size_t i = 0; i < QUOTA_SCREEN_TIMEOUT_COUNT; i++) {
-        char fields[128];
-        snprintf(fields, sizeof(fields), "{\"refresh_seconds\":300,\"auto_refresh\":true,"
-                 "\"screen_timeout_seconds\":%u}", (unsigned)quota_screen_timeouts[i]);
-        length = make_snapshot(json, sizeof(json), valid_account, fields);
-        assert(quota_parse_snapshot(json, length, &snapshot));
-        assert(snapshot.has_screen_timeout_seconds);
-        assert(snapshot.screen_timeout_seconds == quota_screen_timeouts[i]);
-        snprintf(json, sizeof(json), "{\"v\":1,\"settings\":%s}", fields);
-        assert(quota_parse_settings_ack(json, strlen(json), &settings));
-        assert(settings.has_screen_timeout_seconds);
-        assert(settings.screen_timeout_seconds == quota_screen_timeouts[i]);
-    }
-    const char *invalid[] = {"null", "true", "\"120\"", "-1", "31", "601", "30.5"};
-    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
-        char fields[128];
-        snprintf(fields, sizeof(fields), "{\"refresh_seconds\":300,\"auto_refresh\":true,"
-                 "\"screen_timeout_seconds\":%s}", invalid[i]);
-        length = make_snapshot(json, sizeof(json), valid_account, fields);
-        assert(!quota_parse_snapshot(json, length, &snapshot));
-        snprintf(json, sizeof(json), "{\"v\":1,\"settings\":%s}", fields);
-        assert(!quota_parse_settings_ack(json, strlen(json), &settings));
-    }
-    const char old_ack[] = "{\"v\":1,\"settings\":{\"refresh_seconds\":900,\"auto_refresh\":false}}";
-    assert(quota_parse_settings_ack(old_ack, strlen(old_ack), &settings));
-    assert(!settings.has_screen_timeout_seconds && settings.refresh_seconds == 900);
-    const char duplicate[] = "{\"v\":1,\"settings\":{\"refresh_seconds\":300,\"auto_refresh\":true,"
-        "\"screen_timeout_seconds\":30,\"screen_timeout_seconds\":60}}";
-    assert(!quota_parse_settings_ack(duplicate, strlen(duplicate), &settings));
-    assert(!quota_parse_settings_ack("{}junk", 6, &settings));
+    quota_display_state_t display = {.last_input_ms = 10000};
+    quota_display_tick(&display, 11000, 120, true); /* a setup session keeps the screen on */
+    assert(display.session_open);
+    assert(!quota_display_handle_key(&display, 11100, QUOTA_KEY_PRESS, true));
+    assert(!quota_display_handle_key(&display, 11600, QUOTA_KEY_LONG, true));
+    assert(!display.sleeping && display.sleep_blocked);
+    display.sleep_blocked = false;
+    /* Without a session it switches the screen off as before. */
+    quota_display_tick(&display, 12000, 120, false);
+    assert(!display.session_open);
+    assert(!quota_display_handle_key(&display, 12100, QUOTA_KEY_LONG, true));
+    assert(display.sleeping && !display.sleep_blocked);
 
     quota_navigation_t navigation;
-    quota_navigation_init(&navigation, true, 300, false, 120, 1);
-    navigation.screen = QUOTA_SCREEN_SETTINGS;
-    navigation.settings_focus = 3;
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 1) == QUOTA_ACTION_NONE);
-    assert(navigation.screen == QUOTA_SCREEN_SLEEP && navigation.sleep_focus == 3);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_UP, 1) == QUOTA_ACTION_NONE);
-    quota_navigation_sync_settings(&navigation, 900, true, 120);
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_OK_SHORT, 1) == QUOTA_ACTION_APPLY_SETTINGS);
-    assert(navigation.screen_timeout_seconds == 60 && navigation.refresh_seconds == 900 && navigation.auto_refresh);
-    navigation.screen = QUOTA_SCREEN_SLEEP;
-    navigation.sleep_focus = 0;
-    assert(quota_navigation_handle(&navigation, QUOTA_INPUT_UP, 1) == QUOTA_ACTION_NONE);
-    assert(navigation.sleep_focus == 5);
+    quota_navigation_init(&navigation, true, 300, true, 120);
+    quota_navigation_notice(&navigation, 1000, true);
+    assert(navigation.sleep_notice);
+    quota_navigation_notice(&navigation, 1000 + QUOTA_NOTICE_MS - 1, false);
+    assert(navigation.sleep_notice);
+    quota_navigation_notice(&navigation, 1000 + QUOTA_NOTICE_MS, false);
+    assert(!navigation.sleep_notice);
+}
+
+static void test_screen_timeout_settings(void)
+{
+    for (size_t i = 0; i < QUOTA_SCREEN_TIMEOUT_COUNT; i++)
+        assert(quota_screen_timeout_is_valid(quota_screen_timeouts[i]));
+    assert(!quota_screen_timeout_is_valid(31) && !quota_screen_timeout_is_valid(601));
 }
 
 static void test_deepseek_balance_contract(void)
 {
-    const char *account =
-        "{\"id\":\"0123456789abcdef0123456789abcdef\",\"provider\":\"deepseek\","
-        "\"email\":\"\",\"label\":\"My API\",\"plan\":\"API\",\"status\":\"ok\","
-        "\"observed_at\":1700000000,\"five_hour\":null,\"seven_day\":null,"
-        "\"balance\":{\"is_available\":false,\"balance_infos\":["
-        "{\"currency\":\"CNY\",\"total_balance\":\"-0.12345678\",\"granted_balance\":\"0\",\"topped_up_balance\":\"-0.12345678\"},"
-        "{\"currency\":\"USD\",\"total_balance\":\"1.23456789\",\"granted_balance\":\"1.23456789\",\"topped_up_balance\":\"0.00\"}]}}";
-    char json[8192];
-    size_t length = make_snapshot(json, sizeof(json), account,
-        "{\"refresh_seconds\":300,\"auto_refresh\":true,\"screen_timeout_seconds\":120}");
-    quota_snapshot_t snapshot;
-    assert(quota_parse_snapshot(json, length, &snapshot));
-    assert(snapshot.accounts[0].provider == QUOTA_PROVIDER_DEEPSEEK);
-    assert(!snapshot.accounts[0].five_hour.present && !snapshot.accounts[0].seven_day.present);
-    const quota_balance_t *balance = &snapshot.balances[0];
-    assert(balance->present && !balance->is_available && balance->currency_count == 2);
-    assert(strcmp(balance->label, "My API") == 0);
-    assert(strcmp(balance->balance_infos[0].total_balance, "-0.12345678") == 0);
-    assert(strcmp(balance->balance_infos[1].total_balance, "1.23456789") == 0);
-    assert(quota_balance_is_valid(balance));
-    assert(quota_balance_cny(balance) == &balance->balance_infos[0]);
-    quota_balance_t reordered = *balance;
-    reordered.balance_infos[0] = balance->balance_infos[1];
-    reordered.balance_infos[1] = balance->balance_infos[0];
+    quota_balance_t balance = {.present = true, .is_available = false, .currency_count = 2};
+    strcpy(balance.label, "My API");
+    strcpy(balance.balance_infos[0].currency, "CNY");
+    strcpy(balance.balance_infos[0].total_balance, "-0.12345678");
+    strcpy(balance.balance_infos[0].granted_balance, "0");
+    strcpy(balance.balance_infos[0].topped_up_balance, "-0.12345678");
+    strcpy(balance.balance_infos[1].currency, "USD");
+    strcpy(balance.balance_infos[1].total_balance, "1.23456789");
+    strcpy(balance.balance_infos[1].granted_balance, "1.23456789");
+    strcpy(balance.balance_infos[1].topped_up_balance, "0.00");
+    assert(quota_balance_is_valid(&balance));
+    assert(quota_balance_cny(&balance) == &balance.balance_infos[0]);
+    quota_balance_t reordered = balance;
+    reordered.balance_infos[0] = balance.balance_infos[1];
+    reordered.balance_infos[1] = balance.balance_infos[0];
     assert(quota_balance_cny(&reordered) == &reordered.balance_infos[1]);
-    reordered.currency_count = 1;  /* USD alone must not become an RMB amount. */
+    reordered.currency_count = 1; /* USD alone must not become an RMB amount. */
     assert(quota_balance_cny(&reordered) == NULL);
     assert(quota_balance_cny(NULL) == NULL);
-    quota_balance_t invalid = *balance;
+    quota_balance_t invalid = balance;
     memcpy(invalid.balance_infos[1].currency, "CNY", 4);
     assert(!quota_balance_is_valid(&invalid));
-    invalid = *balance;
+    invalid = balance;
     strcpy(invalid.balance_infos[0].total_balance, "NaN");
     assert(!quota_balance_is_valid(&invalid));
-    invalid = *balance;
-    memset(invalid.balance_infos[0].total_balance, '1', sizeof(invalid.balance_infos[0].total_balance));
+    invalid = balance;
+    memset(invalid.balance_infos[0].total_balance, '1',
+           sizeof(invalid.balance_infos[0].total_balance));
     assert(!quota_balance_is_valid(&invalid));
-    char *amount = strstr(json, "-0.12345678");
-    assert(amount != NULL); amount[0] = 'e';
-    assert(!quota_parse_snapshot(json, length, &snapshot));
-    const char *unknown =
-        "{\"id\":\"0123456789abcdef0123456789abcdef\",\"provider\":\"deepseek\","
-        "\"email\":\"\",\"plan\":\"API\",\"status\":\"waiting\","
-        "\"observed_at\":null,\"five_hour\":null,\"seven_day\":null,\"balance\":null}";
-    length = make_snapshot(json, sizeof(json), unknown,
-        "{\"refresh_seconds\":300,\"auto_refresh\":true}");
-    assert(quota_parse_snapshot(json, length, &snapshot));
-    assert(!snapshot.balances[0].present && snapshot.balances[0].currency_count == 0);
-    /* Old providers retain their quota windows and never gain a fabricated wallet. */
-    length = make_snapshot(json, sizeof(json), valid_account,
-        "{\"refresh_seconds\":300,\"auto_refresh\":true}");
-    assert(quota_parse_snapshot(json, length, &snapshot));
-    assert(snapshot.accounts[0].five_hour.present && !snapshot.balances[0].present);
-}
-
-static void test_codex_extras_contract(void)
-{
-    char json[2048], account[1024];
-    const char *prefix =
-        "{\"id\":\"0123456789abcdef0123456789abcdef\",\"provider\":\"codex\","
-        "\"email\":\"x@example.com\",\"plan\":\"pro\",\"status\":\"ok\","
-        "\"observed_at\":1700000000,\"five_hour\":null,"
-        "\"seven_day\":{\"remaining_percent\":0,\"resets_at\":null},";
-    const char *cases[] = {
-        "\"banked_reset\":{\"available_count\":3,\"next_expires_at\":1700000222},\"credits\":{\"has_credits\":true,\"unlimited\":false,\"balance\":\"12.340000001\"}}",
-        "\"banked_reset\":{\"available_count\":0,\"next_expires_at\":null},\"credits\":{\"has_credits\":false,\"unlimited\":true,\"balance\":null}}",
-        "\"banked_reset\":null,\"credits\":null}",
-    };
-    quota_snapshot_t snapshot = {0};
-    for (size_t i = 0; i < 3; i++) {
-        snprintf(account, sizeof(account), "%s%s", prefix, cases[i]);
-        size_t length = make_snapshot(json, sizeof(json), account,
-            "{\"refresh_seconds\":300,\"auto_refresh\":true}");
-        assert(quota_parse_snapshot(json, length, &snapshot));
-        assert(!snapshot.accounts[0].five_hour.present);
-        assert(snapshot.accounts[0].seven_day.present && snapshot.accounts[0].seven_day.remaining_percent == 0);
-        const quota_codex_extras_t *extras = &snapshot.codex_extras[0];
-        assert(extras->has_banked_reset == (i < 2));
-        assert(extras->available_resets == (i == 0 ? 3 : 0));
-        assert(extras->has_next_reset_expiry == (i == 0));
-        assert(extras->next_reset_expires_at == (i == 0 ? 1700000222 : 0));
-        assert(extras->has_credits == (i < 2));
-        assert(extras->unlimited_credits == (i == 1));
-        assert(strcmp(extras->credits_balance, i == 0 ? "12.340000001" : "") == 0);
-    }
-    const char *bad[] = {
-        "\"banked_reset\":{\"available_count\":-1}}",
-        "\"banked_reset\":{\"available_count\":1.5}}",
-        "\"banked_reset\":{\"available_count\":9007199254740992}}",
-        "\"banked_reset\":{\"available_count\":2,\"next_expires_at\":-1}}",
-        "\"banked_reset\":{\"available_count\":2,\"next_expires_at\":1700000222.5}}",
-        "\"banked_reset\":{\"available_count\":2,\"next_expires_at\":4294967296}}",
-        "\"credits\":{\"has_credits\":1,\"unlimited\":false,\"balance\":\"1\"}}",
-        "\"credits\":{\"has_credits\":true,\"unlimited\":false,\"balance\":1}}",
-        "\"credits\":{\"has_credits\":true,\"unlimited\":false,\"balance\":\"12345678901234567890123456789012345\"}}",
-        "\"credits\":{\"has_credits\":true,\"unlimited\":false,\"balance\":\"1\\n2\"}}",
-    };
-    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
-        snprintf(account, sizeof(account), "%s%s", prefix, bad[i]);
-        size_t length = make_snapshot(json, sizeof(json), account,
-            "{\"refresh_seconds\":300,\"auto_refresh\":true}");
-        assert(!quota_parse_snapshot(json, length, &snapshot));
-    }
-    /* Count-only peers remain compatible and do not reuse an old expiry. */
-    snprintf(account, sizeof(account), "%s\"banked_reset\":{\"available_count\":2}}", prefix);
-    size_t legacy_length = make_snapshot(json, sizeof(json), account,
-        "{\"refresh_seconds\":300,\"auto_refresh\":true}");
-    assert(quota_parse_snapshot(json, legacy_length, &snapshot));
-    assert(snapshot.codex_extras[0].has_banked_reset);
-    assert(!snapshot.codex_extras[0].has_next_reset_expiry);
-    /* A legacy snapshot clears optional RAM metadata instead of reusing old credits. */
-    size_t length = make_snapshot(json, sizeof(json), valid_account,
-        "{\"refresh_seconds\":300,\"auto_refresh\":true}");
-    assert(quota_parse_snapshot(json, length, &snapshot));
-    assert(!snapshot.codex_extras[0].has_credits && !snapshot.codex_extras[0].has_banked_reset);
+    quota_balance_t unknown = {0};
+    assert(quota_balance_is_valid(&unknown) && quota_balance_cny(&unknown) == NULL);
 }
 
 static void test_remaining_duration(void)
 {
-    const struct { uint64_t seconds; const char *text; } cases[] = {
-        {1, "<1h"}, {3599, "<1h"}, {3600, "0d 1h"},
-        {8100, "0d 2h"}, {86399, "0d 23h"}, {86400, "1d 0h"},
-        {97200, "1d 3h"}, {604800, "7d 0h"},
+    const struct {
+        uint64_t seconds;
+        const char *text;
+    } cases[] = {
+        {1, "不到 1 分钟后重置"},       {59, "不到 1 分钟后重置"},
+        {60, "1 分钟后重置"},           {3599, "59 分钟后重置"},
+        {3600, "1 小时 0 分后重置"},    {8040, "2 小时 14 分后重置"},
+        {86399, "23 小时 59 分后重置"}, {86400, "1 天 0 小时后重置"},
+        {97200, "1 天 3 小时后重置"},   {3 * 86400 + 5 * 3600, "3 天 5 小时后重置"},
+        {604800, "7 天 0 小时后重置"},
     };
-    char output[48], expected[48];
+    char output[48];
     quota_window_t window = {.present = true, .has_resets_at = true};
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         window.resets_at = 1700000000 + cases[i].seconds;
         quota_format_reset_time(&window, 1700000000, true, output, sizeof(output));
-        snprintf(expected, sizeof(expected), "\xEF\x80\xA1 %s", cases[i].text);
-        assert(strcmp(output, expected) == 0);
+        assert(strcmp(output, cases[i].text) == 0);
     }
     /* Cached boot time is not a current-clock observation. */
     quota_format_reset_time(&window, 1700000000, false, output, sizeof(output));
-    assert(strcmp(output, "时间待同步") == 0);
+    assert(strcmp(output, "待校时") == 0);
     quota_format_reset_time(&window, window.resets_at, true, output, sizeof(output));
     assert(strcmp(output, "等待新数据") == 0);
     window.has_resets_at = false;
@@ -703,20 +811,31 @@ static void test_remaining_duration(void)
 int main(void)
 {
     test_utf8_and_identifiers();
-    test_urls_tokens_and_display();
-    test_snapshot_validation_and_null_semantics();
-    test_account_limit_and_identity();
-    test_utf8_field_byte_boundaries();
-    test_provision_frame();
+    test_display_text();
+    test_account_lookup();
     test_serial_framing_recovers_after_overlong_line();
     test_freshness_and_reset_states();
-    test_navigation();
-    test_portable_navigation();
+    test_home_keys();
+    test_welcome_screen();
+    test_menu_order_wrap_and_memory();
+    test_option_lists();
+    test_hotspot_pages();
+    test_hotspot_state();
+    test_displayable_text();
+    test_usb_screen_and_auth_screen();
+    test_factory_reset_confirmation();
+    test_no_long_press_is_destructive();
     test_navigation_after_external_settings_change();
+    test_status_line_priority();
+    test_credits_are_whole_numbers_and_never_overstated();
+    test_money_keeps_the_decimal_string();
+    test_battery_icon_state();
+    test_wifi_icon_state();
+    test_banked_reset_note();
     test_display_sleep_and_wake_gestures();
-    test_screen_timeout_settings_compatibility();
+    test_long_down_is_refused_during_a_session();
+    test_screen_timeout_settings();
     test_deepseek_balance_contract();
-    test_codex_extras_contract();
     test_remaining_duration();
     puts("quota logic tests passed");
     return 0;

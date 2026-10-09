@@ -1,9 +1,10 @@
 """Exercise USB polling against the installed SDK, with a synthetic FIFO."""
+
 import os
 from pathlib import Path
 import unittest
 
-from runtime_helpers import ROOT, compile_and_run, extract_function
+from runtime_helpers import compile_and_run, vendor_function
 
 
 class UsbSdk(unittest.TestCase):
@@ -11,16 +12,20 @@ class UsbSdk(unittest.TestCase):
         sdk = os.environ.get("IDF_PATH")
         if not sdk:
             self.skipTest("IDF_PATH is required for the real SDK USB test")
-        source = (Path(sdk) / "components/esp_driver_usb_serial_jtag/src/usb_serial_jtag_vfs.c").read_text()
-        functions = "\n".join(extract_function(source, name, declaration) for name, declaration in (
-            ("usb_serial_jtag_rx_char_no_driver", "static int"),
-            ("usb_serial_jtag_read_char", "static int"),
-            ("usb_serial_jtag_return_char", "static void"),
-            ("usb_serial_jtag_read", "static ssize_t"),
-            ("usb_serial_jtag_fcntl", "static int"),
-            ("usb_serial_jtag_vfs_use_nonblocking", "void"),
-        ))
-        startup = extract_function((ROOT / "main/quota_service.c").read_text(), "quota_service_start", "bool")
+        source = (
+            Path(sdk) / "components/esp_driver_usb_serial_jtag/src/usb_serial_jtag_vfs.c"
+        ).read_text()
+        functions = "\n".join(
+            vendor_function(source, name, declaration)
+            for name, declaration in (
+                ("usb_serial_jtag_rx_char_no_driver", "static int"),
+                ("usb_serial_jtag_read_char", "static int"),
+                ("usb_serial_jtag_return_char", "static void"),
+                ("usb_serial_jtag_read", "static ssize_t"),
+                ("usb_serial_jtag_fcntl", "static int"),
+                ("usb_serial_jtag_vfs_use_nonblocking", "void"),
+            )
+        )
         harness = r'''
 #include "quota_logic.h"
 #include <assert.h>
@@ -61,26 +66,37 @@ static int usb_serial_jtag_wait_tx_done_no_driver(int fd) { (void)fd; return 0; 
         harness += functions
         harness += r'''
 #pragma GCC diagnostic pop
-#define fcntl usb_serial_jtag_fcntl
-#define NETWORK_TASK_STACK 10240
-#define NETWORK_TASK_PRIORITY 5
-#define pdPASS 1
-static void *s_events = (void *)1, *s_mutex = (void *)1, *s_network_task;
-static unsigned tasks;
-static void network_task(void *arg) { (void)arg; }
-static int xTaskCreate(void (*fn)(void *), const char *name, unsigned stack,
-                       void *arg, unsigned priority, void **task) {
-    assert(fn == network_task && strcmp(name, "quota_network") == 0);
-    assert(stack == NETWORK_TASK_STACK && arg == NULL && priority == NETWORK_TASK_PRIORITY);
-    tasks++; *task = (void *)1; return pdPASS;
+/* quota_service_start() calls fcntl(); route it to the SDK's USB VFS implementation. */
+#include <stdarg.h>
+int fcntl(int fd, int cmd, ...)
+{
+    va_list arguments;
+    va_start(arguments, cmd);
+    int argument = va_arg(arguments, int);
+    va_end(arguments);
+    return usb_serial_jtag_fcntl(fd, cmd, argument);
 }
-'''
-        harness += startup
-        harness += r'''
-int main(void) {
-    char frame[4096]; memset(frame, 'x', sizeof(frame));
-    memcpy(frame, "@AIQ:", 5); frame[sizeof(frame) - 1] = '\n';
-    fifo = frame; fifo_available = 64;
+bool quota_service_init(void);
+bool quota_service_start(void);
+void network_task(void *argument);
+static unsigned tasks;
+int xTaskCreate(void (*fn)(void *), const char *name, unsigned stack, void *arg, unsigned priority,
+                void **task)
+{
+    assert(fn == network_task && strcmp(name, "quota_network") == 0);
+    assert(stack == 10240 && arg == NULL && priority == 5);
+    tasks++;
+    *task = (void *)1;
+    return 1;
+}
+int main(void)
+{
+    char frame[4096];
+    memset(frame, 'x', sizeof(frame));
+    memcpy(frame, "@AIQ:", 5);
+    frame[sizeof(frame) - 1] = '\n';
+    fifo = frame;
+    fifo_available = 64;
     usb_serial_jtag_vfs_use_nonblocking();
     usb_serial_jtag_fcntl(0, F_SETFL, O_NONBLOCK);
     char byte;
@@ -88,16 +104,21 @@ int main(void) {
     assert(usb_serial_jtag_read(0, &byte, 1) == -1 && errno == EWOULDBLOCK);
     assert(fifo_calls == 0 && fifo_position == 0);
 
-    assert(quota_service_start() && !s_ctx.non_blocking && tasks == 1);
-    quota_frame_decoder_t decoder; quota_frame_decoder_init(&decoder);
-    const char *decoded = NULL; size_t length = 0; unsigned complete = 0;
+    assert(quota_service_init() && quota_service_start() && !s_ctx.non_blocking && tasks == 1);
+    quota_frame_decoder_t decoder;
+    quota_frame_decoder_init(&decoder);
+    const char *decoded = NULL;
+    size_t length = 0;
+    unsigned complete = 0;
     for (size_t packet = 64; packet <= sizeof(frame); packet += 64) {
         fifo_available = packet;
         while (usb_serial_jtag_read(0, &byte, 1) == 1) {
-            quota_frame_result_t result = quota_frame_decoder_feed(&decoder, byte, &decoded, &length);
+            quota_frame_result_t result =
+                quota_frame_decoder_feed(&decoder, byte, &decoded, &length);
             assert(result != QUOTA_FRAME_TOO_LONG);
             if (result == QUOTA_FRAME_COMPLETE) {
-                complete++; assert(length == sizeof(frame) - 1);
+                complete++;
+                assert(length == sizeof(frame) - 1);
                 assert(memcmp(decoded, frame, length) == 0);
             }
         }
@@ -110,7 +131,12 @@ int main(void) {
     puts("real SDK USB polling and 4096-byte frame: PASS");
 }
 '''
-        compile_and_run(harness, "ai-quota-usb-sdk-", ("main/quota_logic.c", "tests/cjson/cJSON.c"))
+        compile_and_run(
+            harness,
+            "ai-quota-usb-sdk-",
+            ("main/quota_logic.c", "main/quota_service.c", "tests/cjson/cJSON.c"),
+            host_sdk=True,
+        )
 
 
 if __name__ == "__main__":

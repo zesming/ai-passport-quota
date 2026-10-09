@@ -1,0 +1,11 @@
+menu "AI quota monitor"
+
+    config QUOTA_RESOURCE_LOG
+        bool "Log task stack and heap headroom every 30 seconds"
+        default n
+        help
+            Debug aid for hardware checks: prints the unused stack minimum of the quota_app and
+            quota_network tasks and the free and minimum free heap. Enable it through
+            sdkconfig.resource_log; release builds leave it off.
+
+endmenu

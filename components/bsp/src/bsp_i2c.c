@@ -8,8 +8,10 @@ static const char *TAG = "bsp_i2c";
 
 static i2c_master_bus_handle_t s_bus;
 
-esp_err_t bsp_i2c_init(void) {
-    if (s_bus) return ESP_OK;                 // 幂等
+esp_err_t bsp_i2c_init(void)
+{
+    if (s_bus)
+        return ESP_OK; // 幂等
     i2c_master_bus_config_t cfg = {
         .i2c_port = BSP_I2C_PORT,
         .sda_io_num = BSP_I2C_SDA,
@@ -29,9 +31,13 @@ esp_err_t bsp_i2c_init(void) {
     return ESP_OK;
 }
 
-i2c_master_bus_handle_t bsp_i2c_bus(void) { return s_bus; }
+i2c_master_bus_handle_t bsp_i2c_bus(void)
+{
+    return s_bus;
+}
 
-esp_err_t bsp_i2c_scan(void) {
+esp_err_t bsp_i2c_scan(void)
+{
     // ⚠ 千万别为了"隔离 NACK"另开一条临时总线扫描 —— 那会把整条 I2C 打死:
     //   同一个 port 二次 i2c_new_master_bus() 必然失败,但 i2c_common.c 里
     //   "已被 acquire" 的分支仍会把【正式总线】的 bus 对象从 *i2c_new_bus 交出去;
@@ -51,19 +57,22 @@ esp_err_t bsp_i2c_scan(void) {
     int found = 0;
     for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
         if (i2c_master_probe(s_bus, addr, 50) == ESP_OK) {
-            const char *who = (addr == BSP_I2C_ES8311_ADDR) ? "  <- ES8311 音频 codec"
-                            : (addr == BSP_I2C_CW2017_ADDR) ? "  <- CW2017 电量计"
-                            : "";
+            const char *who = (addr == BSP_I2C_ES8311_ADDR)   ? "  <- ES8311 音频 codec"
+                              : (addr == BSP_I2C_CW2017_ADDR) ? "  <- CW2017 电量计"
+                                                              : "";
             ESP_LOGI(TAG, "  发现设备 @ 0x%02X%s", addr, who);
             found++;
         }
     }
-    if (found == 0) ESP_LOGW(TAG, "  未发现任何 I2C 设备 —— 检查接线、上拉电阻与供电");
-    else            ESP_LOGI(TAG, "I2C 扫描完成,共 %d 个设备", found);
+    if (found == 0)
+        ESP_LOGW(TAG, "  未发现任何 I2C 设备 —— 检查接线、上拉电阻与供电");
+    else
+        ESP_LOGI(TAG, "I2C 扫描完成,共 %d 个设备", found);
     return ESP_OK;
 }
 
-esp_err_t bsp_i2c_prepare_deep_sleep(void) {
+esp_err_t bsp_i2c_prepare_deep_sleep(void)
+{
     gpio_config_t cfg = {
         .pin_bit_mask = (1ULL << BSP_I2C_SDA) | (1ULL << BSP_I2C_SCL),
         .mode = GPIO_MODE_INPUT,

@@ -15,23 +15,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  companion:
-    name: Companion tests and build
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: companion
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: companion/package-lock.json
-      - run: npm ci
-      - run: npm test
-      - run: npm run build
-
   static:
     name: Repository and host checks
     runs-on: ubuntu-latest
@@ -42,6 +25,17 @@ jobs:
         run: |
           actionlint_bin="$(./tools/install-actionlint.sh "$RUNNER_TEMP/actionlint")"
           echo "ACTIONLINT_BIN=${actionlint_bin}" >> "$GITHUB_ENV"
+
+      # The UI preview test needs LVGL 9.5.0 source; CI has no managed_components, so it downloads
+      # the pinned release archive (about 100 MB) into build/lvgl. Cache it, keyed by the pin.
+      - name: Cache LVGL source for the UI preview
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: build/lvgl
+          key: lvgl-${{ hashFiles('tools/fetch_lvgl.py') }}
+
+      - name: Install pinned formatter
+        run: pipx install clang-format==23.1.3
 
       - name: Validate repository and run host tests
         run: ./tools/validate.sh --static

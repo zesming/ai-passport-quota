@@ -28,6 +28,9 @@ CONFIG_LV_FONT_MONTSERRAT_12=y
 CONFIG_LV_FONT_MONTSERRAT_14=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
 CONFIG_LV_USE_QRCODE=y
+# 界面没有用到 Span 控件和默认主题（所有对象都自己设样式）；关闭可省 LVGL 内存池。
+CONFIG_LV_USE_SPAN=n
+CONFIG_LV_USE_THEME_DEFAULT=n
 # LVGL 内置 malloc 池大小(KB)。它是独立静态区、不与系统堆共享,配大了会白白占用 RAM。
 # 当前额度界面使用 24KB；复杂 UI 需重新测量内存。
 CONFIG_LV_MEM_SIZE_KILOBYTES=24
@@ -36,6 +39,12 @@ CONFIG_LV_MEM_SIZE_KILOBYTES=24
 CONFIG_FREERTOS_HZ=1000
 CONFIG_PM_ENABLE=y
 CONFIG_PM_DFS_INIT_AUTO=n
+# Screen-off automatic light sleep (the app holds a CPU_FREQ_MAX lock while the screen is on).
+# Tickless idle is required for light sleep; PM_SLP_DISABLE_GPIO floats pins during sleep, so the
+# BSP sets the backlight and LCD CS sleep levels. With a USB host attached the chip never sleeps.
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
+CONFIG_PM_SLP_DISABLE_GPIO=y
+CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION=y
 
 # Debounced release navigation; long hold callback follows the 500 ms threshold.
 CONFIG_BUTTON_PERIOD_TIME_MS=5
@@ -50,6 +59,9 @@ CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 # Release verified peer certificates after the handshake; TLS 1.2 remains enabled.
 CONFIG_MBEDTLS_SSL_KEEP_PEER_CERTIFICATE=n
 CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=n
+
+# Clock sync falls back through three NTP servers (Cloudflare, Aliyun, pool.ntp.org).
+CONFIG_LWIP_SNTP_MAX_SERVERS=3
 
 # Quota uses Wi-Fi and USB; no Bluetooth host is required.
 CONFIG_BT_ENABLED=n

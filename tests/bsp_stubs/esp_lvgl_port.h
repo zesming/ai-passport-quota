@@ -3,14 +3,35 @@
 #include <stdint.h>
 #include "esp_err.h"
 #include "esp_lcd_types.h"
-typedef struct { uint8_t *data; struct { uint32_t stride; } header; } lv_draw_buf_t;
-typedef struct _lv_display_t { lv_draw_buf_t buffer; } lv_display_t;
-typedef struct { int32_t x1, y1, x2, y2; } lv_area_t;
-typedef struct { lv_display_t *target; lv_area_t *area; } lv_event_t;
-typedef struct { int unused; } lv_event_dsc_t;
-typedef struct { uint32_t task_max_sleep_ms; } lvgl_port_cfg_t;
-typedef struct { bool paused; } lv_timer_t;
-typedef struct { int unused; } lv_obj_t;
+typedef struct {
+    uint8_t *data;
+    struct {
+        uint32_t stride;
+    } header;
+} lv_draw_buf_t;
+typedef struct _lv_display_t {
+    lv_draw_buf_t buffer;
+} lv_display_t;
+typedef struct {
+    int32_t x1, y1, x2, y2;
+} lv_area_t;
+typedef struct {
+    lv_display_t *target;
+    lv_area_t *area;
+} lv_event_t;
+typedef struct {
+    int unused;
+} lv_event_dsc_t;
+typedef struct {
+    uint32_t task_max_sleep_ms;
+} lvgl_port_cfg_t;
+typedef struct lv_timer_t {
+    bool paused;
+    struct lv_timer_t *next; // The host fake keeps timers as a plain linked list.
+} lv_timer_t;
+typedef struct {
+    int unused;
+} lv_obj_t;
 #define ESP_LVGL_PORT_INIT_CONFIG() {0}
 #define LV_EVENT_FLUSH_START 1
 #define LV_COLOR_FORMAT_RGB565 1
@@ -21,8 +42,12 @@ typedef struct {
     uint32_t buffer_size;
     bool double_buffer;
     int hres, vres;
-    struct { bool swap_xy, mirror_x, mirror_y; } rotation;
-    struct { bool buff_dma, swap_bytes; } flags;
+    struct {
+        bool swap_xy, mirror_x, mirror_y;
+    } rotation;
+    struct {
+        bool buff_dma, swap_bytes;
+    } flags;
 } lvgl_port_display_cfg_t;
 esp_err_t lvgl_port_init(const lvgl_port_cfg_t *);
 esp_err_t lvgl_port_deinit(void);
@@ -36,11 +61,32 @@ lv_timer_t *lv_display_get_refr_timer(lv_display_t *);
 lv_obj_t *lv_display_get_screen_active(lv_display_t *);
 void lv_timer_pause(lv_timer_t *);
 void lv_timer_resume(lv_timer_t *);
+lv_timer_t *lv_timer_get_next(lv_timer_t *);
+bool lv_timer_get_paused(lv_timer_t *);
+void lv_timer_enable(bool);
+esp_err_t lvgl_port_stop(void);
+esp_err_t lvgl_port_resume(void);
 void lv_obj_invalidate(lv_obj_t *);
 void lv_refr_now(lv_display_t *);
 esp_err_t lvgl_port_task_wake(int, lv_display_t *);
-static inline void *lv_event_get_target(lv_event_t *ev) { return ev->target; }
-static inline void *lv_event_get_param(lv_event_t *ev) { return ev->area; }
-static inline lv_draw_buf_t *lv_display_get_buf_active(lv_display_t *disp) { return &disp->buffer; }
-static inline int lv_display_get_color_format(lv_display_t *disp) { (void)disp; return LV_COLOR_FORMAT_RGB565; }
-static inline int32_t lv_area_get_width(const lv_area_t *a) { return a->x2 - a->x1 + 1; }
+static inline void *lv_event_get_target(lv_event_t *ev)
+{
+    return ev->target;
+}
+static inline void *lv_event_get_param(lv_event_t *ev)
+{
+    return ev->area;
+}
+static inline lv_draw_buf_t *lv_display_get_buf_active(lv_display_t *disp)
+{
+    return &disp->buffer;
+}
+static inline int lv_display_get_color_format(lv_display_t *disp)
+{
+    (void)disp;
+    return LV_COLOR_FORMAT_RGB565;
+}
+static inline int32_t lv_area_get_width(const lv_area_t *a)
+{
+    return a->x2 - a->x1 + 1;
+}

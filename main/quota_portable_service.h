@@ -4,7 +4,8 @@
 #include "quota_catalog.h"
 #include "quota_store.h"
 
-/* The existing network task serializes setup, USB, provider, collector and NVS work. */
+/* The existing network task serializes setup, USB, provider and NVS work. The hooks are the seams
+ * the host tests replace; USB and Wi-Fi are called directly (quota_usb.h, quota_wifi.h). */
 typedef struct {
     quota_service_view_t *view;
     void (*lock)(void);
@@ -12,47 +13,30 @@ typedef struct {
     bool (*try_lock)(void);
     uint32_t (*config_generation_locked)(void);
     void (*config_changed_locked)(void);
-    bool (*pairing_requested)(void);
-    bool (*usb_blocked)(void);
-    bool (*usb_active)(void);
-    uint64_t (*usb_deadline_ms)(void);
-    void (*usb_close)(void);
-    bool (*wifi_ready)(void);
-    bool (*wifi_stop)(void);
     void (*notify)(void);
     void (*wake)(void);
     bool (*display_current)(uint32_t generation);
-    /* Optional v1 inventory; age limits observations, never identity inventory. */
-    quota_store_read_result_t (*legacy_config)(quota_device_config_t *out,
-                                                uint16_t *screen_timeout);
-    quota_store_read_result_t (*legacy_inventory)(quota_snapshot_t *out);
-    /* One temporary incoming snapshot, owned and freed by the common coordinator. */
-    bool (*legacy_snapshot)(const quota_legacy_endpoint_t *endpoint, bool refresh,
-                            uint32_t display_generation, quota_snapshot_t *out,
-                            bool *deferred);
 } quota_portable_service_hooks_t;
 
-bool quota_portable_service_init(const quota_device_config_t *legacy,
-                                const quota_portable_service_hooks_t *hooks);
-bool quota_portable_service_owns_network(void);
+bool quota_portable_service_init(const quota_portable_service_hooks_t *hooks);
 /* Rechecked before every HTTP phase, including synchronously pending physical entry. */
 bool quota_portable_service_http_allowed(void);
 void quota_portable_service_tick(bool sleeping, uint32_t generation);
 void quota_portable_service_countdown_overlay_locked(quota_service_view_t *view);
-void quota_portable_service_overlay(quota_service_view_t *view);
 uint64_t quota_portable_service_next_deadline_ms(bool sleeping);
-bool quota_portable_service_prepare_pairing(void);
 bool quota_portable_service_prepare_usb(void);
-quota_portable_submit_result_t quota_portable_service_submit(
-    const quota_portable_command_t *command, quota_setup_transport_t transport);
+/* The one validation function, for both entry points: the USB `validate` command and the
+ * hotspot after setup_close has closed the access point. It checks the Wi-Fi networks, DeepSeek
+ * keys and queued ChatGPT authorization whose validation is pending or failed, one after the
+ * other, in the network task. Returns false when nothing needs validating. */
+bool quota_portable_validate_pending(void);
+/* Firmware version for protocol replies. */
+const char *quota_portable_service_firmware(void);
+quota_portable_submit_result_t
+quota_portable_service_submit(const quota_portable_command_t *command,
+                              quota_setup_transport_t transport);
 bool quota_portable_service_state_json(char *buffer, size_t capacity, size_t *length,
-                                      quota_setup_transport_t transport);
-/* Network-owner-only; certificate scratch never enters the generic queue. */
-quota_portable_submit_result_t quota_portable_service_submit_collector(
-    const quota_legacy_endpoint_t *endpoint, const char request_id[9]);
-/* The modern v1 USB frame updates this model, never the historical v1 config key. */
-bool quota_portable_service_configure_legacy(const quota_device_config_t *configuration,
-                                            const char **error);
+                                       quota_setup_transport_t transport);
 void quota_portable_service_disconnected(uint8_t reason);
 void quota_portable_service_open(void);
 void quota_portable_service_close(void);
@@ -60,7 +44,9 @@ void quota_portable_service_renew(void);
 void quota_portable_service_cancel_auth(void);
 void quota_portable_service_refresh(void);
 void quota_portable_service_reconnect(void);
-void quota_portable_service_settings(uint16_t interval, bool automatic,
-                                     uint16_t screen_timeout);
+/* Only the physical interface asks for this. The next tick of the network task stops setup and
+ * USB, erases all stored data and restarts; a failed erase shows as a storage error. */
+void quota_portable_service_factory_reset(void);
+void quota_portable_service_settings(uint16_t interval, bool automatic, uint16_t screen_timeout);
 void quota_portable_service_select(const char *account_id);
 bool quota_portable_service_selected(char account_id[QUOTA_ACCOUNT_ID_BYTES + 1]);

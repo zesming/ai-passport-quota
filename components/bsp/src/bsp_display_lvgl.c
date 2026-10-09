@@ -27,16 +27,15 @@ static void rounded_flush_event(lv_event_t *event)
     }
 
     const int32_t width = lv_area_get_width(area);
-    if (draw_buf->header.stride < (uint32_t)width * sizeof(uint16_t)) return;
+    if (draw_buf->header.stride < (uint32_t)width * sizeof(uint16_t))
+        return;
 
     for (int32_t y = area->y1; y <= area->y2; ++y) {
-        uint16_t *row = (uint16_t *)(draw_buf->data +
-                                     (y - area->y1) * draw_buf->header.stride);
+        uint16_t *row = (uint16_t *)(draw_buf->data + (y - area->y1) * draw_buf->header.stride);
         int32_t visible_x1;
         int32_t visible_x2;
-        if (!bsp_display_rounded_row_span(y, BSP_LCD_W, BSP_LCD_H,
-                                          BSP_LVGL_SCREEN_RADIUS, &visible_x1,
-                                          &visible_x2)) {
+        if (!bsp_display_rounded_row_span(y, BSP_LCD_W, BSP_LCD_H, BSP_LVGL_SCREEN_RADIUS,
+                                          &visible_x1, &visible_x2)) {
             memset(row, 0, (size_t)width * sizeof(uint16_t));
             continue;
         }
@@ -51,11 +50,12 @@ static void rounded_flush_event(lv_event_t *event)
             row[x - area->x1] = 0;
         }
     }
-
 }
 
-lv_display_t *bsp_lvgl_init(void) {
-    if (s_disp) return s_disp;
+lv_display_t *bsp_lvgl_init(void)
+{
+    if (s_disp)
+        return s_disp;
     if (!bsp_display_panel()) {
         ESP_LOGE(TAG, "请先成功调用 bsp_display_init()");
         return NULL;
@@ -80,17 +80,18 @@ lv_display_t *bsp_lvgl_init(void) {
 
     const lvgl_port_display_cfg_t dc = {
         .panel_handle = bsp_display_panel(),
-        .io_handle    = bsp_display_io(),
+        .io_handle = bsp_display_io(),
         // ⚠ C3 无 PSRAM,DMA 只能用内部 RAM。20 行单缓冲约 9.6KB，
         // 可减少窗口命令和队列提交次数；仍保留单缓冲，避免双缓冲挤压音频/Wi-Fi。
-        .buffer_size   = (uint32_t)BSP_LCD_W * BSP_LVGL_DRAW_BUFFER_LINES,
+        .buffer_size = (uint32_t)BSP_LCD_W * BSP_LVGL_DRAW_BUFFER_LINES,
         .double_buffer = false,
-        .hres = BSP_LCD_W, .vres = BSP_LCD_H,
+        .hres = BSP_LCD_W,
+        .vres = BSP_LCD_H,
         // 旋转/镜像必须在这里配:esp_lvgl_port 注册显示时会重新下发 MADCTL,
         // 覆盖 bsp_display.c 里 esp_lcd_panel_mirror() 的设置。
-        .rotation = { .swap_xy = false, .mirror_x = false, .mirror_y = false },
+        .rotation = {.swap_xy = false, .mirror_x = false, .mirror_y = false},
         // swap_bytes:LVGL 输出小端 RGB565,ST7789 走 SPI 要大端 → 需交换高低字节。
-        .flags = { .buff_dma = true, .swap_bytes = true },
+        .flags = {.buff_dma = true, .swap_bytes = true},
     };
     // The port mutex is recursive. Keep registration and the mask callback in
     // one critical section, before the new display can produce its first flush.
@@ -108,7 +109,8 @@ lv_display_t *bsp_lvgl_init(void) {
     }
     if (!mask_registered) {
         ESP_LOGE(TAG, "LVGL display 或圆角回调注册失败");
-        if (disp) lvgl_port_remove_disp(disp);
+        if (disp)
+            lvgl_port_remove_disp(disp);
         lvgl_port_unlock();
         // Retain the initialized port for retry. Deinit is asynchronous and can
         // race the next init (or even run before the task sets running=true).
@@ -125,16 +127,22 @@ lv_display_t *bsp_lvgl_init(void) {
     return s_disp;
 }
 
-bool bsp_lvgl_lock(int timeout_ms) {
-    if (!s_disp) return false;
+bool bsp_lvgl_lock(int timeout_ms)
+{
+    if (!s_disp)
+        return false;
     return lvgl_port_lock(timeout_ms);
 }
-void bsp_lvgl_unlock(void) {
-    if (s_disp) lvgl_port_unlock();
+void bsp_lvgl_unlock(void)
+{
+    if (s_disp)
+        lvgl_port_unlock();
 }
 
-bool bsp_lvgl_set_sleeping(bool sleeping) {
-    if (!bsp_lvgl_lock(500)) return false;
+bool bsp_lvgl_set_sleeping(bool sleeping)
+{
+    if (!bsp_lvgl_lock(500))
+        return false;
     lv_timer_t *refresh = lv_display_get_refr_timer(s_disp);
     esp_lcd_panel_handle_t panel = bsp_display_panel();
     if (!refresh || !panel) {
@@ -154,8 +162,9 @@ bool bsp_lvgl_set_sleeping(bool sleeping) {
             lv_obj_invalidate(lv_display_get_screen_active(s_disp));
         }
     }
-    /* Keep the port task/tick alive: lvgl_port_stop disables the timer handler,
-       whose LVGL 9.5 disabled path returns 1 and makes this port poll every 2ms. */
+    /* Keep the port task/tick alive here: lvgl_port_stop alone disables the timer handler,
+       whose LVGL 9.5 disabled path returns 1 and makes this port poll every 2ms.
+       bsp_lvgl_suspend() stops the tick safely by pausing every timer first. */
     bsp_lvgl_unlock();
     if (!sleeping && first == ESP_OK && second == ESP_OK) {
         lvgl_port_task_wake(LVGL_PORT_EVENT_DISPLAY, s_disp);
@@ -163,8 +172,89 @@ bool bsp_lvgl_set_sleeping(bool sleeping) {
     return first == ESP_OK && second == ESP_OK;
 }
 
-bool bsp_lvgl_refresh(void) {
-    if (!bsp_lvgl_lock(500)) return false;
+// Screen-off quiet: LVGL timers (animations, UI timers) would otherwise wake the port task, and the
+// 2 ms tick timer would keep the chip out of light sleep. Pause what is running, stop the tick,
+// then re-enable the timer handler: with every timer paused it returns LV_NO_TIMER_READY and the
+// port task blocks for task_max_sleep_ms instead of polling (see bsp_lvgl_set_sleeping).
+#define BSP_LVGL_SUSPEND_MAX_TIMERS 16
+
+static lv_timer_t *s_suspended_timers[BSP_LVGL_SUSPEND_MAX_TIMERS];
+static uint8_t s_suspended_count;
+static bool s_suspended;
+
+// Caller holds the LVGL lock. A recorded timer deleted in the meantime is skipped.
+static void resume_recorded_timers(void)
+{
+    for (uint8_t i = 0; i < s_suspended_count; ++i) {
+        for (lv_timer_t *timer = lv_timer_get_next(NULL); timer; timer = lv_timer_get_next(timer)) {
+            if (timer == s_suspended_timers[i]) {
+                lv_timer_resume(timer);
+                break;
+            }
+        }
+    }
+    s_suspended_count = 0;
+}
+
+bool bsp_lvgl_suspend(void)
+{
+    if (!bsp_lvgl_lock(500))
+        return false;
+    if (s_suspended) {
+        bsp_lvgl_unlock();
+        return true;
+    }
+    s_suspended_count = 0;
+    bool overflow = false;
+    for (lv_timer_t *timer = lv_timer_get_next(NULL); timer; timer = lv_timer_get_next(timer)) {
+        if (lv_timer_get_paused(timer))
+            continue;
+        if (s_suspended_count == BSP_LVGL_SUSPEND_MAX_TIMERS) {
+            overflow = true; // Left running: the port task wakes more often but stays correct.
+            continue;
+        }
+        lv_timer_pause(timer);
+        s_suspended_timers[s_suspended_count++] = timer;
+    }
+    if (overflow)
+        ESP_LOGW(TAG, "运行中的 LVGL 定时器超过 %d 个，多出的未暂停", BSP_LVGL_SUSPEND_MAX_TIMERS);
+    if (lvgl_port_stop() != ESP_OK) {
+        // lvgl_port_stop disables the timer handler before it tries to stop the tick timer.
+        lv_timer_enable(true);
+        resume_recorded_timers();
+        bsp_lvgl_unlock();
+        return false;
+    }
+    lv_timer_enable(true);
+    s_suspended = true;
+    bsp_lvgl_unlock();
+    return true;
+}
+
+bool bsp_lvgl_resume(void)
+{
+    if (!bsp_lvgl_lock(500))
+        return false;
+    if (!s_suspended) {
+        bsp_lvgl_unlock();
+        return true;
+    }
+    if (lvgl_port_resume() != ESP_OK) {
+        bsp_lvgl_unlock();
+        return false;
+    }
+    resume_recorded_timers();
+    s_suspended = false;
+    bsp_lvgl_unlock();
+    // The port task may be blocked for task_max_sleep_ms; rerun the handler now.
+    lvgl_port_task_wake(LVGL_PORT_EVENT_DISPLAY, s_disp);
+    return true;
+}
+
+bool bsp_lvgl_refresh(void)
+{
+    if (!bsp_lvgl_lock(500))
+        return false;
     lv_refr_now(s_disp);
     /* SPI parameter commands drain queued color transfers before returning. */
     esp_err_t err = esp_lcd_panel_disp_on_off(bsp_display_panel(), true);
