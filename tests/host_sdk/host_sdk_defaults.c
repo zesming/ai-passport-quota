@@ -1,3 +1,4 @@
+#include "esp_mac.h"
 #include "host_sdk.h"
 
 #define WEAK __attribute__((weak))
@@ -14,6 +15,12 @@ WEAK int64_t esp_timer_get_time(void)
 WEAK uint32_t esp_random(void)
 {
     return 4;
+}
+WEAK esp_err_t esp_read_mac(uint8_t *mac, esp_mac_type_t type)
+{
+    (void)mac;
+    (void)type;
+    return ESP_FAIL;
 }
 WEAK UBaseType_t uxTaskGetStackHighWaterMark(TaskHandle_t task)
 {
