@@ -298,6 +298,7 @@ static void load_view(const cJSON *json, quota_service_view_t *view)
     view->refresh_seconds = (uint16_t)number_field(json, "refresh_seconds", 300);
     view->auto_refresh = bool_field(json, "auto_refresh", true);
     view->screen_timeout_seconds = (uint16_t)number_field(json, "screen_timeout_seconds", 120);
+    text_field(json, "wifi_mac", view->wifi_mac, sizeof(view->wifi_mac));
     const cJSON *accounts = member(json, "accounts");
     int count = cJSON_IsArray(accounts) ? cJSON_GetArraySize(accounts) : 0;
     view->snapshot.account_count =
@@ -374,6 +375,19 @@ static void load_navigation(const cJSON *json, quota_navigation_t *navigation)
     navigation->factory_resetting = bool_field(json, "factory_resetting", false);
     navigation->factory_failed = bool_field(json, "factory_failed", false);
     navigation->sleep_notice = bool_field(json, "sleep_notice", false);
+}
+
+static bool has_visible_label(lv_obj_t *object, const char *text)
+{
+    if (lv_obj_has_flag(object, LV_OBJ_FLAG_HIDDEN))
+        return false;
+    if (lv_obj_check_type(object, &lv_label_class) && !strcmp(lv_label_get_text(object), text))
+        return true;
+    for (uint32_t i = 0; i < lv_obj_get_child_count(object); i++) {
+        if (has_visible_label(lv_obj_get_child(object, (int32_t)i), text))
+            return true;
+    }
+    return false;
 }
 
 static unsigned count_objects(lv_obj_t *object)
@@ -457,6 +471,13 @@ int main(int argc, char **argv)
         lv_refr_now(display);
         if (s_flushes == 0) {
             fprintf(stderr, "%s: the first render drew nothing\n", name->valuestring);
+            return 1;
+        }
+        /* LVGL's dots mode changes the label text when it clips. Check after layout/render so
+         * every MAC fixture must retain its complete address on a visible label. */
+        if (navigation.screen == QUOTA_SCREEN_INFO && view.wifi_mac[0] &&
+            !has_visible_label(lv_screen_active(), view.wifi_mac)) {
+            fprintf(stderr, "%s: the complete MAC address is not visible\n", name->valuestring);
             return 1;
         }
         char path[1024];

@@ -7,6 +7,7 @@
 
 #include "driver/usb_serial_jtag_vfs.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_wifi.h"
 #include "nvs_flash.h"
 
@@ -14,6 +15,7 @@
 #include "freertos/task.h"
 
 #include <fcntl.h>
+#include <stdio.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -182,6 +184,11 @@ bool quota_service_init(void)
     s_view.screen_timeout_seconds = QUOTA_SCREEN_TIMEOUT_DEFAULT_SECONDS;
     s_view.refresh_seconds = QUOTA_REFRESH_DEFAULT_SECONDS;
     s_view.auto_refresh = true;
+    uint8_t mac[6];
+    if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK)
+        snprintf(s_view.wifi_mac, sizeof(s_view.wifi_mac), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 (unsigned)mac[0], (unsigned)mac[1], (unsigned)mac[2], (unsigned)mac[3],
+                 (unsigned)mac[4], (unsigned)mac[5]);
     quota_portable_service_hooks_t hooks = {.view = &s_view,
                                             .lock = quota_service_lock,
                                             .unlock = quota_service_unlock,

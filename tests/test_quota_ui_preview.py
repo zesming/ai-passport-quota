@@ -52,6 +52,10 @@ REQUIRED = {
     "usb-connected",
     "auth-waiting",
     "info",
+    "info-offline",
+    "info-unconfigured",
+    "info-mac-unavailable",
+    "info-wide-mac",
     "confirm-factory-reset",
     "confirm-cancel-auth",
     "home-deepseek-chinese",
@@ -162,6 +166,17 @@ class UiPreview(unittest.TestCase):
         ):
             digests = {hashlib.sha256(pixels(name)).hexdigest() for name in group}
             self.assertEqual(len(digests), len(group), group)
+
+    def test_mac_stays_visible_without_a_network_and_has_an_unavailable_state(self):
+        self.assertEqual(self.returncode, 0, self.log)
+
+        def mac_row(name):
+            _, _, rows = pngtools.read_png(OUT / "png" / f"{name}.png")
+            return b"".join(rows[124:160])
+
+        self.assertEqual(mac_row("info"), mac_row("info-offline"))
+        self.assertEqual(mac_row("info"), mac_row("info-unconfigured"))
+        self.assertNotEqual(mac_row("info"), mac_row("info-mac-unavailable"))
 
     def test_no_forbidden_words_in_interface_text(self):
         for name in STRING_SOURCES:

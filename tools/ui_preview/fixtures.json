@@ -2149,7 +2149,8 @@
        "validation": "ok"
       }
      ]
-    }
+    },
+    "wifi_mac": "02:AB:CD:EF:00:01"
    },
    "battery": 82
   },
@@ -2210,7 +2211,8 @@
       }
      ]
     },
-    "clock_synchronized": false
+    "clock_synchronized": false,
+    "wifi_mac": "02:AB:CD:EF:00:01"
    },
    "battery": -1
   },
@@ -3015,7 +3017,8 @@
        "validation": "ok"
       }
      ]
-    }
+    },
+    "wifi_mac": "02:AB:CD:EF:00:01"
    },
    "battery": 82
   },
@@ -3317,7 +3320,8 @@
        "validation": "ok"
       }
      ]
-    }
+    },
+    "wifi_mac": "02:AB:CD:EF:00:01"
    },
    "battery": 82
   },
@@ -3438,7 +3442,8 @@
        "validation": "ok"
       }
      ]
-    }
+    },
+    "wifi_mac": "02:AB:CD:EF:00:01"
    },
    "battery": 82
   },
@@ -5598,6 +5603,51 @@
     }
    },
    "battery": 82
+  },
+  {
+   "name": "info-unconfigured",
+   "note": "设备信息：未配网也可查看 MAC",
+   "nav": {
+    "screen": "info"
+   },
+   "view": {
+    "wifi_mac": "02:AB:CD:EF:00:01",
+    "portable": {
+     "network_state": "off",
+     "firmware": "0.2.0"
+    }
+   },
+   "battery": -1
+  },
+  {
+   "name": "info-mac-unavailable",
+   "note": "设备信息：MAC 读取失败显示占位符",
+   "nav": {
+    "screen": "info"
+   },
+   "view": {
+    "wifi_mac": "",
+    "portable": {
+     "network_state": "off",
+     "firmware": "0.2.0"
+    }
+   },
+   "battery": -1
+  },
+  {
+   "name": "info-wide-mac",
+   "note": "设备信息：完整十七字符 MAC 宽度检查",
+   "nav": {
+    "screen": "info"
+   },
+   "view": {
+    "wifi_mac": "02:DD:DD:DD:DD:DD",
+    "portable": {
+     "network_state": "off",
+     "firmware": "0.2.0"
+    }
+   },
+   "battery": -1
   }
  ]
 }

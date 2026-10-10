@@ -895,11 +895,15 @@ static void render_info(const quota_service_view_t *service, int battery_percent
         snprintf(level, sizeof(level), "--");
     char firmware[QUOTA_FIRMWARE_VERSION_BYTES + 1];
     quota_copy_display_ascii(portable->firmware, firmware, sizeof(firmware));
-    const char *values[] = {wifi, address, service->clock_synchronized ? "已校时" : "未校时", level,
+    const char *values[] = {wifi,
+                            address,
+                            service->wifi_mac[0] ? service->wifi_mac : "--",
+                            service->clock_synchronized ? "已校时" : "未校时",
+                            level,
                             firmware[0] ? firmware : "--"};
-    static const char *const labels[] = {"Wi-Fi", "IP", "时间", "电量", "固件"};
+    static const char *const labels[] = {"Wi-Fi", "IP", "MAC", "时间", "电量", "固件"};
     title("设备信息", "");
-    for (size_t i = 0; i < 5; i++)
+    for (size_t i = 0; i < sizeof(labels) / sizeof(labels[0]); i++)
         list_row(i, false, false, labels[i], UI_INK, values[i], &quota_font_12, UI_MUTED, 76);
     set_footer("OK 恢复出厂设置   长按OK 返回");
 }

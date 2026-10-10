@@ -4,6 +4,57 @@ from runtime_helpers import compile_and_run
 
 
 class RefreshRuntime(unittest.TestCase):
+    def test_station_mac_is_cached_without_starting_wifi(self):
+        harness = r'''
+#include "quota_service.h"
+#include "esp_mac.h"
+#include "host_sdk.h"
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+
+static unsigned reads, starts;
+esp_err_t esp_read_mac(uint8_t *mac, esp_mac_type_t type) {
+    const uint8_t synthetic[] = {0x02, 0xab, 0xcd, 0xef, 0x00, 0x01};
+    assert(type == ESP_MAC_WIFI_STA);
+    reads++;
+    memcpy(mac, synthetic, sizeof(synthetic)); /* A failed SDK call may still write output. */
+    return MAC_RESULT;
+}
+esp_err_t esp_wifi_start(void) { starts++; return ESP_OK; }
+
+int main(void) {
+    assert(quota_service_init() && quota_service_init());
+    assert(reads == 1 && starts == 0);
+    quota_service_view_t view;
+    const char *expected = MAC_RESULT == ESP_OK ? "02:AB:CD:EF:00:01" : "";
+    quota_service_get_view(&view);
+    assert(!view.connected && view.portable.saved_network_count == 0);
+    assert(!strcmp(view.wifi_mac, expected));
+    quota_service_view()->connected = true;
+    quota_service_get_view(&view);
+    assert(view.connected && !strcmp(view.wifi_mac, expected));
+    quota_service_view()->connected = false;
+    quota_service_set_display_sleeping(true);
+    quota_service_get_view(&view);
+    assert(!view.connected && !strcmp(view.wifi_mac, expected));
+    quota_service_set_display_sleeping(false);
+    quota_service_get_view(&view);
+    assert(!strcmp(view.wifi_mac, expected));
+    assert(reads == 1 && starts == 0);
+    puts("offline station MAC cache passed");
+}
+'''
+        for result in ("ESP_OK", "ESP_FAIL"):
+            with self.subTest(result=result):
+                compile_and_run(
+                    harness,
+                    "ai-quota-station-mac-",
+                    ("main/quota_service.c",),
+                    flags=("-DMAC_RESULT=" + result,),
+                    host_sdk=True,
+                )
+
     def test_one_owner_sleep_and_usb_cleanup_order(self):
         harness = r'''
 #include "quota_service.h"
