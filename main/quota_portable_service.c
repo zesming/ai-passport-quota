@@ -4,6 +4,7 @@
 #include "quota_store.h"
 #include "quota_usb.h"
 #include "quota_wifi.h"
+#include "quota_testable.h"
 #include "cJSON.h"
 #include "esp_app_desc.h"
 #include "esp_heap_caps.h"
@@ -18,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 #include <sys/time.h>
 
 _Static_assert(CONFIG_LWIP_SNTP_MAX_SERVERS >= 3,
@@ -27,6 +29,7 @@ _Static_assert(CONFIG_LWIP_SNTP_MAX_SERVERS >= 3,
 #define NETWORK_TIMEOUT_MS 25000ULL
 #define CACHE_INTERVAL_MS 900000ULL
 #define OPEN_RETRY_MS 5000ULL
+#define OPEN_WAIT_RETRY_MS 1000ULL
 #define OPEN_RETRY_MAX 3
 typedef struct {
     quota_portable_auth_state_t auth;
@@ -76,9 +79,36 @@ static uint32_t s_display_generation;
 static uint64_t s_setup_deadline, s_close_at, s_usb_close_at, s_usb_close_window, s_next_refresh,
     s_cache_at;
 static uint64_t s_connect_at, s_retry_at, s_login_deadline;
+static uint64_t s_network_round_retry_at, s_network_selection_retry_at;
+static uint64_t s_network_paused_remaining_ms;
+static uint8_t s_network_attempt_index, s_connected_network_index, s_network_tried;
+static bool s_network_attempt_paused;
+typedef enum {
+    NETWORK_ROUND_IDLE,
+    NETWORK_ROUND_PREFERRED,
+    NETWORK_ROUND_SCAN_PREPARE,
+    NETWORK_ROUND_SCAN_WAIT,
+    NETWORK_ROUND_SCAN_COLLECT,
+    NETWORK_ROUND_CANDIDATES,
+    NETWORK_ROUND_TERMINAL,
+} network_round_stage_t;
+QUOTA_TESTABLE network_round_stage_t s_network_round_stage;
+QUOTA_TESTABLE uint8_t s_scan_visible_mask, s_scan_candidate_count, s_scan_candidate_cursor;
+QUOTA_TESTABLE uint8_t s_scan_candidates[QUOTA_PORTABLE_NETWORKS];
+QUOTA_TESTABLE int8_t s_scan_rssi[QUOTA_PORTABLE_NETWORKS];
+QUOTA_TESTABLE uint16_t s_scan_results_remaining;
+static uint64_t s_scan_deadline;
+static uint32_t s_wifi_request_counter, s_network_request_id;
+static bool s_scan_done_pending, s_scan_done_success, s_resume_budget_pending;
+static uint64_t s_resume_budget_ms;
 static uint8_t s_refresh_slot;
 static bool s_cycle;
 static esp_netif_t *s_ap;
+static uint32_t s_open_wifi_request_id;
+static bool s_open_config_pending;
+static wifi_config_t s_open_ap_config;
+static char s_open_ap_password[17];
+static char s_open_access_code[QUOTA_PORTABLE_ACCESS_CODE_BYTES + 1];
 static quota_direct_t *s_direct;
 static active_operation_t s_operation;
 static uint64_t s_init_retry_at, s_candidate_deadline;
@@ -86,6 +116,12 @@ static quota_portable_network_t s_candidate; /* The Wi-Fi network a validation p
 static uint8_t s_candidate_index;
 static bool s_candidate_pending;
 static uint8_t s_disconnect_reason;
+typedef struct {
+    uint8_t reason, ssid_len, ssid[32];
+} wifi_disconnect_event_t;
+#define WIFI_DISCONNECT_QUEUE_DEPTH 4
+static wifi_disconnect_event_t s_wifi_disconnect_events[WIFI_DISCONNECT_QUEUE_DEPTH];
+static unsigned s_wifi_disconnect_head, s_wifi_disconnect_count;
 static char s_selected_pending[QUOTA_ACCOUNT_ID_BYTES + 1];
 static bool s_local_settings_pending;
 static quota_settings_t s_local_settings;
@@ -113,6 +149,22 @@ static struct {
     uint8_t index;
     quota_portable_network_t network;
 } s_staged;
+typedef enum { NETWORK_CHANGE_NONE, NETWORK_CHANGE_REPLACE, NETWORK_CHANGE_REMOVE }
+    network_change_kind_t;
+static struct {
+    const quota_model_t *candidate;
+    network_change_kind_t kind;
+    uint8_t index;
+} s_network_change;
+typedef enum { NETWORK_SELECTION_NONE, NETWORK_SELECTION_NORMAL, NETWORK_SELECTION_CANDIDATE }
+    network_selection_kind_t;
+static struct {
+    network_selection_kind_t kind;
+    uint8_t target_index, staged_index;
+    bool commit_staged, promote_staged;
+    validation_t staged_validation;
+    char staged_error[QUOTA_PORTABLE_ERROR_BYTES + 1];
+} s_network_selection;
 typedef enum { PHASE_WIFI, PHASE_KEYS, PHASE_LOGIN } validation_phase_t;
 static struct {
     bool requested; /* validate accepted; refuse changes before the network task starts it */
@@ -173,6 +225,10 @@ static void sync_public_locked(void);
 static void finish_operation(const char *error);
 static void cancel_candidate(const char *error);
 static void abort_validation(void);
+static void clear_scan_candidates(void);
+static void clear_ready_network_view(void);
+static void retire_network_driver(void);
+static uint32_t next_wifi_request_id(void);
 static bool submit_model(quota_model_t *candidate, bool effective, const char *job);
 static bool ensure_direct(void);
 static bool usb_blocked(void)
@@ -239,11 +295,17 @@ bool quota_portable_service_http_allowed(void)
     if (!s_initialized)
         return false;
     lock();
+    bool disconnect_pending = s_wifi_disconnect_count != 0;
     bool ok = !s_sleeping && !s_open && !s_view.setup_active && !storage_barrier() &&
-              s_view.network_state == QUOTA_PORTABLE_NETWORK_READY;
+              !disconnect_pending && s_view.network_state == QUOTA_PORTABLE_NETWORK_READY;
     uint32_t generation = s_display_generation;
+    uint32_t request_id = s_network_request_id;
     unlock();
-    return ok && !usb_blocked() && s_hooks.display_current(generation);
+    /* READY is a published view, not proof the station still owns the radio. A queued disconnect
+     * revokes new HTTP admission immediately; query driver ownership after unlocking to keep the
+     * driver/service lock order acyclic. */
+    return ok && request_id && quota_wifi_operation_active(request_id, WIFI_MODE_STA) &&
+           !usb_blocked() && s_hooks.display_current(generation);
 }
 static bool admit(void *context, const char *id, uint32_t generation)
 {
@@ -344,35 +406,299 @@ static bool publish_model(const quota_model_t *previous)
 }
 /* A network that is new or whose name or password changed is pending; the others keep their
  * state when the list shifts. Called under the lock, before the new model replaces the old. */
-static void reconcile_networks_locked(const quota_model_t *old, const quota_model_t *next)
+static bool same_network(const quota_portable_network_t *left,
+                         const quota_portable_network_t *right);
+static void reconcile_networks_locked(const quota_model_t *old, const quota_model_t *next,
+                                      network_change_kind_t change, unsigned changed_index)
 {
     validation_t validation[QUOTA_PORTABLE_NETWORKS] = {QUOTA_VALIDATION_SAVED};
     char error[QUOTA_PORTABLE_NETWORKS][QUOTA_PORTABLE_ERROR_BYTES + 1] = {{0}};
     for (unsigned i = 0; i < next->network_count; i++) {
-        validation[i] = QUOTA_VALIDATION_PENDING;
-        for (unsigned j = 0; j < old->network_count; j++)
-            if (!strcmp(old->networks[j].ssid, next->networks[i].ssid) &&
-                !strcmp(old->networks[j].password, next->networks[i].password)) {
-                validation[i] = s_network_validation[j];
-                memcpy(error[i], s_network_error[j], sizeof(error[i]));
-                break;
+        int previous = -1;
+        bool changed_row = false;
+        if (change == NETWORK_CHANGE_REMOVE && changed_index < old->network_count) {
+            previous = i < changed_index ? (int)i : (int)i + 1;
+            if ((unsigned)previous >= old->network_count)
+                previous = -1;
+        } else if (change == NETWORK_CHANGE_REPLACE) {
+            if (i == changed_index &&
+                (i >= old->network_count ||
+                 !same_network(&old->networks[i], &next->networks[i]))) {
+                changed_row = true;
+            } else if (i < old->network_count &&
+                       same_network(&old->networks[i], &next->networks[i])) {
+                previous = (int)i;
             }
+        } else if (i < old->network_count &&
+                   same_network(&old->networks[i], &next->networks[i])) {
+            previous = (int)i;
+        }
+        if (previous < 0 && !changed_row) {
+            for (unsigned j = 0; j < old->network_count; j++)
+                if (same_network(&old->networks[j], &next->networks[i])) {
+                    previous = (int)j;
+                    break;
+                }
+        }
+        validation[i] = previous >= 0 ? s_network_validation[previous]
+                                      : QUOTA_VALIDATION_PENDING;
+        if (previous >= 0)
+            memcpy(error[i], s_network_error[previous], sizeof(error[i]));
     }
     memcpy(s_network_validation, validation, sizeof(validation));
     memcpy(s_network_error, error, sizeof(error));
 }
+static bool same_network(const quota_portable_network_t *left,
+                         const quota_portable_network_t *right)
+{
+    return !strcmp(left->ssid, right->ssid) && !strcmp(left->password, right->password);
+}
+static int network_index(const quota_model_t *model, const quota_portable_network_t *network)
+{
+    for (unsigned i = 0; i < model->network_count; i++)
+        if (same_network(&model->networks[i], network))
+            return (int)i;
+    return -1;
+}
+/* Call only when discarding an ordinary attempt or starting a new network identity. Sleep and
+ * prepare retries on the same attempt keep this budget intact. */
+static void clear_network_attempt_budget(void)
+{
+    s_resume_budget_pending = false;
+    s_resume_budget_ms = 0;
+    s_network_attempt_paused = false;
+    s_network_paused_remaining_ms = 0;
+}
+static void finish_network_selection_locked(void)
+{
+    if (s_network_selection.kind == NETWORK_SELECTION_NONE ||
+        s_network_selection.target_index >= s_model.network_count ||
+        s_model.selected_network != s_network_selection.target_index)
+        return;
+    unsigned target = s_network_selection.target_index;
+    if (s_network_selection.promote_staged &&
+        s_network_selection.staged_index < s_model.network_count) {
+        unsigned staged = s_network_selection.staged_index;
+        s_network_validation[staged] = s_network_selection.staged_validation;
+        memcpy(s_network_error[staged], s_network_selection.staged_error,
+               sizeof(s_network_selection.staged_error));
+    }
+    if (s_network_selection.kind == NETWORK_SELECTION_CANDIDATE) {
+        s_network_validation[target] = QUOTA_VALIDATION_OK;
+        s_network_error[target][0] = 0;
+    } else if (!(s_staged.present && s_staged.index == target) &&
+               (s_network_validation[target] == QUOTA_VALIDATION_SAVED ||
+                s_network_validation[target] == QUOTA_VALIDATION_FAILED)) {
+        s_network_validation[target] = QUOTA_VALIDATION_OK;
+        s_network_error[target][0] = 0;
+    }
+    if (s_network_selection.commit_staged && s_staged.present) {
+        s_staged.present = false;
+        quota_portable_clear_secret(&s_staged.network, sizeof(s_staged.network));
+    }
+    if (s_network_selection.kind == NETWORK_SELECTION_CANDIDATE) {
+        s_candidate_pending = false;
+        s_candidate_deadline = 0;
+        quota_portable_clear_secret(&s_candidate, sizeof(s_candidate));
+    }
+    s_connected_network_index = (uint8_t)target;
+    s_network_attempt_index = UINT8_MAX;
+    s_network_tried = 0;
+    s_network_round_retry_at = 0;
+    s_network_selection_retry_at = 0;
+    s_network_round_stage = NETWORK_ROUND_IDLE;
+    s_scan_candidate_count = s_scan_candidate_cursor = s_scan_visible_mask = 0;
+    s_scan_results_remaining = 0;
+    s_connect_at = s_retry_at = 0;
+    clear_network_attempt_budget();
+    s_disconnect_reason = 0;
+    memset(&s_network_selection, 0, sizeof(s_network_selection));
+}
+/* Rebase the in-memory round only when a model is actually applied. UNKNOWN writes therefore do
+ * not make an uncommitted directory affect connection selection. Called with the service lock. */
+static bool apply_network_runtime_locked(const quota_model_t *old, const quota_model_t *next,
+                                         network_change_kind_t change, unsigned changed_index)
+{
+    bool directory_changed = old->network_count != next->network_count;
+    for (unsigned i = 0; !directory_changed && i < old->network_count; i++)
+        directory_changed = !same_network(&old->networks[i], &next->networks[i]);
+    if (!directory_changed)
+        return false;
+
+    uint8_t tried = 0;
+    if (change == NETWORK_CHANGE_REMOVE && changed_index < old->network_count) {
+        for (unsigned i = 0; i < old->network_count; i++) {
+            if (i == changed_index)
+                continue;
+            unsigned mapped = i < changed_index ? i : i - 1;
+            if (s_network_tried & (1u << i))
+                tried |= (uint8_t)(1u << mapped);
+        }
+    } else if (change == NETWORK_CHANGE_REPLACE && changed_index < next->network_count) {
+        tried = s_network_tried;
+        if (changed_index < old->network_count &&
+            !same_network(&old->networks[changed_index], &next->networks[changed_index]))
+            tried &= (uint8_t)~(1u << changed_index);
+    } else {
+        for (unsigned i = 0; i < next->network_count; i++) {
+            int previous = i < old->network_count &&
+                                   same_network(&old->networks[i], &next->networks[i])
+                               ? (int)i
+                               : network_index(old, &next->networks[i]);
+            if (previous >= 0 && (s_network_tried & (1u << previous)))
+                tried |= (uint8_t)(1u << i);
+        }
+    }
+    s_network_tried = tried;
+
+    bool disconnect = false;
+    if (s_network_attempt_index != UINT8_MAX) {
+        if (change == NETWORK_CHANGE_REMOVE && s_network_attempt_index == changed_index) {
+            s_network_attempt_index = UINT8_MAX;
+            s_connect_at = s_retry_at = 0;
+            clear_network_attempt_budget();
+            disconnect = true;
+        } else if (change == NETWORK_CHANGE_REPLACE &&
+                   s_network_attempt_index == changed_index &&
+                   changed_index < old->network_count &&
+                   !same_network(&old->networks[changed_index], &next->networks[changed_index])) {
+            s_network_attempt_index = UINT8_MAX;
+            s_connect_at = s_retry_at = 0;
+            clear_network_attempt_budget();
+            disconnect = true;
+        } else if (change == NETWORK_CHANGE_REMOVE && s_network_attempt_index > changed_index) {
+            s_network_attempt_index--;
+        } else if (s_network_attempt_index >= old->network_count) {
+            s_network_attempt_index = UINT8_MAX;
+            s_connect_at = s_retry_at = 0;
+            clear_network_attempt_budget();
+            disconnect = true;
+        } else {
+            int mapped = s_network_attempt_index < old->network_count &&
+                                 s_network_attempt_index < next->network_count &&
+                                 same_network(&old->networks[s_network_attempt_index],
+                                              &next->networks[s_network_attempt_index])
+                             ? (int)s_network_attempt_index
+                             : network_index(next, &old->networks[s_network_attempt_index]);
+            if (mapped < 0) {
+                s_network_attempt_index = UINT8_MAX;
+                s_connect_at = s_retry_at = 0;
+                clear_network_attempt_budget();
+                disconnect = true;
+            } else
+                s_network_attempt_index = (uint8_t)mapped;
+        }
+    }
+    if (s_connected_network_index != UINT8_MAX) {
+        if ((change == NETWORK_CHANGE_REMOVE && s_connected_network_index == changed_index) ||
+            (change == NETWORK_CHANGE_REPLACE && s_connected_network_index == changed_index &&
+             changed_index < old->network_count &&
+             !same_network(&old->networks[changed_index], &next->networks[changed_index]))) {
+            s_connected_network_index = UINT8_MAX;
+            disconnect = true;
+        } else if (change == NETWORK_CHANGE_REMOVE && s_connected_network_index > changed_index) {
+            s_connected_network_index--;
+        } else if (s_connected_network_index >= old->network_count) {
+            s_connected_network_index = UINT8_MAX;
+            disconnect = true;
+        } else {
+            int mapped = s_connected_network_index < old->network_count &&
+                                 s_connected_network_index < next->network_count &&
+                                 same_network(&old->networks[s_connected_network_index],
+                                              &next->networks[s_connected_network_index])
+                             ? (int)s_connected_network_index
+                             : network_index(next, &old->networks[s_connected_network_index]);
+            if (mapped < 0) {
+                s_connected_network_index = UINT8_MAX;
+                disconnect = true;
+            } else
+                s_connected_network_index = (uint8_t)mapped;
+        }
+    }
+    if (directory_changed)
+        s_network_round_retry_at = 0;
+    if (s_staged.present && s_network_selection.kind == NETWORK_SELECTION_NONE) {
+        if (change == NETWORK_CHANGE_REMOVE && s_staged.index == changed_index) {
+            s_staged.present = false;
+            quota_portable_clear_secret(&s_staged.network, sizeof(s_staged.network));
+        } else if (change == NETWORK_CHANGE_REMOVE && s_staged.index > changed_index) {
+            s_staged.index--;
+        } else if (change == NETWORK_CHANGE_REPLACE && s_staged.index == changed_index &&
+                   changed_index < old->network_count &&
+                   !same_network(&old->networks[changed_index], &next->networks[changed_index])) {
+            s_staged.present = false;
+            quota_portable_clear_secret(&s_staged.network, sizeof(s_staged.network));
+        } else if (change != NETWORK_CHANGE_REMOVE && change != NETWORK_CHANGE_REPLACE &&
+                   s_staged.index >= old->network_count) {
+            s_staged.present = false;
+            quota_portable_clear_secret(&s_staged.network, sizeof(s_staged.network));
+        } else if (change != NETWORK_CHANGE_REMOVE && change != NETWORK_CHANGE_REPLACE &&
+                   s_staged.index < old->network_count &&
+                   (s_staged.index >= next->network_count ||
+                    !same_network(&old->networks[s_staged.index],
+                                  &next->networks[s_staged.index]))) {
+            int mapped = network_index(next, &old->networks[s_staged.index]);
+            if (mapped < 0) {
+                s_staged.present = false;
+                quota_portable_clear_secret(&s_staged.network, sizeof(s_staged.network));
+            } else
+                s_staged.index = (uint8_t)mapped;
+        }
+    }
+    return disconnect;
+}
 static void apply_model(quota_model_t *candidate, bool effective, quota_model_t *previous)
 {
+    bool directory_changed = previous->network_count != candidate->network_count;
+    for (unsigned i = 0; !directory_changed && i < previous->network_count; i++)
+        directory_changed = !same_network(&previous->networks[i], &candidate->networks[i]);
     bool cadence_changed = s_model.refresh_seconds != candidate->refresh_seconds ||
                            s_model.auto_refresh != candidate->auto_refresh;
+    bool disconnect = false;
+    network_change_kind_t change = s_network_change.candidate == candidate
+                                       ? s_network_change.kind
+                                       : NETWORK_CHANGE_NONE;
+    unsigned changed_index = s_network_change.index;
     lock();
-    reconcile_networks_locked(&s_model, candidate);
+    reconcile_networks_locked(&s_model, candidate, change, changed_index);
     s_model = *candidate;
     s_sequence++;
     s_model_ready = true;
+    disconnect = apply_network_runtime_locked(previous, candidate, change, changed_index);
+    finish_network_selection_locked();
+    if (s_network_change.candidate == candidate)
+        memset(&s_network_change, 0, sizeof(s_network_change));
     if (effective)
         s_hooks.config_changed_locked();
+    sync_public_locked();
+    bool setup_active = s_view.setup_active;
     unlock();
+    if (directory_changed) {
+        /* The applied directory ends the old ordinary round. Do not carry a paused or resumed
+         * per-attempt budget into the next preferred network; UNKNOWN writes never reach here. */
+        clear_network_attempt_budget();
+        clear_scan_candidates();
+        if (!setup_active) {
+            bool sta_operation = s_network_attempt_index != UINT8_MAX ||
+                                 s_network_round_stage == NETWORK_ROUND_SCAN_PREPARE ||
+                                 s_network_round_stage == NETWORK_ROUND_SCAN_WAIT ||
+                                 s_network_round_stage == NETWORK_ROUND_SCAN_COLLECT ||
+                                 s_network_round_stage == NETWORK_ROUND_CANDIDATES;
+            if (sta_operation) {
+                s_network_round_stage = NETWORK_ROUND_IDLE;
+                s_network_attempt_index = UINT8_MAX;
+                s_network_request_id = 0;
+                s_connect_at = s_retry_at = 0;
+                s_network_tried = 0;
+                retire_network_driver();
+            } else if (s_network_round_stage == NETWORK_ROUND_TERMINAL) {
+                s_network_round_stage = NETWORK_ROUND_IDLE;
+                s_network_round_retry_at = 0;
+            }
+        }
+    }
+    if (disconnect && !setup_active)
+        retire_network_driver();
     if (!publish_model(previous))
         s_model_ready = false;
     else {
@@ -411,6 +737,17 @@ static bool submit_model(quota_model_t *candidate, bool effective, const char *j
     } else
         copy(s_storage_error, sizeof(s_storage_error), "storage_failed");
     return false;
+}
+static bool submit_network_model(quota_model_t *candidate, const char *job,
+                                 network_change_kind_t kind, unsigned index)
+{
+    s_network_change.candidate = candidate;
+    s_network_change.kind = kind;
+    s_network_change.index = (uint8_t)index;
+    bool saved = submit_model(candidate, true, job);
+    if (s_network_change.candidate == candidate && s_dirty_model != candidate)
+        memset(&s_network_change, 0, sizeof(s_network_change));
+    return saved;
 }
 static void retry_dirty(void)
 {
@@ -1116,6 +1453,94 @@ static bool state_json(char *buffer, size_t capacity, size_t *length, void *cont
     (void)context;
     return quota_portable_service_state_json(buffer, capacity, length, QUOTA_SETUP_AP);
 }
+static void clear_ready_network_view(void)
+{
+    bool changed_view = false;
+    lock();
+    if (s_view.network_state == QUOTA_PORTABLE_NETWORK_READY ||
+        s_view.network_state == QUOTA_PORTABLE_NETWORK_CONNECTED) {
+        s_view.network_state = s_sleeping ? QUOTA_PORTABLE_NETWORK_OFF
+                                          : QUOTA_PORTABLE_NETWORK_CONNECTING;
+        s_view.network_ip[0] = 0;
+        s_view.network_error[0] = 0;
+        sync_public_locked();
+        changed_view = true;
+    }
+    unlock();
+    if (changed_view)
+        changed();
+}
+static void retire_network_driver(void)
+{
+    clear_ready_network_view();
+    quota_wifi_retire_begin();
+}
+static void reset_network_attempts(void)
+{
+    s_network_attempt_index = UINT8_MAX;
+    s_connected_network_index = UINT8_MAX;
+    clear_network_attempt_budget();
+    s_network_tried = 0;
+    s_network_round_retry_at = 0;
+    s_network_selection_retry_at = 0;
+    s_network_round_stage = NETWORK_ROUND_IDLE;
+    s_scan_visible_mask = s_scan_candidate_count = s_scan_candidate_cursor = 0;
+    memset(s_scan_candidates, 0, sizeof(s_scan_candidates));
+    memset(s_scan_rssi, INT8_MIN, sizeof(s_scan_rssi));
+    s_scan_results_remaining = 0;
+    s_scan_deadline = 0;
+    s_scan_done_pending = false;
+    s_scan_done_success = false;
+    s_network_request_id = 0;
+    if (!s_view.setup_active)
+        retire_network_driver();
+    s_connect_at = s_retry_at = 0;
+    lock();
+    s_disconnect_reason = 0;
+    memset(s_wifi_disconnect_events, 0, sizeof(s_wifi_disconnect_events));
+    s_wifi_disconnect_head = s_wifi_disconnect_count = 0;
+    unlock();
+}
+static void pause_network_for_sleep(void)
+{
+    uint64_t now = millis();
+    if (!s_network_attempt_paused && s_network_attempt_index != UINT8_MAX &&
+        !s_candidate_pending) {
+        s_network_attempt_paused = true;
+        s_network_paused_remaining_ms =
+            s_resume_budget_pending
+                ? s_resume_budget_ms
+                : (!s_connect_at ? NETWORK_TIMEOUT_MS
+                                 : (s_retry_at > now ? s_retry_at - now : 0));
+        s_resume_budget_pending = false;
+        s_resume_budget_ms = 0;
+        s_connect_at = 0;
+        s_network_request_id = 0;
+    }
+    s_connected_network_index = UINT8_MAX;
+    if (s_candidate_pending) {
+        s_connect_at = s_retry_at = 0;
+        s_network_request_id = 0;
+    }
+    if (s_network_round_stage == NETWORK_ROUND_SCAN_WAIT ||
+        s_network_round_stage == NETWORK_ROUND_SCAN_COLLECT) {
+        /* A partial scan never crosses sleep. The preferred item has already ended, so wake
+         * resumes at a fresh full scan within the same ordinary round. */
+        s_network_round_stage = NETWORK_ROUND_SCAN_PREPARE;
+        s_scan_visible_mask = s_scan_candidate_count = s_scan_candidate_cursor = 0;
+        memset(s_scan_candidates, 0, sizeof(s_scan_candidates));
+        memset(s_scan_rssi, INT8_MIN, sizeof(s_scan_rssi));
+        s_scan_results_remaining = 0;
+        s_scan_deadline = 0;
+        s_scan_done_pending = false;
+        s_network_request_id = 0;
+    }
+    lock();
+    s_disconnect_reason = 0;
+    memset(s_wifi_disconnect_events, 0, sizeof(s_wifi_disconnect_events));
+    s_wifi_disconnect_head = s_wifi_disconnect_count = 0;
+    unlock();
+}
 
 static void close_setup(void)
 {
@@ -1131,19 +1556,54 @@ static void close_setup(void)
     s_setup_deadline = 0;
     unlock();
     publish_operation();
-    if (s_wifi_active) {
-        (void)esp_wifi_set_mode(WIFI_MODE_STA);
-        (void)esp_wifi_disconnect();
-    }
-    s_connect_at = 0;
-    s_retry_at = 0;
+    if (s_wifi_active)
+        retire_network_driver();
+    s_wifi_active = false;
+    s_open_wifi_request_id = 0;
+    s_open_config_pending = false;
+    quota_portable_clear_secret(&s_open_ap_config, sizeof(s_open_ap_config));
+    quota_portable_clear_secret(s_open_ap_password, sizeof(s_open_ap_password));
+    quota_portable_clear_secret(s_open_access_code, sizeof(s_open_access_code));
+    reset_network_attempts();
     changed();
 }
-static bool open_setup(void)
+typedef enum { SETUP_OPEN_FAILED, SETUP_OPEN_WAIT, SETUP_OPEN_READY } setup_open_result_t;
+static void prepare_setup_credentials(void)
+{
+    if (s_open_config_pending)
+        return;
+    char suffix[5], digits[17];
+    memset(&s_open_ap_config, 0, sizeof(s_open_ap_config));
+    random_text(suffix, 4, "0123456789ABCDEF");
+    random_text(s_open_ap_password, 16, "ABCDEFGHJKLMNPQRSTUVWXYZ23456789");
+    random_text(digits, 16, "0123456789ABCDEFGHJKMNPQRSTVWXYZ");
+    snprintf(s_open_access_code, sizeof(s_open_access_code), "%.4s-%.4s-%.4s-%.4s", digits,
+             digits + 4, digits + 8, digits + 12);
+    quota_portable_clear_secret(digits, sizeof(digits));
+    snprintf((char *)s_open_ap_config.ap.ssid, sizeof(s_open_ap_config.ap.ssid), "Passport-%s",
+             suffix);
+    copy((char *)s_open_ap_config.ap.password, sizeof(s_open_ap_config.ap.password),
+         s_open_ap_password);
+    s_open_ap_config.ap.ssid_len = strlen((char *)s_open_ap_config.ap.ssid);
+    s_open_ap_config.ap.channel = 1;
+    s_open_ap_config.ap.max_connection = 1;
+    s_open_ap_config.ap.authmode = WIFI_AUTH_WPA2_PSK;
+    s_open_wifi_request_id = next_wifi_request_id();
+    s_open_config_pending = true;
+}
+static void clear_setup_credentials(void)
+{
+    s_open_wifi_request_id = 0;
+    s_open_config_pending = false;
+    quota_portable_clear_secret(&s_open_ap_config, sizeof(s_open_ap_config));
+    quota_portable_clear_secret(s_open_ap_password, sizeof(s_open_ap_password));
+    quota_portable_clear_secret(s_open_access_code, sizeof(s_open_access_code));
+}
+static setup_open_result_t open_setup(void)
 {
     if (s_operation.kind == OP_SAVE || quota_direct_has_pending_persist(s_direct) ||
         (s_operation.kind == OP_LOGIN && s_operation.started))
-        return false;
+        return SETUP_OPEN_FAILED;
     if (!s_queue) {
         s_queue = calloc(QUEUE_DEPTH, sizeof(*s_queue));
         if (!s_queue) {
@@ -1151,63 +1611,51 @@ static bool open_setup(void)
             copy(s_view.login_error, sizeof(s_view.login_error), "no_memory");
             unlock();
             changed();
-            return false;
+            return SETUP_OPEN_FAILED;
         }
     }
-    if (!quota_wifi_start())
-        return false;
-    s_wifi_active = true;
+    prepare_setup_credentials();
+    quota_wifi_result_t prepared = quota_wifi_prepare(s_open_wifi_request_id, WIFI_MODE_APSTA);
+    if (prepared == QUOTA_WIFI_WAIT) {
+        clear_ready_network_view();
+        return SETUP_OPEN_WAIT;
+    }
+    if (prepared == QUOTA_WIFI_FAILED) {
+        clear_setup_credentials();
+        return SETUP_OPEN_FAILED;
+    }
     if (!s_ap)
         s_ap = esp_netif_create_default_wifi_ap();
-    if (!s_ap)
-        return false;
-    wifi_config_t ap = {0};
-    char suffix[5], password[17], secret[QUOTA_PORTABLE_ACCESS_CODE_BYTES + 1], digits[17];
-    random_text(suffix, 4, "0123456789ABCDEF");
-    random_text(password, 16, "ABCDEFGHJKLMNPQRSTUVWXYZ23456789");
-    /* 16 Crockford Base32 characters (80 bits) as XXXX-XXXX-XXXX-XXXX. */
-    random_text(digits, 16, "0123456789ABCDEFGHJKMNPQRSTVWXYZ");
-    snprintf(secret, sizeof(secret), "%.4s-%.4s-%.4s-%.4s", digits, digits + 4, digits + 8,
-             digits + 12);
-    quota_portable_clear_secret(digits, sizeof(digits));
-    snprintf((char *)ap.ap.ssid, sizeof(ap.ap.ssid), "Passport-%s", suffix);
-    copy((char *)ap.ap.password, sizeof(ap.ap.password), password);
-    ap.ap.ssid_len = strlen((char *)ap.ap.ssid);
-    ap.ap.channel = 1;
-    ap.ap.max_connection = 1;
-    ap.ap.authmode = WIFI_AUTH_WPA2_PSK;
-    bool ok = quota_wifi_stop();
-    s_wifi_active = false;
-    if (ok)
-        ok = esp_wifi_set_mode(WIFI_MODE_APSTA) == ESP_OK &&
-             esp_wifi_set_config(WIFI_IF_AP, &ap) == ESP_OK && quota_wifi_start();
+    bool ok = s_ap && esp_wifi_set_config(WIFI_IF_AP, &s_open_ap_config) == ESP_OK &&
+              quota_wifi_start();
     if (ok) {
         s_wifi_active = true;
-        (void)esp_wifi_disconnect();
         stop_clock();
-        s_connect_at = 0;
         lock();
-        copy(s_view.setup_ssid, sizeof(s_view.setup_ssid), (char *)ap.ap.ssid);
-        copy(s_view.setup_password, sizeof(s_view.setup_password), password);
-        copy(s_view.setup_secret, sizeof(s_view.setup_secret), secret);
+        copy(s_view.setup_ssid, sizeof(s_view.setup_ssid),
+             (char *)s_open_ap_config.ap.ssid);
+        copy(s_view.setup_password, sizeof(s_view.setup_password), s_open_ap_password);
+        copy(s_view.setup_secret, sizeof(s_view.setup_secret), s_open_access_code);
         snprintf(s_view.setup_page_url, sizeof(s_view.setup_page_url),
-                 "http://192.168.4.1/#code=%s", secret);
+                 "http://192.168.4.1/#code=%s", s_open_access_code);
         s_view.setup_active = s_view.setup_ready = true;
         s_view.network_state = QUOTA_PORTABLE_NETWORK_AP;
         s_setup_opened = millis();
         s_setup_deadline = s_setup_opened + QUOTA_PORTABLE_SETUP_MS;
         unlock();
+        reset_network_attempts();
         quota_portal_callbacks_t callbacks = {
             .submit = submit, .state_json = state_json, .session_active = session_active};
-        ok = quota_portal_start(secret, &callbacks);
+        ok = quota_portal_start(s_open_access_code, &callbacks);
     }
-    quota_portable_clear_secret(password, sizeof(password));
-    quota_portable_clear_secret(secret, sizeof(secret));
-    quota_portable_clear_secret(&ap, sizeof(ap));
-    if (!ok)
+    clear_setup_credentials();
+    if (!ok) {
+        retire_network_driver();
+        s_wifi_active = false;
         close_setup();
+    }
     changed();
-    return ok;
+    return ok ? SETUP_OPEN_READY : SETUP_OPEN_FAILED;
 }
 /* A failed open retries after a backoff, then gives up; OK on the closed-window screen requests it
  * again. */
@@ -1217,9 +1665,21 @@ static void open_attempt(void)
     s_open = false;
     unlock();
     abort_validation();
-    bool ok = open_setup();
+    setup_open_result_t result = open_setup();
+    if (result == SETUP_OPEN_WAIT) {
+        uint64_t now = millis();
+        uint64_t driver_deadline = quota_wifi_next_deadline_ms(false);
+        uint64_t retry_at = driver_deadline != UINT64_MAX && driver_deadline > now
+                                ? driver_deadline
+                                : now + OPEN_WAIT_RETRY_MS;
+        lock();
+        s_open = true;
+        s_open_retry_at = retry_at;
+        unlock();
+        return;
+    }
     lock();
-    if (ok || ++s_open_failures >= OPEN_RETRY_MAX) {
+    if (result == SETUP_OPEN_READY || ++s_open_failures >= OPEN_RETRY_MAX) {
         s_open_failures = 0;
         s_open_retry_at = 0;
     } else {
@@ -1228,40 +1688,73 @@ static void open_attempt(void)
     }
     unlock();
 }
-static bool connected_ip(char ip[16])
+static bool connected_ip(const quota_portable_network_t *network, char ip[16])
 {
     wifi_ap_record_t ap;
     esp_netif_ip_info_t info;
     esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-    if (!sta || esp_wifi_sta_get_ap_info(&ap) != ESP_OK ||
+    size_t ssid_len = network ? strlen(network->ssid) : 0;
+    if (!sta || !ssid_len || esp_wifi_sta_get_ap_info(&ap) != ESP_OK ||
+        strnlen((char *)ap.ssid, sizeof(ap.ssid)) != ssid_len ||
+        memcmp(ap.ssid, network->ssid, ssid_len) ||
         esp_netif_get_ip_info(sta, &info) != ESP_OK || !info.ip.addr)
         return false;
     snprintf(ip, 16, IPSTR, IP2STR(&info.ip));
     return true;
 }
+static uint32_t next_wifi_request_id(void)
+{
+    if (++s_wifi_request_counter == 0)
+        ++s_wifi_request_counter;
+    return s_wifi_request_counter;
+}
 static bool connect_network(const quota_portable_network_t *network)
 {
-    if (!network->ssid[0] || !quota_wifi_start())
+    if (!network->ssid[0])
         return false;
-    s_wifi_active = true;
+    if (!s_network_request_id)
+        s_network_request_id = next_wifi_request_id();
+    quota_wifi_result_t prepared = quota_wifi_prepare(s_network_request_id, WIFI_MODE_STA);
+    if (prepared == QUOTA_WIFI_WAIT) {
+        clear_ready_network_view();
+        return true;
+    }
+    if (prepared == QUOTA_WIFI_FAILED)
+        return false;
     wifi_config_t config = {0};
     memcpy(config.sta.ssid, network->ssid, strlen(network->ssid));
     memcpy(config.sta.password, network->password, strlen(network->password));
+    config.sta.bssid_set = false;
+    config.sta.channel = 0;
+    config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+    config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+    config.sta.failure_retry_cnt = 0;
     config.sta.threshold.authmode = network->password[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
     config.sta.pmf_cfg.capable = true;
     config.sta.pmf_cfg.required = false;
-    (void)esp_wifi_disconnect();
-    bool ok = esp_wifi_set_mode(WIFI_MODE_STA) == ESP_OK &&
-              esp_wifi_set_config(WIFI_IF_STA, &config) == ESP_OK && esp_wifi_connect() == ESP_OK;
+    lock();
+    s_disconnect_reason = 0;
+    unlock();
+    bool ok = esp_wifi_set_config(WIFI_IF_STA, &config) == ESP_OK && quota_wifi_start();
+    if (ok) {
+        s_wifi_active = true;
+        ok = esp_wifi_connect() == ESP_OK;
+    }
     quota_portable_clear_secret(&config, sizeof(config));
+    if (!ok) {
+        retire_network_driver();
+        s_network_request_id = 0;
+        s_wifi_active = quota_wifi_started();
+        return false;
+    }
     s_connect_at = millis();
-    s_retry_at = millis() + NETWORK_TIMEOUT_MS;
+    s_retry_at = millis() + (s_resume_budget_pending ? s_resume_budget_ms : NETWORK_TIMEOUT_MS);
+    clear_network_attempt_budget();
     lock();
     s_view.network_state = ok ? QUOTA_PORTABLE_NETWORK_CONNECTING : QUOTA_PORTABLE_NETWORK_ERROR;
     copy(s_view.network_ssid, sizeof(s_view.network_ssid), network->ssid);
     s_view.network_ip[0] = 0;
     copy(s_view.network_error, sizeof(s_view.network_error), ok ? "" : "network_unavailable");
-    s_disconnect_reason = 0;
     unlock();
     changed();
     return ok;
@@ -1386,8 +1879,19 @@ static void cancel_candidate(const char *error)
     s_candidate_pending = false;
     s_candidate_deadline = 0;
     quota_portable_clear_secret(&s_candidate, sizeof(s_candidate));
+    if (s_network_selection.kind == NETWORK_SELECTION_CANDIDATE)
+        memset(&s_network_selection, 0, sizeof(s_network_selection));
+    s_network_attempt_index = UINT8_MAX;
+    s_connected_network_index = UINT8_MAX;
+    clear_network_attempt_budget();
+    s_network_tried = 0;
+    s_network_round_retry_at = 0;
+    s_network_selection_retry_at = 0;
+    s_network_round_stage = NETWORK_ROUND_IDLE;
+    s_network_request_id = 0;
+    clear_scan_candidates();
     s_connect_at = s_retry_at = 0;
-    (void)esp_wifi_disconnect();
+    retire_network_driver();
     lock();
     copy(s_view.network_ssid, sizeof(s_view.network_ssid),
          s_model.network_count ? s_model.networks[s_model.selected_network].ssid : "");
@@ -1395,9 +1899,9 @@ static void cancel_candidate(const char *error)
     changed();
 }
 /* New credentials wait for the network in use: what the stored ones do says nothing about them. */
-static bool staged_for_selected(void)
+static bool staged_for_network(unsigned index)
 {
-    return s_staged.present && s_staged.index == s_model.selected_network;
+    return s_staged.present && s_staged.index == index;
 }
 static bool wifi_auth_failure(uint8_t reason)
 {
@@ -1410,148 +1914,569 @@ static const char *wifi_failure_code(void)
     unlock();
     return wifi_auth_failure(reason) ? "wifi_auth_failed" : "wifi_not_found";
 }
+static void mark_network_auth_failed(unsigned index)
+{
+    bool changed_state = false;
+    lock();
+    if (index < s_model.network_count && !staged_for_network(index) &&
+        (s_network_validation[index] == QUOTA_VALIDATION_SAVED ||
+         s_network_validation[index] == QUOTA_VALIDATION_OK)) {
+        s_network_validation[index] = QUOTA_VALIDATION_FAILED;
+        copy(s_network_error[index], sizeof(s_network_error[index]), "wifi_auth_failed");
+        sync_public_locked();
+        changed_state = true;
+    }
+    unlock();
+    if (changed_state)
+        changed();
+}
+/* Wi-Fi events arrive on the SDK event task; consume them here so network selection state has one
+ * owner. A late event is meaningful only when its SSID still matches the active attempt/link. */
+static void consume_wifi_disconnects(void)
+{
+    lock();
+    /* Snapshot the bounded queue so callbacks arriving during this pass wait for the next tick. */
+    unsigned budget = s_wifi_disconnect_count;
+    unlock();
+    for (unsigned consumed = 0; consumed < budget; consumed++) {
+        wifi_disconnect_event_t event;
+        lock();
+        if (!s_wifi_disconnect_count) {
+            unlock();
+            return;
+        }
+        event = s_wifi_disconnect_events[s_wifi_disconnect_head];
+        memset(&s_wifi_disconnect_events[s_wifi_disconnect_head], 0,
+               sizeof(s_wifi_disconnect_events[s_wifi_disconnect_head]));
+        s_wifi_disconnect_head = (s_wifi_disconnect_head + 1) % WIFI_DISCONNECT_QUEUE_DEPTH;
+        s_wifi_disconnect_count--;
+        unlock();
+
+        unsigned index = UINT8_MAX;
+        bool established = false;
+        if (s_candidate_pending &&
+            strlen(s_candidate.ssid) == event.ssid_len &&
+            !memcmp(s_candidate.ssid, event.ssid, event.ssid_len))
+            index = s_candidate_index;
+        else if (s_network_attempt_index < s_model.network_count &&
+                 strlen(s_model.networks[s_network_attempt_index].ssid) == event.ssid_len &&
+                 !memcmp(s_model.networks[s_network_attempt_index].ssid, event.ssid,
+                         event.ssid_len))
+            index = s_network_attempt_index;
+        else if (s_connected_network_index < s_model.network_count &&
+                 strlen(s_model.networks[s_connected_network_index].ssid) == event.ssid_len &&
+                 !memcmp(s_model.networks[s_connected_network_index].ssid, event.ssid,
+                         event.ssid_len)) {
+            index = s_connected_network_index;
+            established = true;
+        }
+        if (index == UINT8_MAX)
+            continue;
+        s_disconnect_reason = event.reason;
+        if (!established)
+            continue;
+
+        if (wifi_auth_failure(event.reason))
+            mark_network_auth_failed(index);
+        s_connected_network_index = UINT8_MAX;
+        s_network_attempt_index = UINT8_MAX;
+        clear_network_attempt_budget();
+        s_network_tried = 0;
+        s_network_round_retry_at = 0;
+        s_network_selection_retry_at = 0;
+        s_network_round_stage = NETWORK_ROUND_IDLE;
+        s_network_request_id = 0;
+        s_connect_at = s_retry_at = 0;
+        s_disconnect_reason = 0;
+        retire_network_driver();
+    }
+}
+static bool select_connected_network(unsigned index, network_selection_kind_t kind)
+{
+    if (index >= s_model.network_count)
+        return false;
+    bool staged_target = staged_for_network(index);
+    bool promote_staged = s_staged.present && !staged_target &&
+                          s_staged.index < s_model.network_count;
+    bool commit_staged = kind == NETWORK_SELECTION_CANDIDATE && staged_target;
+    if (promote_staged)
+        commit_staged = true;
+    bool needs_write = s_model.selected_network != index || commit_staged;
+    if (!needs_write) {
+        lock();
+        s_network_selection.kind = kind;
+        s_network_selection.target_index = (uint8_t)index;
+        s_network_selection.commit_staged = false;
+        s_network_selection.promote_staged = false;
+        finish_network_selection_locked();
+        sync_public_locked();
+        unlock();
+        changed();
+        return true;
+    }
+    quota_model_t *candidate = malloc(sizeof(*candidate));
+    if (!candidate) {
+        storage_failed(QUOTA_STORE_READ_NO_MEMORY);
+        return false;
+    }
+    *candidate = s_model;
+    if (commit_staged)
+        candidate->networks[s_staged.index] = s_staged.network;
+    candidate->selected_network = (uint8_t)index;
+    lock();
+    s_network_selection.kind = kind;
+    s_network_selection.target_index = (uint8_t)index;
+    s_network_selection.commit_staged = commit_staged;
+    s_network_selection.promote_staged = promote_staged;
+    s_network_selection.staged_index = s_staged.index;
+    if (promote_staged) {
+        s_network_selection.staged_validation = s_network_validation[s_staged.index];
+        memcpy(s_network_selection.staged_error, s_network_error[s_staged.index],
+               sizeof(s_network_selection.staged_error));
+    }
+    unlock();
+    bool saved = submit_model(candidate, true, NULL);
+    dispose_candidate(candidate);
+    if (!saved && !s_dirty_model) {
+        lock();
+        memset(&s_network_selection, 0, sizeof(s_network_selection));
+        unlock();
+    }
+    return saved;
+}
+static void clear_scan_candidates(void)
+{
+    s_scan_visible_mask = 0;
+    s_scan_candidate_count = 0;
+    s_scan_candidate_cursor = 0;
+    memset(s_scan_candidates, 0, sizeof(s_scan_candidates));
+    memset(s_scan_rssi, INT8_MIN, sizeof(s_scan_rssi));
+    s_scan_results_remaining = 0;
+    s_scan_deadline = 0;
+    s_scan_done_pending = false;
+    s_scan_done_success = false;
+}
+static void set_network_unavailable(uint64_t now)
+{
+    s_network_round_stage = NETWORK_ROUND_TERMINAL;
+    s_network_attempt_index = UINT8_MAX;
+    clear_network_attempt_budget();
+    s_connect_at = s_retry_at = 0;
+    s_network_request_id = 0;
+    s_network_round_retry_at = now + 30000;
+    s_scan_deadline = 0;
+    retire_network_driver();
+    lock();
+    s_view.network_state = QUOTA_PORTABLE_NETWORK_ERROR;
+    copy(s_view.network_error, sizeof(s_view.network_error), "wifi_no_available");
+    s_view.network_ip[0] = 0;
+    unlock();
+    changed();
+}
+static void finish_normal_attempt(bool auth_failed)
+{
+    unsigned index = s_network_attempt_index;
+    if (auth_failed && index < s_model.network_count)
+        mark_network_auth_failed(index);
+    network_round_stage_t stage = s_network_round_stage;
+    s_network_attempt_index = UINT8_MAX;
+    s_connect_at = s_retry_at = 0;
+    s_network_request_id = 0;
+    clear_network_attempt_budget();
+    lock();
+    s_disconnect_reason = 0;
+    unlock();
+    retire_network_driver();
+    if (stage == NETWORK_ROUND_PREFERRED)
+        s_network_round_stage = NETWORK_ROUND_SCAN_PREPARE;
+}
+static void build_scan_candidates(void)
+{
+    s_scan_candidate_count = 0;
+    for (unsigned row = 0; row < s_model.network_count; row++) {
+        if (!(s_scan_visible_mask & (1u << row)))
+            continue;
+        unsigned position = s_scan_candidate_count;
+        while (position > 0 &&
+               s_scan_rssi[s_scan_candidates[position - 1]] < s_scan_rssi[row]) {
+            s_scan_candidates[position] = s_scan_candidates[position - 1];
+            position--;
+        }
+        s_scan_candidates[position] = (uint8_t)row;
+        s_scan_candidate_count++;
+    }
+    s_scan_candidate_cursor = 0;
+}
+static void finish_scan_collection(uint64_t now)
+{
+    if (quota_wifi_scan_clear_ap_list() != ESP_OK) {
+        set_network_unavailable(now);
+        return;
+    }
+    build_scan_candidates();
+    s_network_round_stage = NETWORK_ROUND_CANDIDATES;
+    s_network_request_id = 0;
+    retire_network_driver();
+    if (!s_scan_candidate_count)
+        set_network_unavailable(now);
+}
+static void fail_scan(uint64_t now)
+{
+    s_network_round_stage = NETWORK_ROUND_TERMINAL;
+    s_network_request_id = 0;
+    clear_scan_candidates();
+    retire_network_driver();
+    set_network_unavailable(now);
+}
+static bool start_network_scan(uint64_t now)
+{
+    if (!s_network_request_id)
+        s_network_request_id = next_wifi_request_id();
+    quota_wifi_result_t prepared = quota_wifi_prepare(s_network_request_id, WIFI_MODE_STA);
+    if (prepared == QUOTA_WIFI_WAIT)
+        return true;
+    if (prepared == QUOTA_WIFI_FAILED) {
+        fail_scan(now);
+        return false;
+    }
+    wifi_scan_config_t scan = {0};
+    scan.scan_type = WIFI_SCAN_TYPE_ACTIVE;
+    scan.channel = 0; /* all channels */
+    scan.show_hidden = true;
+    scan.scan_time.active.min = 120;
+    scan.scan_time.active.max = 120;
+    if (quota_wifi_scan_clear_ap_list() != ESP_OK || !quota_wifi_start()) {
+        fail_scan(now);
+        return false;
+    }
+    s_wifi_active = true;
+    s_network_round_stage = NETWORK_ROUND_SCAN_WAIT;
+    s_scan_deadline = now + 5000;
+    s_scan_done_pending = false;
+    if (!quota_wifi_scan_start(&scan)) {
+        fail_scan(now);
+        return false;
+    }
+    lock();
+    s_view.network_state = QUOTA_PORTABLE_NETWORK_CONNECTING;
+    s_view.network_error[0] = 0;
+    s_view.network_ip[0] = 0;
+    unlock();
+    changed();
+    return true;
+}
+static void accept_scan_done(uint64_t now)
+{
+    lock();
+    bool pending = s_scan_done_pending;
+    bool success = s_scan_done_success;
+    s_scan_done_pending = false;
+    s_scan_done_success = false;
+    unlock();
+    if (!pending || s_network_round_stage != NETWORK_ROUND_SCAN_WAIT)
+        return;
+    if (!success) {
+        fail_scan(now);
+        return;
+    }
+    uint16_t number = 0;
+    if (quota_wifi_scan_get_ap_num(&number) != ESP_OK) {
+        fail_scan(now);
+        return;
+    }
+    s_scan_results_remaining = number;
+    s_network_round_stage = NETWORK_ROUND_SCAN_COLLECT;
+    if (!number)
+        finish_scan_collection(now);
+}
+static void collect_scan_records(uint64_t now)
+{
+    unsigned budget = 16;
+    while (budget-- && s_scan_results_remaining) {
+        wifi_ap_record_t record = {0};
+        if (quota_wifi_scan_get_ap_record(&record) != ESP_OK) {
+            fail_scan(now);
+            return;
+        }
+        s_scan_results_remaining--;
+        size_t ssid_len = strnlen((const char *)record.ssid, sizeof(record.ssid));
+        if (!ssid_len || ssid_len > QUOTA_SSID_MAX_BYTES)
+            continue; /* hidden or malformed names never become a saved-network candidate */
+        for (unsigned row = 0; row < s_model.network_count; row++) {
+            size_t saved_len = strlen(s_model.networks[row].ssid);
+            if (saved_len != ssid_len || memcmp(record.ssid, s_model.networks[row].ssid, ssid_len))
+                continue;
+            if (!(s_scan_visible_mask & (1u << row)) || record.rssi > s_scan_rssi[row])
+                s_scan_rssi[row] = record.rssi;
+            s_scan_visible_mask |= (uint8_t)(1u << row);
+        }
+    }
+    if (!s_scan_results_remaining)
+        finish_scan_collection(now);
+}
+static void mark_network_ready(unsigned index, const char *ip)
+{
+    lock();
+    if (index < s_model.network_count && index == s_model.selected_network &&
+        !staged_for_network(index) &&
+        (s_network_validation[index] == QUOTA_VALIDATION_SAVED ||
+         s_network_validation[index] == QUOTA_VALIDATION_FAILED)) {
+        s_network_validation[index] = QUOTA_VALIDATION_OK;
+        s_network_error[index][0] = 0;
+    }
+    s_view.network_state = s_clock_ready ? QUOTA_PORTABLE_NETWORK_READY
+                                         : QUOTA_PORTABLE_NETWORK_CONNECTED;
+    copy(s_view.network_ip, sizeof(s_view.network_ip), ip);
+    copy(s_view.network_ssid, sizeof(s_view.network_ssid), s_model.networks[index].ssid);
+    copy(s_view.network_error, sizeof(s_view.network_error), s_clock_ready ? "" : "time_required");
+    sync_public_locked();
+    unlock();
+    changed();
+}
+static void resume_network_attempt(uint64_t now)
+{
+    if (!s_network_attempt_paused || s_candidate_pending)
+        return;
+    uint64_t remaining = s_network_paused_remaining_ms;
+    s_network_attempt_paused = false;
+    s_network_paused_remaining_ms = 0;
+    if (s_network_attempt_index >= s_model.network_count)
+        return;
+    s_resume_budget_pending = true;
+    s_resume_budget_ms = remaining;
+    s_retry_at = now;
+}
+static void start_preferred_attempt(uint64_t now)
+{
+    clear_network_attempt_budget();
+    if (!s_model.network_count || s_model.selected_network >= s_model.network_count) {
+        set_network_unavailable(now);
+        return;
+    }
+    s_network_round_stage = NETWORK_ROUND_PREFERRED;
+    s_network_attempt_index = s_model.selected_network;
+    s_network_tried = (uint8_t)(1u << s_network_attempt_index);
+    s_network_request_id = 0;
+    s_connect_at = s_retry_at = 0;
+    clear_scan_candidates();
+}
+static void start_scan_candidate(uint64_t now)
+{
+    if (s_scan_candidate_cursor >= s_scan_candidate_count) {
+        set_network_unavailable(now);
+        return;
+    }
+    unsigned index = s_scan_candidates[s_scan_candidate_cursor++];
+    if (index >= s_model.network_count) {
+        start_scan_candidate(now);
+        return;
+    }
+    clear_network_attempt_budget();
+    s_network_attempt_index = (uint8_t)index;
+    s_network_tried |= (uint8_t)(1u << index);
+    s_network_request_id = 0;
+    s_connect_at = s_retry_at = 0;
+}
 static void maintain_network(void)
 {
     uint64_t now = millis();
-    char ip[16];
-    const quota_portable_network_t *target = s_candidate_pending ? &s_candidate
-                                             : s_model.network_count
-                                                 ? &s_model.networks[s_model.selected_network]
-                                                 : NULL;
-    if (!s_connect_at && target) {
-        (void)connect_network(target);
-        return;
+    resume_network_attempt(now);
+    accept_scan_done(now); /* Process the bounded callback latch before any deadline decision. */
+
+    bool candidate = s_candidate_pending;
+    unsigned target_index = UINT8_MAX;
+    const quota_portable_network_t *target = NULL;
+    if (candidate) {
+        target = &s_candidate;
+        target_index = s_candidate_index;
+    } else if (s_network_attempt_index < s_model.network_count) {
+        target = &s_model.networks[s_network_attempt_index];
+        target_index = s_network_attempt_index;
+    } else if (s_connected_network_index < s_model.network_count) {
+        target = &s_model.networks[s_connected_network_index];
+        target_index = s_connected_network_index;
     }
-    wifi_ap_record_t association;
-    bool matching =
-        target && esp_wifi_sta_get_ap_info(&association) == ESP_OK &&
-        strnlen((char *)association.ssid, sizeof(association.ssid)) == strlen(target->ssid) &&
-        !memcmp(association.ssid, target->ssid, strlen(target->ssid));
-    if (matching && connected_ip(ip)) {
-        if (s_candidate_pending) {
-            /* The validated network becomes the one in use, with the credentials that worked. */
-            bool staged = s_staged.present && s_staged.index == s_candidate_index;
-            /* Credentials staged for the network that stops being in use are stored now: only
-             * the network in use is protected. */
-            bool promote = s_staged.present && s_staged.index != s_candidate_index;
-            if (staged || promote || s_model.selected_network != s_candidate_index) {
-                quota_model_t *candidate = malloc(sizeof(*candidate));
-                if (!candidate) {
-                    storage_failed(QUOTA_STORE_READ_NO_MEMORY);
+
+    if (target) {
+        bool connection_attempt = candidate || s_network_attempt_index != UINT8_MAX;
+        if (connection_attempt) {
+            if (!s_connect_at) {
+                if (!connect_network(target)) {
+                    if (candidate)
+                        cancel_candidate(wifi_failure_code());
+                    else
+                        finish_normal_attempt(false);
                     return;
                 }
-                *candidate = s_model;
-                validation_t promoted_state =
-                    promote ? s_network_validation[s_staged.index] : QUOTA_VALIDATION_SAVED;
-                char promoted_error[QUOTA_PORTABLE_ERROR_BYTES + 1] = {0};
-                if (promote)
-                    memcpy(promoted_error, s_network_error[s_staged.index], sizeof(promoted_error));
-                if (staged)
-                    candidate->networks[s_candidate_index] = s_staged.network;
-                if (promote && s_staged.index < candidate->network_count)
-                    candidate->networks[s_staged.index] = s_staged.network;
-                candidate->selected_network = s_candidate_index;
-                bool ok = submit_model(candidate, true, NULL);
-                dispose_candidate(candidate);
-                if (!ok) {
-                    if (!s_dirty_model)
+                /* Prepare can be waiting for a previous driver/session to retire. Its old
+                 * association and DHCP data are not evidence for this request. */
+                if (!s_connect_at)
+                    return;
+            }
+            if (!quota_wifi_operation_active(s_network_request_id, WIFI_MODE_STA))
+                return;
+        } else if (!s_network_request_id ||
+                   !quota_wifi_operation_active(s_network_request_id, WIFI_MODE_STA)) {
+            /* A remembered link is usable only while its exact station admission still owns the
+             * radio. A mode switch or retirement can leave the old AP/IP queryable briefly. */
+            clear_ready_network_view();
+            s_connected_network_index = UINT8_MAX;
+            clear_network_attempt_budget();
+            s_network_request_id = 0;
+            s_network_round_stage = NETWORK_ROUND_IDLE;
+            return;
+        }
+        char ip[16];
+        if (connected_ip(target, ip)) {
+            if (candidate || s_network_attempt_index != UINT8_MAX) {
+                network_selection_kind_t kind = candidate ? NETWORK_SELECTION_CANDIDATE
+                                                            : NETWORK_SELECTION_NORMAL;
+                if (!select_connected_network(target_index, kind)) {
+                    if (s_dirty_model || s_network_selection.kind != NETWORK_SELECTION_NONE)
+                        return;
+                    if (candidate)
                         cancel_candidate("storage_failed");
+                    else {
+                        s_network_attempt_index = UINT8_MAX;
+                        s_connected_network_index = UINT8_MAX;
+                        clear_network_attempt_budget();
+                        s_network_request_id = 0;
+                        s_connect_at = s_retry_at = 0;
+                        s_network_selection_retry_at = now + 5000;
+                        retire_network_driver();
+                        lock();
+                        s_view.network_state = QUOTA_PORTABLE_NETWORK_ERROR;
+                        copy(s_view.network_error, sizeof(s_view.network_error),
+                             "storage_failed");
+                        s_view.network_ip[0] = 0;
+                        unlock();
+                    }
                     return;
                 }
-                if (staged || promote) {
-                    lock();
-                    if (promote) { /* storing it reset its state; it keeps what validation found */
-                        s_network_validation[s_staged.index] = promoted_state;
-                        memcpy(s_network_error[s_staged.index], promoted_error,
-                               sizeof(promoted_error));
-                    }
-                    s_staged.present = false;
-                    quota_portable_clear_secret(&s_staged.network, sizeof(s_staged.network));
-                    unlock();
-                }
+                if (s_network_selection.kind != NETWORK_SELECTION_NONE)
+                    return; /* The exact selection write is still UNKNOWN. */
+            }
+            if (!s_sntp) {
+                esp_sntp_config_t ntp =
+                    ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(
+                        3, ESP_SNTP_SERVER_LIST("time.cloudflare.com", "ntp.aliyun.com",
+                                                "pool.ntp.org"));
+                ntp.start = true;
+                s_sntp = esp_netif_sntp_init(&ntp) == ESP_OK;
+            }
+            if (s_sntp && esp_netif_sntp_sync_wait(0) == ESP_OK) {
+                lock();
+                s_clock_ready = epoch() >= 1704067200ULL;
+                unlock();
+            }
+            unsigned connected_index = s_connected_network_index;
+            if (connected_index < s_model.network_count)
+                mark_network_ready(connected_index, ip);
+            return; /* A failed SNTP attempt keeps this Wi-Fi link in use. */
+        }
+
+        stop_clock();
+        if (candidate) {
+            const char *error = wifi_failure_code();
+            if (s_disconnect_reason) {
+                cancel_candidate(error);
+                return;
+            }
+            if (s_connect_at && now >= s_candidate_deadline) {
+                cancel_candidate(error);
+                return;
             }
             lock();
-            s_network_validation[s_candidate_index] = QUOTA_VALIDATION_OK;
-            s_network_error[s_candidate_index][0] = 0;
+            s_view.network_state = QUOTA_PORTABLE_NETWORK_CONNECTING;
+            s_view.network_ip[0] = 0;
             unlock();
-            s_candidate_pending = false;
-            s_candidate_deadline = 0;
-            quota_portable_clear_secret(&s_candidate, sizeof(s_candidate));
-            changed();
+            return;
         }
-        /* lwIP falls through the list on timeout. Server Date headers are not a clock source: TLS
-         * certificate checks need time first. */
-        if (!s_sntp) {
-            esp_sntp_config_t ntp = ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(
-                3, ESP_SNTP_SERVER_LIST("time.cloudflare.com", "ntp.aliyun.com", "pool.ntp.org"));
-            ntp.start = true;
-            s_sntp = esp_netif_sntp_init(&ntp) == ESP_OK;
-        }
-        if (s_sntp && esp_netif_sntp_sync_wait(0) == ESP_OK) {
+        if (s_network_attempt_index != UINT8_MAX) {
+            bool auth_failed = !strcmp(wifi_failure_code(), "wifi_auth_failed");
+            if (s_disconnect_reason) {
+                finish_normal_attempt(auth_failed);
+                return;
+            }
+            if (s_connect_at && now >= s_retry_at) {
+                finish_normal_attempt(false);
+                return;
+            }
             lock();
-            s_clock_ready = epoch() >= 1704067200ULL;
+            s_view.network_state = QUOTA_PORTABLE_NETWORK_CONNECTING;
+            s_view.network_ip[0] = 0;
             unlock();
+            return;
         }
-        lock();
-        /* Connected for real: a network that was only saved, or had been refused, is fine. */
-        if (s_model.network_count && !s_candidate_pending && !staged_for_selected() &&
-            (s_network_validation[s_model.selected_network] == QUOTA_VALIDATION_SAVED ||
-             s_network_validation[s_model.selected_network] == QUOTA_VALIDATION_FAILED)) {
-            s_network_validation[s_model.selected_network] = QUOTA_VALIDATION_OK;
-            s_network_error[s_model.selected_network][0] = 0;
-        }
-        s_view.network_state =
-            s_clock_ready ? QUOTA_PORTABLE_NETWORK_READY : QUOTA_PORTABLE_NETWORK_CONNECTED;
-        copy(s_view.network_ip, sizeof(s_view.network_ip), ip);
-        copy(s_view.network_error, sizeof(s_view.network_error),
-             s_clock_ready ? "" : "time_required");
-        unlock();
-        return;
+
+        /* A previously addressed link vanished without a matching disconnect event. Begin a
+         * fresh round, still preferring the last successfully persisted row. */
+        s_connected_network_index = UINT8_MAX;
+        s_network_round_stage = NETWORK_ROUND_IDLE;
+        clear_network_attempt_budget();
+        s_network_tried = 0;
+        s_network_request_id = 0;
+        s_network_round_retry_at = 0;
+        retire_network_driver();
     }
-    stop_clock();
-    /* A wrong password is known long before the timeout. */
-    if (s_candidate_pending && s_connect_at && !strcmp(wifi_failure_code(), "wifi_auth_failed")) {
-        cancel_candidate("wifi_auth_failed");
-        return;
-    }
-    if (!s_candidate_pending && s_connect_at && s_model.network_count && !staged_for_selected() &&
-        !strcmp(wifi_failure_code(), "wifi_auth_failed")) {
-        /* The network in use refuses its stored password. */
-        lock();
-        validation_t *state = &s_network_validation[s_model.selected_network];
-        if (*state == QUOTA_VALIDATION_SAVED || *state == QUOTA_VALIDATION_OK) {
-            *state = QUOTA_VALIDATION_FAILED;
-            copy(s_network_error[s_model.selected_network], sizeof(s_network_error[0]),
-                 "wifi_auth_failed");
-            sync_public_locked();
-        }
-        unlock();
-    }
-    if (s_connect_at && now < s_retry_at) {
-        lock();
-        s_view.network_state = QUOTA_PORTABLE_NETWORK_CONNECTING;
-        s_view.network_ip[0] = 0;
-        unlock();
-        return;
-    }
-    if (s_candidate_pending && s_connect_at) {
-        cancel_candidate(wifi_failure_code());
-        return;
-    }
-    if (s_connect_at && now < s_retry_at + 30000) {
-        lock();
-        s_view.network_state = QUOTA_PORTABLE_NETWORK_ERROR;
-        copy(s_view.network_error, sizeof(s_view.network_error), "network_unavailable");
-        s_view.network_ip[0] = 0;
-        unlock();
-        return;
-    }
-    if (target)
-        (void)connect_network(target);
-    else {
+
+    if (!s_model.network_count) {
+        s_network_round_stage = NETWORK_ROUND_IDLE;
+        clear_network_attempt_budget();
         lock();
         s_view.network_state = QUOTA_PORTABLE_NETWORK_OFF;
+        s_view.network_error[0] = 0;
+        s_view.network_ip[0] = 0;
         unlock();
+        stop_clock();
+        return;
+    }
+    if (s_network_selection_retry_at) {
+        if (now < s_network_selection_retry_at)
+            return;
+        s_network_selection_retry_at = 0;
+    }
+    if (s_network_round_stage == NETWORK_ROUND_TERMINAL) {
+        if (now < s_network_round_retry_at)
+            return;
+        s_network_round_retry_at = 0;
+        s_network_tried = 0;
+        s_network_round_stage = NETWORK_ROUND_IDLE;
+    }
+    if (s_network_round_stage == NETWORK_ROUND_IDLE) {
+        start_preferred_attempt(now);
+    }
+    if (s_network_round_stage == NETWORK_ROUND_PREFERRED) {
+        if (s_network_attempt_index == UINT8_MAX)
+            start_preferred_attempt(now);
+        if (s_network_attempt_index < s_model.network_count && !s_connect_at &&
+            !connect_network(&s_model.networks[s_network_attempt_index]))
+            finish_normal_attempt(false);
+        return;
+    }
+    if (s_network_round_stage == NETWORK_ROUND_SCAN_PREPARE) {
+        clear_scan_candidates();
+        (void)start_network_scan(now);
+        return;
+    }
+    if (s_network_round_stage == NETWORK_ROUND_SCAN_WAIT) {
+        if (now >= s_scan_deadline)
+            fail_scan(now);
+        return;
+    }
+    if (s_network_round_stage == NETWORK_ROUND_SCAN_COLLECT) {
+        collect_scan_records(now);
+        return;
+    }
+    if (s_network_round_stage == NETWORK_ROUND_CANDIDATES) {
+        if (s_network_attempt_index == UINT8_MAX) {
+            start_scan_candidate(now);
+            if (s_network_round_stage == NETWORK_ROUND_TERMINAL)
+                return;
+        }
+        if (s_network_attempt_index < s_model.network_count && !s_connect_at &&
+            !connect_network(&s_model.networks[s_network_attempt_index]))
+            finish_normal_attempt(false);
     }
 }
 static void finish_operation(const char *error)
@@ -1978,14 +2903,9 @@ static const char *save_network(const quota_portable_command_t *command)
          command->password);
     if (index == candidate->network_count)
         candidate->network_count++;
-    bool saved = submit_model(candidate, true, command->request_id);
+    bool saved = submit_network_model(candidate, command->request_id, NETWORK_CHANGE_REPLACE,
+                                      index);
     dispose_candidate(candidate);
-    if ((saved || s_dirty_model) && s_staged.present && s_staged.index == index) {
-        lock(); /* stored through the normal path: it replaces what was staged */
-        s_staged.present = false;
-        quota_portable_clear_secret(&s_staged.network, sizeof(s_staged.network));
-        unlock();
-    }
     return saved || s_dirty_model ? NULL : "storage_failed";
 }
 static const char *remove_network(const quota_portable_command_t *command)
@@ -2006,22 +2926,9 @@ static const char *remove_network(const quota_portable_command_t *command)
         candidate->selected_network = 0;
     else if (index < s_model.selected_network)
         candidate->selected_network--;
-    bool in_use = index == s_model.selected_network;
-    bool saved = submit_model(candidate, true, command->request_id);
+    bool saved = submit_network_model(candidate, command->request_id, NETWORK_CHANGE_REMOVE,
+                                      index);
     dispose_candidate(candidate);
-    if (saved && s_staged.present) {
-        lock();
-        if (s_staged.index == index) {
-            s_staged.present = false;
-            quota_portable_clear_secret(&s_staged.network, sizeof(s_staged.network));
-        } else if (s_staged.index > index)
-            s_staged.index--;
-        unlock();
-    }
-    if (saved && in_use) {
-        (void)esp_wifi_disconnect();
-        s_connect_at = 0;
-    }
     return saved || s_dirty_model ? NULL : "storage_failed";
 }
 static void process_command(quota_portable_command_t *command)
@@ -2384,7 +3291,7 @@ static void abort_validation(void)
         s_candidate_pending = false;
         s_candidate_deadline = 0;
         quota_portable_clear_secret(&s_candidate, sizeof(s_candidate));
-        s_connect_at = s_retry_at = 0;
+        reset_network_attempts();
     }
     validation_finish("canceled");
     if (s_operation.kind == OP_LOGIN && !s_operation.started) {
@@ -2422,6 +3329,7 @@ static void validate_tick(void)
             return; /* maintain_network settles it */
         int index = next_network_to_validate();
         if (index >= 0) {
+            reset_network_attempts();
             s_candidate = s_staged.present && s_staged.index == index ? s_staged.network
                                                                       : s_model.networks[index];
             s_candidate_index = (uint8_t)index;
@@ -2633,6 +3541,8 @@ bool quota_portable_service_init(const quota_portable_service_hooks_t *hooks)
     s_hooks = *hooks;
     s_store_ready = quota_store_init();
     model_defaults(&s_model);
+    s_network_attempt_index = UINT8_MAX;
+    s_connected_network_index = UINT8_MAX;
     s_initialized = true;
     if (s_store_ready)
         load_authority();
@@ -2693,6 +3603,8 @@ void quota_portable_service_tick(bool sleeping, uint32_t generation)
          cancel = s_cancel, reconnect = s_reconnect, reset = s_factory_reset;
     s_close = s_cancel = s_reconnect = s_factory_reset = false;
     unlock();
+    (void)quota_wifi_retire_poll();
+    s_wifi_active = quota_wifi_started();
     if (reset && factory_reset())
         return;
     retry_dirty();
@@ -2706,6 +3618,7 @@ void quota_portable_service_tick(bool sleeping, uint32_t generation)
     recover_intent();
     if (s_operation.cancel_requested && !s_dirty_model)
         finish_operation("canceled");
+    consume_wifi_disconnects();
     if (s_candidate_pending && !s_dirty_model && millis() >= s_candidate_deadline)
         cancel_candidate(wifi_failure_code());
     if (s_operation.kind != OP_NONE && s_operation.kind != OP_SAVE && !s_operation.received &&
@@ -2795,9 +3708,10 @@ void quota_portable_service_tick(bool sleeping, uint32_t generation)
         stop_clock();
         if (s_wifi_active && quota_wifi_stop())
             s_wifi_active = false;
-        s_connect_at = 0;
+        pause_network_for_sleep();
         lock();
         s_view.network_state = QUOTA_PORTABLE_NETWORK_OFF;
+        s_view.network_ip[0] = 0;
         s_refreshing = false;
         sync_public_locked();
         unlock();
@@ -2809,9 +3723,14 @@ void quota_portable_service_tick(bool sleeping, uint32_t generation)
         unlock();
         return;
     }
+    lock();
+    bool opening_setup = s_open;
+    unlock();
+    if (opening_setup)
+        return;
     if (reconnect) {
+        reset_network_attempts();
         (void)esp_wifi_disconnect();
-        s_connect_at = 0;
     }
     maintain_network();
     if (!storage_barrier()) {
@@ -2903,6 +3822,18 @@ uint64_t quota_portable_service_next_deadline_ms(bool sleeping)
     if (s_candidate_pending && !s_dirty_model && !s_recovery_blocked)
         sooner(&deadline, s_candidate_deadline);
     if (!sleeping && !usb_busy && !s_view.setup_active && !storage_barrier()) {
+        if (s_network_attempt_index != UINT8_MAX && s_connect_at)
+            sooner(&deadline, s_retry_at);
+        if (s_network_round_stage == NETWORK_ROUND_SCAN_WAIT)
+            sooner(&deadline, s_scan_deadline);
+        if (s_network_round_stage == NETWORK_ROUND_SCAN_COLLECT && s_scan_results_remaining)
+            sooner(&deadline, millis() + 1);
+        if (s_scan_done_pending)
+            deadline = 0;
+        sooner(&deadline, s_network_selection_retry_at);
+        sooner(&deadline, s_network_round_retry_at);
+    }
+    if (!sleeping && !usb_busy && !s_view.setup_active && !storage_barrier()) {
         if (!s_direct)
             sooner(&deadline, s_init_retry_at);
         if (s_model.auto_refresh && s_operation.kind == OP_NONE)
@@ -2915,15 +3846,45 @@ uint64_t quota_portable_service_next_deadline_ms(bool sleeping)
             sooner(&deadline, s_cache_at <= millis() ? millis() + 500 : s_cache_at);
     }
     unlock();
+    uint64_t wifi_deadline = quota_wifi_next_deadline_ms(sleeping);
+    if (wifi_deadline < deadline)
+        deadline = wifi_deadline;
     return deadline;
 }
-void quota_portable_service_disconnected(uint8_t reason)
+void quota_portable_service_disconnected(uint8_t reason, const uint8_t *ssid, size_t ssid_len)
+{
+    if (!s_initialized || !ssid || !ssid_len || ssid_len > 32)
+        return;
+    lock();
+    bool sleeping = s_sleeping;
+    if (sleeping) {
+        unlock();
+        return;
+    }
+    if (s_wifi_disconnect_count == WIFI_DISCONNECT_QUEUE_DEPTH) {
+        s_wifi_disconnect_head = (s_wifi_disconnect_head + 1) % WIFI_DISCONNECT_QUEUE_DEPTH;
+        s_wifi_disconnect_count--;
+    }
+    unsigned tail = (s_wifi_disconnect_head + s_wifi_disconnect_count) %
+                    WIFI_DISCONNECT_QUEUE_DEPTH;
+    wifi_disconnect_event_t *event = &s_wifi_disconnect_events[tail];
+    memset(event, 0, sizeof(*event));
+    event->reason = reason;
+    event->ssid_len = (uint8_t)ssid_len;
+    memcpy(event->ssid, ssid, ssid_len);
+    s_wifi_disconnect_count++;
+    unlock();
+    wake();
+}
+void quota_portable_service_scan_done(bool success)
 {
     if (!s_initialized)
         return;
     lock();
-    s_disconnect_reason = reason;
+    s_scan_done_pending = true;
+    s_scan_done_success = success;
     unlock();
+    wake();
 }
 void quota_portable_service_open(void)
 {

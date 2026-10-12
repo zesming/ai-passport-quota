@@ -315,6 +315,8 @@ static void load_view(const cJSON *json, quota_service_view_t *view)
     view->wifi_rssi = view->connected ? (int8_t)number_field(source, "rssi", 0) : 0;
     text_field(source, "ssid", portable->network_ssid, sizeof(portable->network_ssid));
     text_field(source, "ip", portable->network_ip, sizeof(portable->network_ip));
+    text_field(source, "network_error", portable->network_error,
+               sizeof(portable->network_error));
     text_field(source, "storage_error", portable->storage_error, sizeof(portable->storage_error));
     text_field(source, "firmware", portable->firmware, sizeof(portable->firmware));
     portable->validating = bool_field(source, "validating", false);
@@ -388,6 +390,36 @@ static bool has_visible_label(lv_obj_t *object, const char *text)
             return true;
     }
     return false;
+}
+
+static bool check_expected_labels(const cJSON *fixture, const char *fixture_name)
+{
+    const struct {
+        const char *field;
+        bool should_be_visible;
+    } checks[] = {{"expect_visible", true}, {"expect_not_visible", false}};
+    for (size_t i = 0; i < sizeof(checks) / sizeof(checks[0]); i++) {
+        const cJSON *expected = member(fixture, checks[i].field);
+        if (!cJSON_IsArray(expected))
+            continue;
+        const cJSON *item;
+        cJSON_ArrayForEach(item, expected)
+        {
+            if (!cJSON_IsString(item)) {
+                fprintf(stderr, "%s: %s entries must be strings\n", fixture_name,
+                        checks[i].field);
+                return false;
+            }
+            bool visible = has_visible_label(lv_screen_active(), item->valuestring);
+            if (visible != checks[i].should_be_visible) {
+                fprintf(stderr, "%s: expected label %s to be %s\n", fixture_name,
+                        item->valuestring,
+                        checks[i].should_be_visible ? "visible" : "hidden");
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 static unsigned count_objects(lv_obj_t *object)
@@ -480,6 +512,8 @@ int main(int argc, char **argv)
             fprintf(stderr, "%s: the complete MAC address is not visible\n", name->valuestring);
             return 1;
         }
+        if (!check_expected_labels(fixture, name->valuestring))
+            return 1;
         char path[1024];
         snprintf(path, sizeof(path), "%s/%s.png", argv[2], name->valuestring);
         if (!save_frame(path, scale)) {

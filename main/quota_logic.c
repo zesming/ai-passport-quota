@@ -778,6 +778,8 @@ quota_status_line_t quota_status_line_select(const quota_status_input_t *input)
         return QUOTA_STATUS_LINE_AUTHORIZING;
     if (input->reauth_needed)
         return QUOTA_STATUS_LINE_REAUTH;
+    if (input->wifi_no_available)
+        return QUOTA_STATUS_LINE_WIFI_FAILED;
     if (input->unverified_items > 0)
         return QUOTA_STATUS_LINE_UNVERIFIED;
     if (input->wifi_failed)

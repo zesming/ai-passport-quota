@@ -37,7 +37,8 @@ quota_portable_service_submit(const quota_portable_command_t *command,
                               quota_setup_transport_t transport);
 bool quota_portable_service_state_json(char *buffer, size_t capacity, size_t *length,
                                        quota_setup_transport_t transport);
-void quota_portable_service_disconnected(uint8_t reason);
+void quota_portable_service_disconnected(uint8_t reason, const uint8_t *ssid, size_t ssid_len);
+void quota_portable_service_scan_done(bool success);
 void quota_portable_service_open(void);
 void quota_portable_service_close(void);
 void quota_portable_service_renew(void);

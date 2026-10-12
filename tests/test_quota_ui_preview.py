@@ -29,6 +29,9 @@ REQUIRED = {
     "home-chatgpt",
     "home-deepseek",
     "home-welcome",
+    "home-welcome-wifi-no-available",
+    "home-welcome-wifi-no-available-empty",
+    "home-welcome-wifi-no-available-storage-error",
     "home-clock-unsynced",
     "home-sleep-notice",
     "status-1-storage-error",
@@ -36,6 +39,9 @@ REQUIRED = {
     "status-3-reauth",
     "status-4-unverified",
     "status-5-wifi-failed",
+    "status-wifi-no-available-cached",
+    "status-wifi-no-available-no-cache",
+    "status-wifi-no-available-validating",
     "status-6-rate-limited",
     "status-7-update-failed",
     "status-8-refreshing",
@@ -53,6 +59,8 @@ REQUIRED = {
     "auth-waiting",
     "info",
     "info-offline",
+    "info-wifi-no-available",
+    "info-wifi-no-available-validating",
     "info-unconfigured",
     "info-mac-unavailable",
     "info-wide-mac",
@@ -177,6 +185,34 @@ class UiPreview(unittest.TestCase):
         self.assertEqual(mac_row("info"), mac_row("info-offline"))
         self.assertEqual(mac_row("info"), mac_row("info-unconfigured"))
         self.assertNotEqual(mac_row("info"), mac_row("info-mac-unavailable"))
+
+    def test_no_available_network_changes_only_the_existing_status_regions(self):
+        self.assertEqual(self.returncode, 0, self.log)
+
+        def region(name, y_start, y_end):
+            _, _, rows = pngtools.read_png(OUT / "png" / f"{name}.png")
+            return b"".join(rows[y_start:y_end])
+
+        self.assertNotEqual(
+            region("status-5-wifi-failed", 270, 294),
+            region("status-wifi-no-available-cached", 270, 294),
+            "the account status line should name the terminal Wi-Fi condition",
+        )
+        self.assertNotEqual(
+            region("status-wifi-no-available-cached", 270, 294),
+            region("status-wifi-no-available-no-cache", 270, 294),
+            "the cached source time should stay visible in the terminal status",
+        )
+        self.assertNotEqual(
+            region("home-welcome", 88, 114),
+            region("home-welcome-wifi-no-available", 88, 114),
+            "the welcome subtitle should show the terminal network state",
+        )
+        self.assertNotEqual(
+            region("info-offline", 52, 88),
+            region("info-wifi-no-available", 52, 88),
+            "the information page should show the terminal network state in its Wi-Fi row",
+        )
 
     def test_no_forbidden_words_in_interface_text(self):
         for name in STRING_SOURCES:

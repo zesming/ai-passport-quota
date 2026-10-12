@@ -486,6 +486,8 @@ static void test_status_line_priority(void)
     assert(quota_status_line_select(&input) == QUOTA_STATUS_LINE_WIFI_FAILED);
     input.unverified_items = 1;
     assert(quota_status_line_select(&input) == QUOTA_STATUS_LINE_UNVERIFIED);
+    input.wifi_no_available = true;
+    assert(quota_status_line_select(&input) == QUOTA_STATUS_LINE_WIFI_FAILED);
     input.reauth_needed = true;
     assert(quota_status_line_select(&input) == QUOTA_STATUS_LINE_REAUTH);
     input.authorizing = true;

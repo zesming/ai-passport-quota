@@ -107,6 +107,16 @@ WEAK esp_err_t esp_event_handler_instance_unregister(esp_event_base_t base, int3
     (void)instance;
     return ESP_OK;
 }
+WEAK esp_err_t esp_event_post(esp_event_base_t base, int32_t id, const void *data, size_t size,
+                              TickType_t wait)
+{
+    (void)base;
+    (void)id;
+    (void)data;
+    (void)size;
+    (void)wait;
+    return ESP_OK;
+}
 WEAK esp_err_t esp_netif_init(void)
 {
     return ESP_OK;
@@ -126,6 +136,30 @@ WEAK void esp_netif_destroy_default_wifi(void *netif)
 {
     (void)netif;
 }
+WEAK void esp_netif_action_stop(void *netif, esp_event_base_t base, int32_t id, void *data)
+{
+    (void)netif;
+    (void)base;
+    (void)id;
+    (void)data;
+}
+WEAK bool esp_netif_is_netif_up(esp_netif_t *netif)
+{
+    (void)netif;
+    return false;
+}
+WEAK esp_err_t esp_netif_get_ip_info(esp_netif_t *netif, esp_netif_ip_info_t *info)
+{
+    (void)netif;
+    info->ip.addr = 0;
+    return ESP_OK;
+}
+WEAK esp_err_t esp_netif_dhcpc_get_status(esp_netif_t *netif, esp_netif_dhcp_status_t *status)
+{
+    (void)netif;
+    *status = ESP_NETIF_DHCP_STOPPED;
+    return ESP_OK;
+}
 WEAK esp_err_t esp_wifi_set_default_wifi_sta_handlers(void)
 {
     return ESP_OK;
@@ -144,7 +178,7 @@ WEAK esp_err_t esp_wifi_set_storage(int storage)
     (void)storage;
     return ESP_OK;
 }
-WEAK esp_err_t esp_wifi_set_mode(int mode)
+WEAK esp_err_t esp_wifi_set_mode(wifi_mode_t mode)
 {
     (void)mode;
     return ESP_OK;
@@ -160,6 +194,30 @@ WEAK esp_err_t esp_wifi_stop(void)
 WEAK esp_err_t esp_wifi_sta_get_ap_info(wifi_ap_record_t *record)
 {
     (void)record;
+    return ESP_OK;
+}
+WEAK esp_err_t esp_wifi_scan_start(const wifi_scan_config_t *config, bool block)
+{
+    (void)config;
+    (void)block;
+    return ESP_OK;
+}
+WEAK esp_err_t esp_wifi_scan_stop(void)
+{
+    return ESP_OK;
+}
+WEAK esp_err_t esp_wifi_scan_get_ap_num(uint16_t *number)
+{
+    *number = 0;
+    return ESP_OK;
+}
+WEAK esp_err_t esp_wifi_scan_get_ap_record(wifi_ap_record_t *record)
+{
+    (void)record;
+    return ESP_FAIL;
+}
+WEAK esp_err_t esp_wifi_clear_ap_list(void)
+{
     return ESP_OK;
 }
 WEAK esp_err_t esp_pm_lock_create(int type, int argument, const char *name,

@@ -361,6 +361,71 @@
    "battery": 82
   },
   {
+   "name": "home-welcome-wifi-no-available",
+   "note": "欢迎屏：普通重连轮次终局",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [],
+    "portable": {
+     "network_state": "error",
+     "network_error": "wifi_no_available",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "expect_visible": ["无可用网络"],
+   "expect_not_visible": ["Passport 还没有账户"],
+   "battery": 82
+  },
+  {
+   "name": "home-welcome-wifi-no-available-empty",
+   "note": "空网络目录仍显示原欢迎内容",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [],
+    "portable": {
+     "network_state": "error",
+     "network_error": "wifi_no_available",
+     "saved_networks": []
+    }
+   },
+   "expect_visible": ["Passport 还没有账户"],
+   "expect_not_visible": ["无可用网络"],
+   "battery": 82
+  },
+  {
+   "name": "home-welcome-wifi-no-available-storage-error",
+   "note": "存储错误仍优先于无可用网络",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [],
+    "portable": {
+     "network_state": "error",
+     "network_error": "wifi_no_available",
+     "storage_error": "storage_invalid",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "expect_visible": ["存储记录损坏"],
+   "expect_not_visible": ["无可用网络"],
+   "battery": 82
+  },
+  {
    "name": "status-1-storage-error",
    "note": "状态行 1：存储错误",
    "nav": {
@@ -705,6 +770,91 @@
      "network_error": "wifi_auth_failed"
     }
    },
+   "battery": 82
+  },
+  {
+   "name": "status-wifi-no-available-cached",
+   "note": "终局提示保留缓存来源时间并优先于待验证状态",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "now": 1791527520,
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro",
+      "observed_ago": 120
+     }
+    ],
+    "portable": {
+     "network_state": "error",
+     "network_error": "wifi_no_available",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ],
+     "failed": 1
+    }
+   },
+   "expect_visible": ["无可用网络 · 显示 14:30 的数据"],
+   "expect_not_visible": ["待验证 · 在设置页点完成设置"],
+   "battery": 82
+  },
+  {
+   "name": "status-wifi-no-available-no-cache",
+   "note": "没有缓存时终局提示不添加来源时间",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro"
+     }
+    ],
+    "portable": {
+     "network_state": "error",
+     "network_error": "wifi_no_available",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "expect_visible": ["无可用网络"],
+   "battery": 82
+  },
+  {
+   "name": "status-wifi-no-available-validating",
+   "note": "显式验证仍显示原待验证状态",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "codex",
+      "email": "alice@mail.com",
+      "plan": "pro"
+     }
+    ],
+    "portable": {
+     "network_state": "error",
+     "network_error": "wifi_no_available",
+     "validating": true,
+     "pending": 1
+    }
+   },
+   "expect_visible": ["待验证 · 在设置页点完成设置"],
+   "expect_not_visible": ["无可用网络"],
    "battery": 82
   },
   {
@@ -2214,6 +2364,51 @@
     "clock_synchronized": false,
     "wifi_mac": "02:AB:CD:EF:00:01"
    },
+   "battery": -1
+  },
+  {
+   "name": "info-wifi-no-available",
+   "note": "设备信息：普通自动重连轮次终局",
+   "nav": {
+    "screen": "info"
+   },
+   "view": {
+    "portable": {
+     "network_state": "error",
+     "network_error": "wifi_no_available",
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "ok"
+      }
+     ]
+    }
+   },
+   "expect_visible": ["无可用网络"],
+   "expect_not_visible": ["连接失败"],
+   "battery": -1
+  },
+  {
+   "name": "info-wifi-no-available-validating",
+   "note": "设备信息页显式验证期间保留原状态",
+   "nav": {
+    "screen": "info"
+   },
+   "view": {
+    "portable": {
+     "network_state": "error",
+     "network_error": "wifi_no_available",
+     "validating": true,
+     "saved_networks": [
+      {
+       "ssid": "HomeWiFi",
+       "validation": "pending"
+      }
+     ]
+    }
+   },
+   "expect_visible": ["连接失败"],
+   "expect_not_visible": ["无可用网络"],
    "battery": -1
   },
   {

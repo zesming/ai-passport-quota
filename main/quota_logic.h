@@ -224,6 +224,7 @@ typedef struct {
     bool authorizing;
     bool reauth_needed;
     uint8_t unverified_items; /* saved, never validated */
+    bool wifi_no_available;
     bool wifi_failed;
     bool rate_limited;
     bool update_failed;
