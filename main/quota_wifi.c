@@ -74,11 +74,18 @@ QUOTA_TESTABLE void wifi_event_handler(void *arg, esp_event_base_t base, int32_t
 {
     (void)arg;
     (void)base;
-    if (data)
-        quota_portable_service_disconnected(((wifi_event_sta_disconnected_t *)data)->reason);
     if (id != WIFI_EVENT_STA_DISCONNECTED)
         return;
+    const wifi_event_sta_disconnected_t *event = data;
+    if (event)
+        quota_portable_service_disconnected(event->reason);
     bool sleeping = quota_service_display_sleeping();
+    if (event) {
+        ESP_LOGW(TAG, "Wi-Fi disconnected: reason=%u, sleeping=%u", (unsigned)event->reason,
+                 (unsigned)sleeping);
+    } else {
+        ESP_LOGW(TAG, "Wi-Fi disconnected: reason=unknown, sleeping=%u", (unsigned)sleeping);
+    }
     quota_service_lock();
     quota_service_view_t *view = quota_service_view();
     bool was_connected = view->connected;

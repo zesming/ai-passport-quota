@@ -4,6 +4,67 @@ from runtime_helpers import compile_and_run
 
 
 class WifiRuntime(unittest.TestCase):
+    def test_disconnect_logs_raw_reason_without_identity_or_credentials(self):
+        harness = r'''
+#include "quota_service.h"
+#include "esp_log.h"
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+
+void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data);
+static bool sleeping;
+static unsigned forwarded;
+static uint8_t last_reason;
+static quota_service_view_t view;
+void quota_service_lock(void) {}
+void quota_service_unlock(void) {}
+quota_service_view_t *quota_service_view(void) { return &view; }
+void quota_service_post(quota_app_event_kind_t kind) {
+    assert(kind == QUOTA_APP_EVENT_CONNECTION);
+}
+void quota_service_wake_network(void) {}
+bool quota_service_display_sleeping(void) { return sleeping; }
+void quota_portable_service_disconnected(uint8_t reason) {
+    forwarded++; last_reason = reason;
+}
+
+int main(void) {
+    const uint8_t reasons[] = {8, 15, 202, 211, 255};
+    for (unsigned sleep = 0; sleep < 2; sleep++) {
+        sleeping = sleep != 0;
+        for (size_t i = 0; i < sizeof(reasons); i++) {
+            wifi_event_sta_disconnected_t event = {.reason = reasons[i]};
+            quota_service_view()->connected = true;
+            unsigned before = forwarded;
+            wifi_event_handler(NULL, WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &event);
+            char expected[96];
+            snprintf(expected, sizeof(expected), "Wi-Fi disconnected: reason=%u, sleeping=%u",
+                     (unsigned)reasons[i], sleep);
+            assert(!strcmp(host_log_line, expected));
+            assert(forwarded == before + 1 && last_reason == reasons[i]);
+            assert(!quota_service_view()->connected);
+        }
+        unsigned before = forwarded;
+        wifi_event_handler(NULL, WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, NULL);
+        assert(forwarded == before);
+        char expected[96];
+        snprintf(expected, sizeof(expected), "Wi-Fi disconnected: reason=unknown, sleeping=%u",
+                 sleep);
+        assert(!strcmp(host_log_line, expected));
+    }
+    strcpy(host_log_line, "unchanged");
+    quota_service_view()->connected = true;
+    wifi_event_sta_disconnected_t unrelated = {.reason = 202};
+    unsigned before = forwarded;
+    wifi_event_handler(NULL, WIFI_EVENT, -1, &unrelated);
+    assert(forwarded == before && quota_service_view()->connected);
+    assert(!strcmp(host_log_line, "unchanged"));
+    puts("disconnect reason logging passed");
+}
+'''
+        compile_and_run(harness, "ai-quota-wifi-log-", ("main/quota_wifi.c",), host_sdk=True)
+
     def test_wifi_stop_restart_and_late_events(self):
         harness = r'''
 #include "quota_service.h"
