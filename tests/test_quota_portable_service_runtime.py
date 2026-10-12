@@ -94,6 +94,8 @@ class PortableServiceRuntime(unittest.TestCase):
                 "access-code",
                 "network-saved-state",
                 "scan-rssi-order",
+                "scan-start-failure",
+                "scan-clear-failure",
                 "scan-timeout-cleanup",
                 "scan-read-failure-cleanup",
                 "scan-sleep-resume",

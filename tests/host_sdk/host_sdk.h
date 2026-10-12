@@ -48,6 +48,7 @@ typedef void (*esp_event_handler_t)(void *argument, esp_event_base_t base, int32
 extern const char *const WIFI_EVENT;
 extern const char *const IP_EVENT;
 enum {
+    ESP_ERR_WIFI_NOT_STARTED = 0x3002,
     WIFI_EVENT_SCAN_DONE = 1,
     WIFI_EVENT_STA_STOP = 3,
     WIFI_EVENT_STA_DISCONNECTED = 5,

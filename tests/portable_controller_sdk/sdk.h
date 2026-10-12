@@ -8,6 +8,7 @@ typedef int esp_err_t;
 enum {
     ESP_OK = 0,
     ESP_FAIL = 1,
+    ESP_ERR_WIFI_NOT_STARTED = 0x3002,
     MALLOC_CAP_8BIT = 1,
     WIFI_MODE_STA = 1,
     WIFI_MODE_APSTA = 2,

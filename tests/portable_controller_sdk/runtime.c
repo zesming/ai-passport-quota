@@ -26,7 +26,7 @@ static unsigned fake_scan_read_cursor;
 static unsigned fake_scan_total_records_read;
 static bool fake_driver_initialized, fake_driver_started, fake_scan_active, fake_scan_complete;
 static bool fake_retire_pending;
-static bool fake_hold_prepare;
+static bool fake_hold_prepare, fake_driver_start_fail, fake_scan_clear_fail;
 static uint64_t fake_wifi_deadline_ms = UINT64_MAX;
 static bool fake_scan_auto_done = true, fake_scan_done_success = true, fake_scan_start_fail;
 static int fake_scan_read_fail_after = -1;
@@ -578,7 +578,7 @@ static void usb_open(void)
 bool quota_wifi_start(void)
 {
     unlocked();
-    if (!fake_driver_initialized)
+    if (!fake_driver_initialized || fake_driver_start_fail)
         return false;
     fake_driver_started = true;
     return true;
@@ -686,7 +686,13 @@ esp_err_t quota_wifi_scan_get_ap_record(wifi_ap_record_t *record)
 }
 esp_err_t quota_wifi_scan_clear_ap_list(void)
 {
+    if (!fake_driver_initialized)
+        return ESP_OK;
+    if (!fake_driver_started)
+        return ESP_ERR_WIFI_NOT_STARTED;
     fake_scan_clears++;
+    if (fake_scan_clear_fail)
+        return ESP_FAIL;
     fake_scan_active = fake_scan_complete = false;
     fake_scan_read_cursor = 0;
     return ESP_OK;
@@ -2341,6 +2347,32 @@ int main(int argc, char **argv)
                wifi_connects == 2 &&
                !memcmp(wifi_config.sta.ssid, "01234567890123456789012345678901",
                        sizeof(wifi_config.sta.ssid)));
+    } else if (!strcmp(argv[1], "scan-start-failure") ||
+               !strcmp(argv[1], "scan-clear-failure")) {
+        seed_model();
+        durable_model.network_count = 2;
+        strcpy(durable_model.networks[1].ssid, "saved-b");
+        strcpy(durable_model.networks[1].password, "password-b");
+        fake_wifi_set_network("old-hotspot", false, true);
+        fake_wifi_set_network("saved-b", true, true);
+        fake_scan_set_record("saved-b", -40);
+        boot();
+        tick(false);
+        assert(wifi_connects == 1);
+        now_ms += 25000;
+        tick(false); /* The preferred attempt retires before a new scan admission. */
+        bool fail_start = !strcmp(argv[1], "scan-start-failure");
+        fake_driver_start_fail = fail_start;
+        fake_scan_clear_fail = !fail_start;
+        now_ms += 10;
+        tick(false);
+        assert(s_network_round_stage == NETWORK_ROUND_TERMINAL && fake_retire_pending &&
+               !strcmp(s_view.network_error, "wifi_no_available") && fake_scan_starts == 0 &&
+               wifi_connects == 1 && fake_scan_clears == (fail_start ? 0u : 1u));
+        tick(false);
+        assert(!fake_retire_pending && !fake_driver_initialized && !fake_driver_started &&
+               !fake_scan_active && !fake_scan_complete && fake_scan_starts == 0 &&
+               wifi_connects == 1 && s_network_round_stage == NETWORK_ROUND_TERMINAL);
     } else if (!strcmp(argv[1], "scan-timeout-cleanup")) {
         seed_model();
         durable_model.network_count = 2;

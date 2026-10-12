@@ -100,7 +100,7 @@ extern bool s_scan_active, s_scan_complete;
 extern int s_retire_stage;
 static esp_netif_t netif;
 static bool sleeping, associated, netif_up, fail_fence_posts;
-static bool complete_scan_inline;
+static bool complete_scan_inline, sdk_started;
 static int32_t drop_fence_id;
 static uint32_t netif_ip;
 static esp_netif_dhcp_status_t dhcp_status = ESP_NETIF_DHCP_STARTED;
@@ -141,12 +141,13 @@ esp_err_t esp_wifi_set_mode(wifi_mode_t mode) {
     mode_sets++; return ESP_OK;
 }
 esp_err_t esp_wifi_init(const wifi_init_config_t *config) {
-    (void)config; inits++; return ESP_OK;
+    (void)config; inits++; sdk_started = false; return ESP_OK;
 }
-esp_err_t esp_wifi_deinit(void) { deinits++; return ESP_OK; }
-esp_err_t esp_wifi_start(void) { starts++; return ESP_OK; }
+esp_err_t esp_wifi_deinit(void) { deinits++; sdk_started = false; return ESP_OK; }
+esp_err_t esp_wifi_start(void) { starts++; sdk_started = true; return ESP_OK; }
 esp_err_t esp_wifi_stop(void) {
     stops++;
+    sdk_started = false;
     stop_event_handler(NULL, WIFI_EVENT, WIFI_EVENT_STA_STOP, NULL);
     return ESP_OK;
 }
@@ -154,7 +155,7 @@ esp_err_t esp_wifi_sta_get_ap_info(wifi_ap_record_t *record) {
     (void)record; return associated ? ESP_OK : ESP_FAIL;
 }
 esp_err_t esp_wifi_scan_start(const wifi_scan_config_t *config, bool block) {
-    (void)config; assert(!block); scan_starts++;
+    (void)config; assert(!block && sdk_started); scan_starts++;
     if (complete_scan_inline) {
         wifi_event_sta_scan_done_t done = {.status = ESP_OK};
         scan_event_handler(NULL, WIFI_EVENT, WIFI_EVENT_SCAN_DONE, &done);
@@ -168,7 +169,10 @@ esp_err_t esp_wifi_scan_get_ap_num(uint16_t *number) {
 esp_err_t esp_wifi_scan_get_ap_record(wifi_ap_record_t *record) {
     (void)record; scan_reads++; return ESP_OK;
 }
-esp_err_t esp_wifi_clear_ap_list(void) { result_clears++; return ESP_OK; }
+esp_err_t esp_wifi_clear_ap_list(void) {
+    if (!sdk_started) return ESP_ERR_WIFI_NOT_STARTED;
+    result_clears++; return ESP_OK;
+}
 esp_err_t esp_event_post(esp_event_base_t base, int32_t id, const void *data, size_t size,
                          TickType_t wait) {
     (void)base; assert(size == sizeof(posted_token) && wait == 0);
@@ -212,6 +216,8 @@ int main(void) {
            storage_sets == 1 && mode_sets == 1 &&
            !quota_wifi_operation_active(11, WIFI_MODE_STA));
     assert(quota_wifi_prepare(11, WIFI_MODE_STA) == QUOTA_WIFI_READY && inits == 1);
+    assert(quota_wifi_scan_clear_ap_list() == ESP_ERR_WIFI_NOT_STARTED && result_clears == 0 &&
+           !sdk_started);
     assert(quota_wifi_start() && starts == 1);
     assert(quota_wifi_operation_active(11, WIFI_MODE_STA));
     assert(quota_wifi_scan_get_ap_num(&(uint16_t){0}) == ESP_ERR_INVALID_STATE);

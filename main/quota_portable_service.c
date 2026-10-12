@@ -2141,7 +2141,8 @@ static bool start_network_scan(uint64_t now)
     scan.show_hidden = true;
     scan.scan_time.active.min = 120;
     scan.scan_time.active.max = 120;
-    if (quota_wifi_scan_clear_ap_list() != ESP_OK || !quota_wifi_start()) {
+    /* The SDK requires Wi-Fi to be started before clearing scan results. */
+    if (!quota_wifi_start() || quota_wifi_scan_clear_ap_list() != ESP_OK) {
         fail_scan(now);
         return false;
     }
