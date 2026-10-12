@@ -2347,8 +2347,7 @@ int main(int argc, char **argv)
                wifi_connects == 2 &&
                !memcmp(wifi_config.sta.ssid, "01234567890123456789012345678901",
                        sizeof(wifi_config.sta.ssid)));
-    } else if (!strcmp(argv[1], "scan-start-failure") ||
-               !strcmp(argv[1], "scan-clear-failure")) {
+    } else if (!strcmp(argv[1], "scan-start-failure") || !strcmp(argv[1], "scan-clear-failure")) {
         seed_model();
         durable_model.network_count = 2;
         strcpy(durable_model.networks[1].ssid, "saved-b");
