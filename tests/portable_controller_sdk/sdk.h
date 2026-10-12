@@ -54,7 +54,9 @@ typedef struct {
 typedef struct {
     int scan_type;
     struct {
-        struct { uint32_t min, max; } active;
+        struct {
+            uint32_t min, max;
+        } active;
         uint32_t passive;
     } scan_time;
     uint8_t *ssid, *bssid;

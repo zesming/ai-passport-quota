@@ -103,16 +103,16 @@ static bool register_handlers(void)
                                                         wifi_event_handler, NULL, &s_wifi_handler);
     if (err != ESP_OK)
         goto failed;
-    err = esp_event_handler_instance_register(WIFI_EVENT, WIFI_EVENT_SCAN_DONE,
-                                              scan_event_handler, NULL, &s_scan_handler);
+    err = esp_event_handler_instance_register(WIFI_EVENT, WIFI_EVENT_SCAN_DONE, scan_event_handler,
+                                              NULL, &s_scan_handler);
     if (err != ESP_OK)
         goto failed;
-    err = esp_event_handler_instance_register(WIFI_EVENT, WIFI_EVENT_STA_STOP,
-                                              stop_event_handler, NULL, &s_stop_handler);
+    err = esp_event_handler_instance_register(WIFI_EVENT, WIFI_EVENT_STA_STOP, stop_event_handler,
+                                              NULL, &s_stop_handler);
     if (err != ESP_OK)
         goto failed;
-    err = esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, ip_event_handler,
-                                              NULL, &s_ip_handler);
+    err = esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, ip_event_handler, NULL,
+                                              &s_ip_handler);
     if (err != ESP_OK)
         goto failed;
     err = esp_event_handler_instance_register(QUOTA_WIFI_FENCE_EVENT, WIFI_FENCE_1,
@@ -270,8 +270,8 @@ static quota_wifi_result_t poll_fence(void)
     }
     if (now >= s_next_fence_post_ms) {
         uint32_t token = s_expected_fence_token;
-        esp_err_t err = esp_event_post(QUOTA_WIFI_FENCE_EVENT, s_expected_fence_id, &token,
-                                       sizeof(token), 0);
+        esp_err_t err =
+            esp_event_post(QUOTA_WIFI_FENCE_EVENT, s_expected_fence_id, &token, sizeof(token), 0);
         s_next_fence_post_ms = now + WIFI_FENCE_RETRY_MS;
         if (err != ESP_OK)
             ESP_LOGW(TAG, "Wi-Fi fence post failed (%s)", esp_err_to_name(err));
@@ -306,8 +306,7 @@ void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data
         ESP_LOGW(TAG, "Wi-Fi disconnected: reason=unknown, sleeping=%u", (unsigned)sleeping);
     }
     portENTER_CRITICAL(&s_event_mux);
-    bool accepted = s_retire_stage == RETIRE_IDLE && s_wifi_started &&
-                    mode_has_sta(s_driver_mode);
+    bool accepted = s_retire_stage == RETIRE_IDLE && s_wifi_started && mode_has_sta(s_driver_mode);
     portEXIT_CRITICAL(&s_event_mux);
     if (!accepted || !event)
         return;
@@ -384,8 +383,7 @@ void ip_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data)
     if (id != IP_EVENT_STA_GOT_IP || quota_service_display_sleeping())
         return;
     portENTER_CRITICAL(&s_event_mux);
-    bool accepted = s_retire_stage == RETIRE_IDLE && s_wifi_started &&
-                    mode_has_sta(s_driver_mode);
+    bool accepted = s_retire_stage == RETIRE_IDLE && s_wifi_started && mode_has_sta(s_driver_mode);
     portEXIT_CRITICAL(&s_event_mux);
     if (!accepted)
         return;
@@ -611,8 +609,8 @@ uint64_t quota_wifi_next_deadline_ms(bool sleeping)
 bool quota_wifi_start(void)
 {
     portENTER_CRITICAL(&s_event_mux);
-    bool can_start = s_wifi_initialized && s_admitted_request_id &&
-                     s_retire_stage == RETIRE_IDLE && !s_retiring && !s_quarantined;
+    bool can_start = s_wifi_initialized && s_admitted_request_id && s_retire_stage == RETIRE_IDLE &&
+                     !s_retiring && !s_quarantined;
     bool already_started = s_wifi_started;
     portEXIT_CRITICAL(&s_event_mux);
     if (!can_start)

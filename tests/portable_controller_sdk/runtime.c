@@ -209,8 +209,7 @@ static void tick_until_portal_starts(unsigned target)
 static void wifi_disconnected(uint8_t reason, const char *ssid)
 {
     size_t length = strnlen(ssid, sizeof(wifi_config.sta.ssid));
-    if (associated && length == strlen(associated_ssid) &&
-        !memcmp(associated_ssid, ssid, length)) {
+    if (associated && length == strlen(associated_ssid) && !memcmp(associated_ssid, ssid, length)) {
         associated = false;
         associated_ssid[0] = 0;
         connected = false;
@@ -676,8 +675,7 @@ esp_err_t quota_wifi_scan_get_ap_num(uint16_t *number)
 esp_err_t quota_wifi_scan_get_ap_record(wifi_ap_record_t *record)
 {
     if (!record || !fake_scan_complete || fake_scan_read_cursor >= fake_scan_record_count ||
-        (fake_scan_read_fail_after >= 0 &&
-         (int)fake_scan_read_cursor >= fake_scan_read_fail_after))
+        (fake_scan_read_fail_after >= 0 && (int)fake_scan_read_cursor >= fake_scan_read_fail_after))
         return ESP_FAIL;
     fake_scan_record_t *source = &fake_scan_records[fake_scan_read_cursor++];
     fake_scan_total_records_read++;
@@ -1694,8 +1692,7 @@ int main(int argc, char **argv)
         tick(false);
         assert(fake_retire_pending && !fake_driver_started && !connected);
         assert(s_view.network_ip[0] == 0 && !quota_portable_service_http_allowed() &&
-               query_calls == queries &&
-               refresh_calls == refreshes);
+               query_calls == queries && refresh_calls == refreshes);
     } else if (!strcmp(argv[1], "http-load-disconnect-gate")) {
         boot();
         ready();
@@ -1704,9 +1701,8 @@ int main(int argc, char **argv)
         unsigned queries = query_calls;
         now_ms += 500;
         tick(false);
-        assert(!disconnect_during_credential_load && !connected &&
-               s_wifi_disconnect_count == 1 && query_calls == queries &&
-               !quota_portable_service_http_allowed());
+        assert(!disconnect_during_credential_load && !connected && s_wifi_disconnect_count == 1 &&
+               query_calls == queries && !quota_portable_service_http_allowed());
     } else if (!strcmp(argv[1], "http-ready-reconnect-expiry")) {
         boot();
         ready();
@@ -1721,8 +1717,7 @@ int main(int argc, char **argv)
         tick(false);
         assert(fake_retire_pending && !fake_driver_started && !connected);
         assert(s_view.network_ip[0] == 0 && !quota_portable_service_http_allowed() &&
-               query_calls == queries &&
-               refresh_calls == refreshes);
+               query_calls == queries && refresh_calls == refreshes);
     } else if (!strcmp(argv[1], "sntp-servers")) {
         boot();
         ready();
@@ -2140,8 +2135,7 @@ int main(int argc, char **argv)
         strcpy(add.password, "saved-password");
         submit_command(&add);
         assert(s_model.network_count == 2 && s_view.setup_active && s_view.setup_ready &&
-               fake_driver_started && fake_driver_mode == WIFI_MODE_APSTA &&
-               !fake_retire_pending);
+               fake_driver_started && fake_driver_mode == WIFI_MODE_APSTA && !fake_retire_pending);
 
         model_unknown = true;
         model_apply_unknown = true;
@@ -2168,8 +2162,7 @@ int main(int argc, char **argv)
         strcpy(settings.request_id, "32345678");
         submit_command(&settings);
         assert(s_model.refresh_seconds == 900 && s_view.setup_active && s_view.setup_ready &&
-               fake_driver_started && fake_driver_mode == WIFI_MODE_APSTA &&
-               !fake_retire_pending);
+               fake_driver_started && fake_driver_mode == WIFI_MODE_APSTA && !fake_retire_pending);
     } else if (!strcmp(argv[1], "login-queue")) {
         boot();
         phone();
@@ -2346,8 +2339,8 @@ int main(int argc, char **argv)
         tick_until_wifi_connects(2);
         assert(fake_scan_record_count == 305 && fake_scan_total_records_read == 305 &&
                wifi_connects == 2 &&
-               !memcmp(wifi_config.sta.ssid,
-                       "01234567890123456789012345678901", sizeof(wifi_config.sta.ssid)));
+               !memcmp(wifi_config.sta.ssid, "01234567890123456789012345678901",
+                       sizeof(wifi_config.sta.ssid)));
     } else if (!strcmp(argv[1], "scan-timeout-cleanup")) {
         seed_model();
         durable_model.network_count = 2;
@@ -2777,9 +2770,8 @@ int main(int argc, char **argv)
         now_ms += 500;
         tick(false);
         const char *error = NULL;
-        assert(s_model.selected_network == 1 &&
-               !strcmp(network_state(0, &error), "failed") && !strcmp(error, "wifi_auth_failed") &&
-               !strcmp(network_state(1, NULL), "ok"));
+        assert(s_model.selected_network == 1 && !strcmp(network_state(0, &error), "failed") &&
+               !strcmp(error, "wifi_auth_failed") && !strcmp(network_state(1, NULL), "ok"));
     } else if (!strcmp(argv[1], "multiwifi-stale-association")) {
         seed_model();
         durable_model.network_count = 2;
