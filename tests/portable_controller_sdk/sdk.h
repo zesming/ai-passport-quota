@@ -8,6 +8,7 @@ typedef int esp_err_t;
 enum {
     ESP_OK = 0,
     ESP_FAIL = 1,
+    ESP_ERR_WIFI_NOT_STARTED = 0x3002,
     MALLOC_CAP_8BIT = 1,
     WIFI_MODE_STA = 1,
     WIFI_MODE_APSTA = 2,
@@ -18,6 +19,8 @@ enum {
     WIFI_REASON_AUTH_FAIL = 202,
     WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT = 15
 };
+typedef int wifi_mode_t;
+enum { WIFI_ALL_CHANNEL_SCAN = 1, WIFI_CONNECT_AP_BY_SIGNAL = 0 };
 typedef struct {
     char version[32];
 } esp_app_desc_t;
@@ -33,6 +36,8 @@ typedef struct {
     struct {
         int authmode;
     } threshold;
+    bool bssid_set;
+    uint8_t channel, scan_method, sort_method, failure_retry_cnt;
 } wifi_sta_config_t;
 typedef struct {
     unsigned char ssid[32], password[64];
@@ -45,7 +50,21 @@ typedef union {
 } wifi_config_t;
 typedef struct {
     unsigned char ssid[33];
+    int8_t rssi;
 } wifi_ap_record_t;
+typedef struct {
+    int scan_type;
+    struct {
+        struct {
+            uint32_t min, max;
+        } active;
+        uint32_t passive;
+    } scan_time;
+    uint8_t *ssid, *bssid;
+    uint8_t channel;
+    bool show_hidden;
+} wifi_scan_config_t;
+enum { WIFI_SCAN_TYPE_ACTIVE = 0 };
 typedef struct {
     uint32_t addr;
 } esp_ip4_addr_t;

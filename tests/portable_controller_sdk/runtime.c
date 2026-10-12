@@ -1,5 +1,6 @@
 #include "quota_portable_service.h"
 #include "quota_direct.h"
+#include "quota_logic.h"
 #include "quota_store.h"
 #include "quota_portal.h"
 #include "sdk.h"
@@ -9,6 +10,32 @@
 static uint64_t now_ms = 100, wall = 1800000000;
 static bool common_locked, usb_hold, connected, network_ok = true, store_fail, cache_fail,
                                                 acquire_fail, credential_fail;
+typedef struct {
+    char ssid[33];
+    bool available, has_ipv4;
+} fake_wifi_network_t;
+static fake_wifi_network_t fake_wifi_networks[QUOTA_PORTABLE_NETWORKS];
+static unsigned fake_wifi_network_count;
+typedef struct {
+    uint8_t ssid[33];
+    int8_t rssi;
+} fake_scan_record_t;
+static fake_scan_record_t fake_scan_records[512];
+static unsigned fake_scan_record_count;
+static unsigned fake_scan_read_cursor;
+static unsigned fake_scan_total_records_read;
+static bool fake_driver_initialized, fake_driver_started, fake_scan_active, fake_scan_complete;
+static bool fake_retire_pending;
+static bool fake_hold_prepare, fake_driver_start_fail, fake_scan_clear_fail;
+static uint64_t fake_wifi_deadline_ms = UINT64_MAX;
+static bool fake_scan_auto_done = true, fake_scan_done_success = true, fake_scan_start_fail;
+static int fake_scan_read_fail_after = -1;
+static uint32_t fake_driver_request_id;
+static wifi_mode_t fake_driver_mode;
+static unsigned fake_scan_starts, fake_scan_clears;
+static bool associated;
+static char associated_ssid[33];
+static void tick(bool sleeping);
 static unsigned config_generation = 1, query_calls, refresh_calls, retry_calls, release_calls,
                 wifi_connects, deepseek_queries;
 static quota_service_view_t public_view;
@@ -121,6 +148,91 @@ esp_err_t esp_wifi_set_mode(int mode)
     return ESP_OK;
 }
 static wifi_config_t wifi_config;
+static void fake_wifi_set_network(const char *ssid, bool available, bool has_ipv4)
+{
+    assert(fake_wifi_network_count < QUOTA_PORTABLE_NETWORKS);
+    fake_wifi_network_t *network = &fake_wifi_networks[fake_wifi_network_count++];
+    snprintf(network->ssid, sizeof(network->ssid), "%s", ssid);
+    network->available = available;
+    network->has_ipv4 = has_ipv4;
+}
+static void fake_scan_set_record(const char *ssid, int8_t rssi)
+{
+    size_t length = strlen(ssid);
+    assert(length <= 32 && fake_scan_record_count < 512);
+    fake_scan_record_t *record = &fake_scan_records[fake_scan_record_count++];
+    memset(record, 0, sizeof(*record));
+    memcpy(record->ssid, ssid, length);
+    record->rssi = rssi;
+}
+static void fake_scan_show(const char *ssid)
+{
+    fake_scan_set_record(ssid, -40);
+}
+static void tick_until_wifi_connects(unsigned target)
+{
+    for (unsigned i = 0; i < 100 && wifi_connects < target; i++) {
+        now_ms += 10;
+        tick(false);
+    }
+    assert(wifi_connects >= target);
+}
+static void tick_until_network_attempt(unsigned target)
+{
+    for (unsigned i = 0; i < 100 && s_network_attempt_index != target; i++) {
+        now_ms += 10;
+        tick(false);
+    }
+    assert(s_network_attempt_index == target);
+}
+static void tick_until_setup_ready(void)
+{
+    for (unsigned i = 0; i < 20 && !public_view.portable.setup_ready; i++) {
+        tick(false);
+        if (public_view.portable.setup_ready)
+            break;
+        uint64_t deadline = quota_portable_service_next_deadline_ms(false);
+        now_ms = deadline != UINT64_MAX && deadline > now_ms ? deadline : now_ms + 10;
+    }
+}
+static void tick_until_portal_starts(unsigned target)
+{
+    for (unsigned i = 0; i < 20 && portal_starts < target; i++) {
+        tick(false);
+        if (portal_starts >= target)
+            break;
+        uint64_t deadline = quota_portable_service_next_deadline_ms(false);
+        now_ms = deadline != UINT64_MAX && deadline > now_ms ? deadline : now_ms + 10;
+    }
+    assert(portal_starts >= target);
+}
+static void wifi_disconnected(uint8_t reason, const char *ssid)
+{
+    size_t length = strnlen(ssid, sizeof(wifi_config.sta.ssid));
+    if (associated && length == strlen(associated_ssid) && !memcmp(associated_ssid, ssid, length)) {
+        associated = false;
+        associated_ssid[0] = 0;
+        connected = false;
+    }
+    quota_portable_service_disconnected(reason, (const uint8_t *)ssid, length);
+}
+static bool fake_wifi_network(const char *ssid, bool *has_ipv4)
+{
+    for (unsigned i = 0; i < fake_wifi_network_count; i++) {
+        if (!strcmp(fake_wifi_networks[i].ssid, ssid)) {
+            *has_ipv4 = fake_wifi_networks[i].has_ipv4;
+            return fake_wifi_networks[i].available;
+        }
+    }
+    *has_ipv4 = true;
+    return network_ok;
+}
+static void fake_wifi_associate(const char *ssid, bool has_ipv4)
+{
+    associated = true;
+    snprintf(associated_ssid, sizeof(associated_ssid), "%s", ssid);
+    connected = has_ipv4;
+}
 esp_err_t esp_wifi_set_config(int iface, const wifi_config_t *value)
 {
     unlocked();
@@ -133,22 +245,30 @@ esp_err_t esp_wifi_connect(void)
     unlocked();
     wifi_connects++;
     /* A password that contains "bad" is refused, as a real access point would. */
-    connected = network_ok && !strstr((const char *)wifi_config.sta.password, "bad");
+    bool has_ipv4 = true;
+    char ssid[sizeof(wifi_config.sta.ssid) + 1] = {0};
+    memcpy(ssid, wifi_config.sta.ssid, sizeof(wifi_config.sta.ssid));
+    associated = fake_wifi_network(ssid, &has_ipv4) &&
+                 !strstr((const char *)wifi_config.sta.password, "bad");
+    snprintf(associated_ssid, sizeof(associated_ssid), "%s", associated ? ssid : "");
+    connected = associated && has_ipv4;
     return ESP_OK;
 }
 esp_err_t esp_wifi_disconnect(void)
 {
     unlocked();
+    associated = false;
+    associated_ssid[0] = 0;
     connected = false;
     return ESP_OK;
 }
 esp_err_t esp_wifi_sta_get_ap_info(wifi_ap_record_t *out)
 {
     unlocked();
-    if (!connected)
+    if (!associated)
         return ESP_FAIL;
     memset(out, 0, sizeof(*out));
-    memcpy(out->ssid, wifi_config.sta.ssid, 32);
+    memcpy(out->ssid, associated_ssid, strlen(associated_ssid));
     return ESP_OK;
 }
 esp_err_t esp_netif_sntp_init(const esp_sntp_config_t *config)
@@ -231,6 +351,7 @@ void quota_store_credential_release(quota_portable_credential_t *value)
     release_calls++;
 }
 static quota_store_read_result_t credential_read_error = QUOTA_STORE_READ_OK;
+static bool disconnect_during_credential_load;
 static quota_store_read_result_t orphan_error = QUOTA_STORE_READ_OK;
 static unsigned orphan_releases;
 quota_store_read_result_t quota_store_release_orphan_credentials(void)
@@ -258,6 +379,10 @@ quota_store_read_result_t quota_store_load_credential_result(uint8_t slot,
     if (!used[slot])
         return QUOTA_STORE_READ_MISSING;
     *out = credentials[slot];
+    if (disconnect_during_credential_load) {
+        disconnect_during_credential_load = false;
+        wifi_disconnected(201, "old-hotspot");
+    }
     return QUOTA_STORE_READ_OK;
 }
 bool quota_store_save_credential(uint8_t slot, const quota_portable_credential_t *in)
@@ -453,13 +578,124 @@ static void usb_open(void)
 bool quota_wifi_start(void)
 {
     unlocked();
+    if (!fake_driver_initialized || fake_driver_start_fail)
+        return false;
+    fake_driver_started = true;
     return true;
 }
 bool quota_wifi_stop(void)
 {
     unlocked();
-    connected = false;
+    quota_wifi_retire_begin();
     return true;
+}
+bool quota_wifi_started(void)
+{
+    return fake_driver_started;
+}
+quota_wifi_result_t quota_wifi_prepare(uint32_t request_id, wifi_mode_t mode)
+{
+    unlocked();
+    if (!request_id)
+        return QUOTA_WIFI_FAILED;
+    if (fake_retire_pending || fake_hold_prepare)
+        return QUOTA_WIFI_WAIT;
+    if (fake_driver_initialized &&
+        (fake_driver_request_id != request_id || fake_driver_mode != mode)) {
+        /* The controller fake completes retirement synchronously. Driver unit tests exercise
+         * the real asynchronous gate and both event fences. */
+        quota_wifi_retire_begin();
+        return QUOTA_WIFI_WAIT;
+    }
+    if (!fake_driver_initialized) {
+        fake_driver_initialized = true;
+        fake_driver_request_id = request_id;
+        fake_driver_mode = mode;
+    }
+    return QUOTA_WIFI_READY;
+}
+void quota_wifi_retire_begin(void)
+{
+    if (fake_retire_pending)
+        return;
+    if (!fake_driver_initialized && !fake_driver_started && !fake_scan_active &&
+        !fake_scan_complete)
+        return;
+    fake_retire_pending = true;
+    fake_driver_started = false;
+    fake_driver_initialized = false;
+    fake_driver_request_id = 0;
+}
+quota_wifi_result_t quota_wifi_retire_poll(void)
+{
+    if (fake_retire_pending) {
+        fake_retire_pending = false;
+        if (fake_scan_active || fake_scan_complete)
+            fake_scan_clears++;
+        fake_scan_active = fake_scan_complete = false;
+        associated = connected = false;
+        associated_ssid[0] = 0;
+    }
+    return QUOTA_WIFI_READY;
+}
+bool quota_wifi_operation_active(uint32_t request_id, wifi_mode_t mode)
+{
+    return request_id && fake_driver_started && fake_driver_request_id == request_id &&
+           fake_driver_mode == mode && !fake_retire_pending;
+}
+uint64_t quota_wifi_next_deadline_ms(bool sleeping)
+{
+    (void)sleeping;
+    return fake_wifi_deadline_ms;
+}
+bool quota_wifi_scan_start(const wifi_scan_config_t *config)
+{
+    unlocked();
+    assert(config && config->scan_type == WIFI_SCAN_TYPE_ACTIVE && config->channel == 0);
+    if (fake_scan_start_fail || !fake_driver_started || fake_driver_mode != WIFI_MODE_STA)
+        return false;
+    fake_scan_starts++;
+    fake_scan_active = true;
+    fake_scan_complete = false;
+    fake_scan_read_cursor = 0;
+    if (fake_scan_auto_done) {
+        fake_scan_active = false;
+        fake_scan_complete = fake_scan_done_success;
+        quota_portable_service_scan_done(fake_scan_done_success);
+    }
+    return true;
+}
+esp_err_t quota_wifi_scan_get_ap_num(uint16_t *number)
+{
+    if (!number || !fake_scan_complete)
+        return ESP_FAIL;
+    *number = (uint16_t)fake_scan_record_count;
+    return ESP_OK;
+}
+esp_err_t quota_wifi_scan_get_ap_record(wifi_ap_record_t *record)
+{
+    if (!record || !fake_scan_complete || fake_scan_read_cursor >= fake_scan_record_count ||
+        (fake_scan_read_fail_after >= 0 && (int)fake_scan_read_cursor >= fake_scan_read_fail_after))
+        return ESP_FAIL;
+    fake_scan_record_t *source = &fake_scan_records[fake_scan_read_cursor++];
+    fake_scan_total_records_read++;
+    memset(record, 0, sizeof(*record));
+    memcpy(record->ssid, source->ssid, sizeof(record->ssid));
+    record->rssi = source->rssi;
+    return ESP_OK;
+}
+esp_err_t quota_wifi_scan_clear_ap_list(void)
+{
+    if (!fake_driver_initialized)
+        return ESP_OK;
+    if (!fake_driver_started)
+        return ESP_ERR_WIFI_NOT_STARTED;
+    fake_scan_clears++;
+    if (fake_scan_clear_fail)
+        return ESP_FAIL;
+    fake_scan_active = fake_scan_complete = false;
+    fake_scan_read_cursor = 0;
+    return ESP_OK;
 }
 static void notify(void)
 {
@@ -595,10 +831,23 @@ static void ready(void)
     tick(false);
     assert(public_view.portable.network_state == QUOTA_PORTABLE_NETWORK_READY);
 }
+static void begin_preferred_fallback_scan(void)
+{
+    tick(false);
+    assert(wifi_connects == 1);
+    now_ms += 25000;
+    tick(false);
+    now_ms += 10;
+    tick(false);
+    assert(fake_scan_starts == 1);
+}
 static void phone(void)
 {
     quota_portable_service_open();
-    tick(false);
+    for (unsigned i = 0; i < 10 && !public_view.portable.setup_ready; i++) {
+        tick(false);
+        now_ms += 500;
+    }
     assert(portal_active && public_view.portable.setup_ready);
 }
 static void submit_command(quota_portable_command_t *command)
@@ -931,7 +1180,7 @@ int main(int argc, char **argv)
         quota_portable_service_open();
         assert(!quota_portable_service_http_allowed());
         assert(!admit(NULL, credentials[0].id, 1));
-        tick(false);
+        tick_until_setup_ready();
         assert(portal_active);
     } else if (!strcmp(argv[1], "typed-read")) {
         credential_read_error = QUOTA_STORE_READ_IO_ERROR;
@@ -1067,7 +1316,7 @@ int main(int argc, char **argv)
         assert(s_validation.active && acquired && s_operation.job_id[0]);
         quota_portable_service_open();
         assert(!quota_portable_service_http_allowed());
-        tick(false);
+        tick_until_setup_ready();
         assert(portal_active && !acquired && s_operation.kind == OP_NONE &&
                durable_model.intent.kind == QUOTA_INTENT_NONE);
         /* The account stays queued, failed, for the next 完成设置. */
@@ -1395,7 +1644,7 @@ int main(int argc, char **argv)
         ready();
         portal_fail = true;
         quota_portable_service_open();
-        tick(false);
+        tick_until_portal_starts(1);
         assert(portal_starts == 1 && s_open && !public_view.portable.setup_active);
         for (int i = 0; i < 1000; i++) {
             if (quota_portable_service_next_deadline_ms(false) > now_ms)
@@ -1409,10 +1658,10 @@ int main(int argc, char **argv)
         tick(false);
         assert(portal_starts == 1);
         now_ms += 1;
-        tick(false);
+        tick_until_portal_starts(2);
         assert(portal_starts == 2 && s_open);
         now_ms += OPEN_RETRY_MS;
-        tick(false);
+        tick_until_portal_starts(3);
         assert(portal_starts == 3 && !s_open);
         assert(quota_portable_service_next_deadline_ms(false) > now_ms);
         now_ms += 60000;
@@ -1420,8 +1669,61 @@ int main(int argc, char **argv)
         assert(portal_starts == 3);
         portal_fail = false;
         quota_portable_service_renew();
-        tick(false);
+        tick_until_portal_starts(4);
         assert(portal_starts == 4 && public_view.portable.setup_active && !s_open);
+    } else if (!strcmp(argv[1], "open-prepare-wait-deadline")) {
+        boot();
+        ready();
+        now_ms = 650;
+        fake_wifi_deadline_ms = 30650;
+        quota_portable_service_open();
+        tick(false); /* STA must retire before the APSTA operation can be admitted. */
+        assert(s_open && s_open_config_pending && s_open_failures == 0);
+        assert(s_view.network_ip[0] == 0);
+        uint64_t deadline = quota_portable_service_next_deadline_ms(false);
+        assert(s_open_retry_at > now_ms && deadline > now_ms && deadline <= 30650);
+        now_ms = s_open_retry_at;
+        tick(false);
+        assert(portal_active && public_view.portable.setup_ready && !s_open &&
+               s_open_failures == 0);
+    } else if (!strcmp(argv[1], "http-ready-disconnect-refresh")) {
+        boot();
+        ready();
+        assert(quota_portable_service_http_allowed() && fake_driver_started && connected);
+        unsigned queries = query_calls;
+        unsigned refreshes = refresh_calls;
+        wifi_disconnected(201, "old-hotspot");
+        quota_portable_service_refresh();
+        now_ms += 500;
+        tick(false);
+        assert(fake_retire_pending && !fake_driver_started && !connected);
+        assert(s_view.network_ip[0] == 0 && !quota_portable_service_http_allowed() &&
+               query_calls == queries && refresh_calls == refreshes);
+    } else if (!strcmp(argv[1], "http-load-disconnect-gate")) {
+        boot();
+        ready();
+        quota_portable_service_refresh();
+        disconnect_during_credential_load = true;
+        unsigned queries = query_calls;
+        now_ms += 500;
+        tick(false);
+        assert(!disconnect_during_credential_load && !connected && s_wifi_disconnect_count == 1 &&
+               query_calls == queries && !quota_portable_service_http_allowed());
+    } else if (!strcmp(argv[1], "http-ready-reconnect-expiry")) {
+        boot();
+        ready();
+        assert(quota_portable_service_http_allowed() && fake_driver_started && connected);
+        s_model.auto_refresh = true;
+        credentials[0].expires_at = wall + 100;
+        s_next_refresh = now_ms + 500;
+        unsigned queries = query_calls;
+        unsigned refreshes = refresh_calls;
+        quota_portable_service_reconnect();
+        now_ms += 500;
+        tick(false);
+        assert(fake_retire_pending && !fake_driver_started && !connected);
+        assert(s_view.network_ip[0] == 0 && !quota_portable_service_http_allowed() &&
+               query_calls == queries && refresh_calls == refreshes);
     } else if (!strcmp(argv[1], "sntp-servers")) {
         boot();
         ready();
@@ -1549,7 +1851,7 @@ int main(int argc, char **argv)
         cJSON_Delete(root);
         now_ms += 500;
         tick(false);
-        quota_portable_service_disconnected(WIFI_REASON_AUTH_FAIL);
+        wifi_disconnected(WIFI_REASON_AUTH_FAIL, (const char *)wifi_config.sta.ssid);
         settle();
         const char *error = NULL;
         assert(!strcmp(network_state(0, &error), "failed") && !strcmp(error, "wifi_auth_failed"));
@@ -1826,6 +2128,47 @@ int main(int argc, char **argv)
         assert(portal.submit(&settings, NULL) == QUOTA_PORTABLE_SUBMIT_CLOSED);
         tick(false);
         assert(!public_view.portable.setup_active);
+    } else if (!strcmp(argv[1], "ap-network-mutation")) {
+        boot();
+        phone();
+        assert(s_view.setup_active && s_view.setup_ready && fake_driver_started &&
+               fake_driver_mode == WIFI_MODE_APSTA &&
+               quota_wifi_operation_active(fake_driver_request_id, WIFI_MODE_APSTA));
+        quota_portable_command_t add = {.op = QUOTA_PORTABLE_OP_NETWORK_SAVE,
+                                        .network_index = UINT8_MAX};
+        strcpy(add.request_id, "12345678");
+        strcpy(add.ssid, "ap-saved");
+        strcpy(add.password, "saved-password");
+        submit_command(&add);
+        assert(s_model.network_count == 2 && s_view.setup_active && s_view.setup_ready &&
+               fake_driver_started && fake_driver_mode == WIFI_MODE_APSTA && !fake_retire_pending);
+
+        model_unknown = true;
+        model_apply_unknown = true;
+        quota_portable_command_t remove = {.op = QUOTA_PORTABLE_OP_NETWORK_REMOVE,
+                                           .network_index = 1};
+        strcpy(remove.request_id, "22345678");
+        submit_command(&remove);
+        assert(s_dirty_model && s_model.network_count == 2 && s_view.setup_active &&
+               s_view.setup_ready && fake_driver_started && fake_driver_mode == WIFI_MODE_APSTA &&
+               !fake_retire_pending);
+        char json[QUOTA_PORTABLE_STATE_BYTES + 1];
+        size_t length = 0;
+        assert(state_json(json, sizeof(json), &length, NULL) && length > 0);
+
+        model_unknown = false;
+        now_ms += 1000;
+        tick(false);
+        assert(!s_dirty_model && s_model.network_count == 1 && s_view.setup_active &&
+               s_view.setup_ready && fake_driver_started && fake_driver_mode == WIFI_MODE_APSTA &&
+               !fake_retire_pending);
+        quota_portable_command_t settings = {.op = QUOTA_PORTABLE_OP_SETTINGS_SAVE,
+                                             .refresh_seconds = 900,
+                                             .screen_timeout_seconds = 120};
+        strcpy(settings.request_id, "32345678");
+        submit_command(&settings);
+        assert(s_model.refresh_seconds == 900 && s_view.setup_active && s_view.setup_ready &&
+               fake_driver_started && fake_driver_mode == WIFI_MODE_APSTA && !fake_retire_pending);
     } else if (!strcmp(argv[1], "login-queue")) {
         boot();
         phone();
@@ -1943,6 +2286,7 @@ int main(int argc, char **argv)
         assert(!quota_portable_validate_pending() && !s_validation.active);
         /* Connecting to it for real makes it ok. */
         ready();
+        assert(fake_scan_starts == 0); /* A successful preferred link does not scan. */
         assert(!strcmp(network_state(0, NULL), "ok") &&
                public_view.portable.saved_network_validation[0] == QUOTA_VALIDATION_OK);
         /* The Passport is refused by the network in use: failed, and fine again once it connects.
@@ -1953,7 +2297,7 @@ int main(int argc, char **argv)
         tick(false);
         now_ms += 500;
         tick(false);
-        quota_portable_service_disconnected(WIFI_REASON_AUTH_FAIL);
+        wifi_disconnected(WIFI_REASON_AUTH_FAIL, (const char *)wifi_config.sta.ssid);
         tick(false);
         const char *error = NULL;
         assert(!strcmp(network_state(0, &error), "failed") && !strcmp(error, "wifi_auth_failed"));
@@ -1967,6 +2311,773 @@ int main(int argc, char **argv)
         }
         assert(!strcmp(network_state(0, &error), "ok") && !error[0] &&
                public_view.portable.failed_items == 0);
+    } else if (!strcmp(argv[1], "scan-rssi-order")) {
+        seed_model();
+        durable_model.network_count = 3;
+        durable_model.selected_network = 0;
+        strcpy(durable_model.networks[0].ssid, "saved-a");
+        strcpy(durable_model.networks[1].ssid, "01234567890123456789012345678901");
+        strcpy(durable_model.networks[2].ssid, "saved-c");
+        strcpy(durable_model.networks[1].password, "password-b");
+        strcpy(durable_model.networks[2].password, "password-c");
+        fake_wifi_set_network("saved-a", false, true);
+        fake_wifi_set_network("01234567890123456789012345678901", false, true);
+        fake_wifi_set_network("saved-c", true, true);
+        fake_scan_set_record("", -1);
+        fake_scan_set_record("unrelated-strong", -5);
+        fake_scan_set_record("01234567890123456789012345678901", -70);
+        for (unsigned i = 0; i < 300; i++) {
+            char noise[32];
+            snprintf(noise, sizeof(noise), "unrelated-%03u", i);
+            fake_scan_set_record(noise, -60);
+        }
+        /* The strongest duplicate appears after more than 255 unrelated results. A full
+         * 32-byte SSID still matches exactly, and its tie with saved-c keeps row order. */
+        fake_scan_set_record("01234567890123456789012345678901", -25);
+        fake_scan_set_record("saved-c", -25);
+        boot();
+        tick(false);
+        assert(wifi_connects == 1 && !strcmp((const char *)wifi_config.sta.ssid, "saved-a"));
+        now_ms += 25000;
+        tick(false);
+        /* The strongest observation is accumulated across the full list. The late 32-byte
+         * saved-b record ties saved-c, so stable row ordering tries saved-b first. */
+        tick_until_wifi_connects(2);
+        assert(fake_scan_record_count == 305 && fake_scan_total_records_read == 305 &&
+               wifi_connects == 2 &&
+               !memcmp(wifi_config.sta.ssid, "01234567890123456789012345678901",
+                       sizeof(wifi_config.sta.ssid)));
+    } else if (!strcmp(argv[1], "scan-start-failure") || !strcmp(argv[1], "scan-clear-failure")) {
+        seed_model();
+        durable_model.network_count = 2;
+        strcpy(durable_model.networks[1].ssid, "saved-b");
+        strcpy(durable_model.networks[1].password, "password-b");
+        fake_wifi_set_network("old-hotspot", false, true);
+        fake_wifi_set_network("saved-b", true, true);
+        fake_scan_set_record("saved-b", -40);
+        boot();
+        tick(false);
+        assert(wifi_connects == 1);
+        now_ms += 25000;
+        tick(false); /* The preferred attempt retires before a new scan admission. */
+        bool fail_start = !strcmp(argv[1], "scan-start-failure");
+        fake_driver_start_fail = fail_start;
+        fake_scan_clear_fail = !fail_start;
+        now_ms += 10;
+        tick(false);
+        assert(s_network_round_stage == NETWORK_ROUND_TERMINAL && fake_retire_pending &&
+               !strcmp(s_view.network_error, "wifi_no_available") && fake_scan_starts == 0 &&
+               wifi_connects == 1 && fake_scan_clears == (fail_start ? 0u : 1u));
+        tick(false);
+        assert(!fake_retire_pending && !fake_driver_initialized && !fake_driver_started &&
+               !fake_scan_active && !fake_scan_complete && fake_scan_starts == 0 &&
+               wifi_connects == 1 && s_network_round_stage == NETWORK_ROUND_TERMINAL);
+    } else if (!strcmp(argv[1], "scan-timeout-cleanup")) {
+        seed_model();
+        durable_model.network_count = 2;
+        strcpy(durable_model.networks[1].ssid, "saved-b");
+        strcpy(durable_model.networks[1].password, "password-b");
+        fake_wifi_set_network("old-hotspot", false, true);
+        fake_wifi_set_network("saved-b", true, true);
+        fake_scan_auto_done = false;
+        boot();
+        begin_preferred_fallback_scan();
+        assert(fake_scan_active && s_network_round_stage == NETWORK_ROUND_SCAN_WAIT);
+        now_ms += 5000;
+        tick(false);
+        assert(s_network_round_stage == NETWORK_ROUND_TERMINAL && fake_retire_pending &&
+               !strcmp(s_view.network_error, "wifi_no_available"));
+        quota_portable_service_scan_done(true); /* A stale service latch cannot revive the round. */
+        tick(false);
+        assert(!fake_retire_pending && !fake_scan_active && fake_scan_starts == 1 &&
+               fake_scan_clears >= 2 && s_network_round_stage == NETWORK_ROUND_TERMINAL);
+    } else if (!strcmp(argv[1], "scan-read-failure-cleanup")) {
+        seed_model();
+        durable_model.network_count = 2;
+        strcpy(durable_model.networks[1].ssid, "saved-b");
+        strcpy(durable_model.networks[1].password, "password-b");
+        fake_wifi_set_network("old-hotspot", false, true);
+        fake_wifi_set_network("saved-b", true, true);
+        fake_scan_set_record("saved-b", -40);
+        fake_scan_read_fail_after = 0;
+        boot();
+        begin_preferred_fallback_scan();
+        tick(false); /* Accept SCAN_DONE, fail its first record read, and retire the list. */
+        assert(s_network_round_stage == NETWORK_ROUND_TERMINAL && fake_retire_pending &&
+               !strcmp(s_view.network_error, "wifi_no_available"));
+        tick(false);
+        assert(!fake_retire_pending && fake_scan_starts == 1 && fake_scan_clears >= 2 &&
+               s_scan_candidate_count == 0 && s_network_round_stage == NETWORK_ROUND_TERMINAL);
+    } else if (!strcmp(argv[1], "scan-sleep-resume")) {
+        seed_model();
+        durable_model.network_count = 2;
+        durable_model.screen_timeout_seconds = 30;
+        strcpy(durable_model.networks[1].ssid, "saved-b");
+        strcpy(durable_model.networks[1].password, "password-b");
+        fake_wifi_set_network("old-hotspot", false, true);
+        fake_wifi_set_network("saved-b", true, true);
+        fake_scan_auto_done = false;
+        boot();
+        quota_display_state_t display = {.last_input_ms = now_ms};
+        for (unsigned i = 0; i < 100 && !fake_scan_active; i++) {
+            now_ms += 500;
+            quota_display_tick(&display, now_ms, public_view.screen_timeout_seconds, false);
+            tick(display.sleeping);
+        }
+        assert(fake_scan_active && fake_scan_starts == 1 && !display.sleeping);
+        for (unsigned i = 0; i < 20 && !display.sleeping; i++) {
+            now_ms += 500;
+            quota_display_tick(&display, now_ms, public_view.screen_timeout_seconds, false);
+            tick(display.sleeping);
+        }
+        assert(display.sleeping && fake_scan_starts == 1 && fake_retire_pending &&
+               s_network_round_stage == NETWORK_ROUND_SCAN_PREPARE);
+        now_ms += 500;
+        quota_display_tick(&display, now_ms, public_view.screen_timeout_seconds, false);
+        tick(display.sleeping); /* Retire and clear results without starting new work asleep. */
+        assert(fake_scan_starts == 1 && !fake_scan_active &&
+               s_network_round_stage == NETWORK_ROUND_SCAN_PREPARE);
+        assert(!quota_display_handle_key(&display, now_ms, QUOTA_KEY_PRESS, false));
+        quota_display_tick(&display, now_ms, public_view.screen_timeout_seconds, false);
+        tick(display.sleeping);
+        assert(!display.sleeping && fake_scan_starts == 2 && fake_scan_active &&
+               s_network_round_stage == NETWORK_ROUND_SCAN_WAIT && !s_scan_visible_mask);
+    } else if (!strcmp(argv[1], "multiwifi-fallback")) {
+        seed_model();
+        durable_model.network_count = 3;
+        durable_model.selected_network = 0;
+        strcpy(durable_model.networks[0].ssid, "saved-a");
+        strcpy(durable_model.networks[1].ssid, "saved-b");
+        strcpy(durable_model.networks[2].ssid, "saved-c");
+        strcpy(durable_model.networks[1].password, "password-b");
+        strcpy(durable_model.networks[2].password, "password-c");
+        fake_wifi_set_network("saved-a", false, true);
+        fake_wifi_set_network("saved-b", false, true);
+        fake_wifi_set_network("saved-c", true, true);
+        fake_scan_show("saved-b");
+        fake_scan_show("saved-c");
+        uint64_t initial_sequence = durable_sequence;
+        boot();
+        tick(false);
+        assert(wifi_connects == 1 && !strcmp((const char *)wifi_config.sta.ssid, "saved-a") &&
+               !associated && !connected);
+        now_ms += 500;
+        tick(false);
+        assert(wifi_connects == 1 && !associated && !connected);
+        now_ms += 25000;
+        tick(false);
+        tick_until_wifi_connects(2);
+        assert(wifi_connects == 2 && !strcmp((const char *)wifi_config.sta.ssid, "saved-b") &&
+               !associated && !connected);
+        now_ms += 25000;
+        tick(false);
+        tick_until_wifi_connects(3);
+        assert(wifi_connects == 3 && !strcmp((const char *)wifi_config.sta.ssid, "saved-c") &&
+               associated && connected);
+        sntp_fail = true;
+        now_ms += 500;
+        tick(false);
+        assert(s_network_attempt_index == UINT8_MAX && s_model.selected_network == 2 &&
+               durable_model.selected_network == 2 && durable_sequence == initial_sequence + 1 &&
+               !strcmp(network_state(2, NULL), "ok") && public_view.portable.failed_items == 0);
+        unsigned connects = wifi_connects;
+        for (unsigned i = 0; i < 3; i++) {
+            now_ms += 30000;
+            tick(false);
+        }
+        assert(connected && wifi_connects == connects && durable_sequence == initial_sequence + 1);
+        uint64_t refresh_deadline = s_next_refresh;
+        tick(true);
+        assert(wifi_connects == connects && s_next_refresh == refresh_deadline &&
+               public_view.portable.network_state == QUOTA_PORTABLE_NETWORK_OFF);
+        tick(false);
+        assert(wifi_connects == connects + 1 && s_model.selected_network == 2 &&
+               !strcmp((const char *)wifi_config.sta.ssid, "saved-c"));
+        now_ms += 500;
+        tick(false);
+        assert(connected && s_next_refresh == refresh_deadline &&
+               durable_sequence == initial_sequence + 1);
+        quota_portable_service_reconnect();
+        tick(false);
+        tick_until_wifi_connects(connects + 2);
+        assert(wifi_connects == connects + 2 &&
+               !strcmp((const char *)wifi_config.sta.ssid, "saved-c"));
+    } else if (!strcmp(argv[1], "multiwifi-sleep-resume")) {
+        seed_model();
+        durable_model.network_count = 3;
+        durable_model.selected_network = 0;
+        durable_model.screen_timeout_seconds = 30;
+        strcpy(durable_model.networks[1].ssid, "saved-b");
+        strcpy(durable_model.networks[1].password, "password-b");
+        strcpy(durable_model.networks[2].ssid, "saved-c");
+        strcpy(durable_model.networks[2].password, "password-c");
+        fake_wifi_set_network("old-hotspot", false, true);
+        fake_wifi_set_network("saved-b", false, true);
+        fake_wifi_set_network("saved-c", true, true);
+        fake_scan_show("saved-b");
+        fake_scan_show("saved-c");
+        sntp_fail = true;
+        boot();
+        quota_display_state_t display = {.last_input_ms = now_ms};
+        quota_display_tick(&display, now_ms, public_view.screen_timeout_seconds, false);
+        tick(display.sleeping);
+        for (unsigned i = 0; i < 50; i++) {
+            now_ms += 500;
+            quota_display_tick(&display, now_ms, public_view.screen_timeout_seconds, false);
+            tick(display.sleeping);
+        }
+        tick_until_wifi_connects(2);
+        assert(!display.sleeping && s_network_attempt_index == 1 && wifi_connects == 2 &&
+               s_network_tried == 3 && !strcmp((const char *)wifi_config.sta.ssid, "saved-b"));
+        for (unsigned i = 0; i < 10; i++) {
+            now_ms += 500;
+            quota_display_tick(&display, now_ms, public_view.screen_timeout_seconds, false);
+            tick(display.sleeping);
+        }
+        assert(display.sleeping && s_network_attempt_index == 1 && s_network_tried == 3 &&
+               wifi_connects == 2 &&
+               public_view.portable.network_state == QUOTA_PORTABLE_NETWORK_OFF);
+        now_ms += 30000;
+        assert(!quota_display_handle_key(&display, now_ms, QUOTA_KEY_PRESS, false));
+        quota_display_tick(&display, now_ms, public_view.screen_timeout_seconds, false);
+        tick(display.sleeping);
+        tick_until_wifi_connects(3);
+        assert(!display.sleeping && s_network_attempt_index == 1 && wifi_connects == 3 &&
+               !strcmp((const char *)wifi_config.sta.ssid, "saved-b"));
+        for (unsigned i = 0; i < 40; i++) {
+            now_ms += 500;
+            quota_display_tick(&display, now_ms, public_view.screen_timeout_seconds, false);
+            tick(display.sleeping);
+        }
+        for (unsigned i = 0; i < 4; i++) {
+            now_ms += 500;
+            quota_display_tick(&display, now_ms, public_view.screen_timeout_seconds, false);
+            tick(display.sleeping);
+        }
+        assert(!display.sleeping && wifi_connects == 4 &&
+               !strcmp((const char *)wifi_config.sta.ssid, "saved-c") &&
+               (s_network_attempt_index == 2 ||
+                (s_model.selected_network == 2 && s_connected_network_index == 2 && connected)));
+        now_ms += 500;
+        quota_display_tick(&display, now_ms, public_view.screen_timeout_seconds, false);
+        tick(display.sleeping);
+        assert(s_model.selected_network == 2 && durable_model.selected_network == 2 && connected);
+        for (unsigned i = 0; i < 19; i++) {
+            now_ms += 500;
+            quota_display_tick(&display, now_ms, public_view.screen_timeout_seconds, false);
+            tick(display.sleeping);
+        }
+        assert(display.sleeping && wifi_connects == 4 &&
+               public_view.portable.network_state == QUOTA_PORTABLE_NETWORK_OFF);
+        now_ms += 30000;
+        assert(!quota_display_handle_key(&display, now_ms, QUOTA_KEY_PRESS, false));
+        quota_display_tick(&display, now_ms, public_view.screen_timeout_seconds, false);
+        tick(display.sleeping);
+        assert(!display.sleeping && wifi_connects == 5 &&
+               !strcmp((const char *)wifi_config.sta.ssid, "saved-c"));
+    } else if (!strcmp(argv[1], "sleep-first-prepare-wait-budget")) {
+        seed_model();
+        durable_model.network_count = 2;
+        durable_model.selected_network = 0;
+        strcpy(durable_model.networks[0].ssid, "saved-a");
+        strcpy(durable_model.networks[1].ssid, "saved-b");
+        fake_wifi_set_network("saved-a", false, true);
+        fake_wifi_set_network("saved-b", false, true);
+        fake_scan_show("saved-b");
+        boot();
+        begin_preferred_fallback_scan();
+        fake_hold_prepare = true;
+        for (unsigned i = 0; i < 20 && s_network_attempt_index != 1; i++) {
+            now_ms += 10;
+            tick(false);
+        }
+        assert(s_network_attempt_index == 1 && s_network_round_stage == NETWORK_ROUND_CANDIDATES &&
+               !s_connect_at && !s_retry_at && wifi_connects == 1);
+        tick(true);
+        assert(s_network_attempt_paused && s_network_paused_remaining_ms == NETWORK_TIMEOUT_MS);
+
+        fake_hold_prepare = false;
+        now_ms += 500;
+        tick(false);
+        assert(s_network_attempt_index == 1 && s_connect_at && wifi_connects == 2 &&
+               s_retry_at - now_ms == NETWORK_TIMEOUT_MS);
+
+        now_ms = s_retry_at;
+        tick(true);
+        assert(s_network_attempt_paused && s_network_paused_remaining_ms == 0);
+        now_ms += 500;
+        tick(false);
+        assert(wifi_connects == 3 && s_network_attempt_index == UINT8_MAX);
+    } else if (!strcmp(argv[1], "directory-change-clears-resume-budget")) {
+        seed_model();
+        durable_model.network_count = 3;
+        durable_model.selected_network = 0;
+        strcpy(durable_model.networks[0].ssid, "saved-a");
+        strcpy(durable_model.networks[1].ssid, "saved-b");
+        strcpy(durable_model.networks[2].ssid, "saved-c");
+        strcpy(durable_model.networks[2].password, "password-c");
+        fake_wifi_set_network("saved-a", false, true);
+        fake_wifi_set_network("saved-b", false, true);
+        fake_wifi_set_network("saved-c", false, true);
+        fake_scan_show("saved-b");
+        boot();
+        begin_preferred_fallback_scan();
+        tick_until_wifi_connects(2);
+        assert(s_network_attempt_index == 1 && wifi_connects == 2);
+        now_ms += 20000;
+        tick(false);
+        uint64_t remaining = s_retry_at - now_ms;
+        assert(remaining > 0 && remaining <= 5000);
+        tick(true);
+        assert(s_network_attempt_paused && s_network_paused_remaining_ms == remaining);
+
+        fake_hold_prepare = true;
+        now_ms += 500;
+        tick(false);
+        assert(s_resume_budget_pending && s_resume_budget_ms == remaining &&
+               s_network_attempt_index == 1 && wifi_connects == 2);
+
+        usb_open();
+        model_unknown = true;
+        quota_portable_command_t change = {.op = QUOTA_PORTABLE_OP_NETWORK_SAVE,
+                                           .network_index = 2};
+        strcpy(change.request_id, "12345678");
+        strcpy(change.ssid, "saved-c");
+        strcpy(change.password, "changed-password-c");
+        submit_usb(&change);
+        assert(s_dirty_model && s_resume_budget_pending && s_resume_budget_ms == remaining &&
+               !strcmp(s_model.networks[2].password, "password-c"));
+
+        now_ms += 1000;
+        tick(false);
+        assert(s_dirty_model && s_resume_budget_pending && s_resume_budget_ms == remaining);
+        model_apply_unknown = true;
+        model_unknown = true;
+        fake_hold_prepare = false;
+        now_ms = s_storage_retry_at;
+        tick(false);
+        assert(!s_dirty_model && !strcmp(s_model.networks[2].password, "changed-password-c"));
+        assert(!s_resume_budget_pending && !s_resume_budget_ms && !s_network_attempt_paused &&
+               !s_network_paused_remaining_ms);
+        assert(s_network_attempt_index == 0 && s_connect_at && wifi_connects == 3 &&
+               s_retry_at - now_ms == NETWORK_TIMEOUT_MS &&
+               !strcmp((const char *)wifi_config.sta.ssid, "saved-a"));
+    } else if (!strcmp(argv[1], "sleep-resume-budget-prepare-wait")) {
+        seed_model();
+        durable_model.network_count = 3;
+        durable_model.selected_network = 0;
+        strcpy(durable_model.networks[0].ssid, "saved-a");
+        strcpy(durable_model.networks[1].ssid, "saved-b");
+        strcpy(durable_model.networks[2].ssid, "saved-c");
+        fake_wifi_set_network("saved-a", false, true);
+        fake_wifi_set_network("saved-b", false, true);
+        fake_wifi_set_network("saved-c", false, true);
+        fake_scan_show("saved-b");
+        fake_scan_show("saved-c");
+        sntp_fail = true;
+        boot();
+        tick(false);
+        now_ms += 25000;
+        tick(false);
+        tick_until_wifi_connects(2); /* saved-b is the first RSSI-ranked candidate. */
+        assert(s_network_attempt_index == 1 && s_network_round_stage == NETWORK_ROUND_CANDIDATES);
+        now_ms += 25000;
+        tick(false); /* B budget expires. */
+        tick(false);
+        tick_until_wifi_connects(3); /* saved-c is the last candidate in this round. */
+        assert(s_network_attempt_index == 2 && s_scan_candidate_cursor == 2 &&
+               s_network_round_stage == NETWORK_ROUND_CANDIDATES);
+        now_ms += 10000;
+        tick(false);
+        uint64_t remaining = s_retry_at - now_ms;
+        assert(remaining >= 14000 && remaining <= 15000);
+        uint64_t refresh_deadline = s_next_refresh;
+        tick(true);
+        assert(s_network_attempt_paused && s_network_paused_remaining_ms == remaining &&
+               s_next_refresh == refresh_deadline);
+
+        fake_hold_prepare = true;
+        fake_wifi_deadline_ms = now_ms + 1234;
+        now_ms += 500;
+        tick(false); /* Wake resumes the request, but the driver has not admitted it yet. */
+        assert(s_resume_budget_pending && s_resume_budget_ms == remaining &&
+               s_network_attempt_index == 2 && wifi_connects == 3);
+        uint64_t prepare_deadline = quota_portable_service_next_deadline_ms(false);
+        assert(prepare_deadline > now_ms && prepare_deadline <= fake_wifi_deadline_ms);
+        fake_wifi_deadline_ms = UINT64_MAX;
+        now_ms += 50;
+        tick(true); /* A second short sleep must keep the untouched 15-second budget. */
+        assert(s_network_attempt_paused && s_network_paused_remaining_ms == remaining &&
+               s_next_refresh == refresh_deadline);
+
+        fake_hold_prepare = false;
+        now_ms += 500;
+        tick(false);
+        assert(wifi_connects == 4 && s_network_attempt_index == 2 &&
+               s_network_round_stage == NETWORK_ROUND_CANDIDATES && s_retry_at > now_ms &&
+               s_retry_at - now_ms == remaining && s_next_refresh == refresh_deadline);
+        now_ms += remaining - 1;
+        tick(false);
+        assert(s_network_attempt_index == 2 && s_network_round_stage == NETWORK_ROUND_CANDIDATES &&
+               s_next_refresh == refresh_deadline);
+        now_ms += 1;
+        tick(false);
+        assert(s_network_attempt_index == UINT8_MAX &&
+               s_network_round_stage == NETWORK_ROUND_CANDIDATES);
+        tick(false);
+        assert(s_network_round_stage == NETWORK_ROUND_TERMINAL &&
+               !strcmp(s_view.network_error, "wifi_no_available") &&
+               s_next_refresh == refresh_deadline);
+    } else if (!strcmp(argv[1], "multiwifi-ip-timeout")) {
+        seed_model();
+        durable_model.network_count = 2;
+        strcpy(durable_model.networks[1].ssid, "saved-b");
+        strcpy(durable_model.networks[1].password, "password-b");
+        fake_wifi_set_network("old-hotspot", true, false);
+        fake_wifi_set_network("saved-b", true, true);
+        fake_scan_show("saved-b");
+        boot();
+        tick(false);
+        assert(wifi_connects == 1 && associated && !connected &&
+               !strcmp(associated_ssid, "old-hotspot"));
+        now_ms += 500;
+        tick(false);
+        assert(wifi_connects == 1 && s_network_attempt_index == 0 && associated && !connected);
+        now_ms += 25000;
+        tick(false);
+        tick_until_network_attempt(1);
+        assert(wifi_connects == 2 && s_network_attempt_index == 1 && associated && connected &&
+               !strcmp((const char *)wifi_config.sta.ssid, "saved-b"));
+        now_ms += 500;
+        tick(false);
+        assert(s_model.selected_network == 1 && durable_model.selected_network == 1);
+    } else if (!strcmp(argv[1], "multiwifi-round-backoff")) {
+        seed_model();
+        durable_model.network_count = 2;
+        strcpy(durable_model.networks[1].ssid, "saved-b");
+        strcpy(durable_model.networks[1].password, "password-b");
+        fake_wifi_set_network("old-hotspot", false, true);
+        fake_wifi_set_network("saved-b", false, true);
+        fake_scan_show("saved-b");
+        boot();
+        tick(false);
+        assert(wifi_connects == 1 && !strcmp((const char *)wifi_config.sta.ssid, "old-hotspot"));
+        now_ms += 25000;
+        tick(false);
+        tick_until_network_attempt(1);
+        assert(wifi_connects == 2 && !strcmp((const char *)wifi_config.sta.ssid, "saved-b"));
+        now_ms += 25000;
+        tick(false);
+        tick(false);
+        assert(wifi_connects == 2 && s_network_round_retry_at == now_ms + 30000);
+        now_ms += 29999;
+        tick(false);
+        assert(wifi_connects == 2);
+        now_ms++;
+        tick(false);
+        assert(wifi_connects == 3 && !strcmp((const char *)wifi_config.sta.ssid, "old-hotspot"));
+    } else if (!strcmp(argv[1], "multiwifi-late-disconnect")) {
+        seed_model();
+        durable_model.network_count = 2;
+        strcpy(durable_model.networks[0].password, "bad-password");
+        strcpy(durable_model.networks[1].ssid, "saved-b");
+        strcpy(durable_model.networks[1].password, "password-b");
+        fake_wifi_set_network("old-hotspot", true, true);
+        fake_wifi_set_network("saved-b", true, true);
+        fake_scan_show("saved-b");
+        boot();
+        tick(false);
+        assert(wifi_connects == 1 && !associated &&
+               !strcmp((const char *)wifi_config.sta.ssid, "old-hotspot"));
+        wifi_disconnected(WIFI_REASON_AUTH_FAIL, "old-hotspot");
+        now_ms += 500;
+        tick(false);
+        tick_until_network_attempt(1);
+        assert(s_network_attempt_index == 1 && associated && connected &&
+               !strcmp((const char *)wifi_config.sta.ssid, "saved-b"));
+        wifi_disconnected(WIFI_REASON_AUTH_FAIL, "old-hotspot");
+        assert(!s_disconnect_reason && associated && connected &&
+               !strcmp(associated_ssid, "saved-b"));
+        now_ms += 500;
+        tick(false);
+        const char *error = NULL;
+        assert(s_model.selected_network == 1 && !strcmp(network_state(0, &error), "failed") &&
+               !strcmp(error, "wifi_auth_failed") && !strcmp(network_state(1, NULL), "ok"));
+    } else if (!strcmp(argv[1], "multiwifi-stale-association")) {
+        seed_model();
+        durable_model.network_count = 2;
+        strcpy(durable_model.networks[1].ssid, "saved-b");
+        strcpy(durable_model.networks[1].password, "password-b");
+        fake_wifi_set_network("old-hotspot", false, true);
+        fake_wifi_set_network("saved-b", true, true);
+        fake_scan_show("saved-b");
+        boot();
+        tick(false);
+        now_ms += 25000;
+        tick(false);
+        tick_until_wifi_connects(2);
+        assert(s_network_attempt_index == 1 && connected &&
+               !strcmp((const char *)wifi_config.sta.ssid, "saved-b"));
+        fake_wifi_associate("old-hotspot", true); /* A late event restores A's stale AP/IP view. */
+        now_ms += 500;
+        tick(false);
+        assert(s_network_attempt_index == 1 && s_connected_network_index == UINT8_MAX &&
+               s_model.selected_network == 0 && associated && connected &&
+               !strcmp(associated_ssid, "old-hotspot"));
+        fake_wifi_associate("saved-b", true);
+        now_ms += 500;
+        tick(false);
+        assert(s_model.selected_network == 1 && durable_model.selected_network == 1);
+    } else if (!strcmp(argv[1], "multiwifi-environment-change")) {
+        seed_model();
+        durable_model.network_count = 2;
+        strcpy(durable_model.networks[1].ssid, "saved-b");
+        strcpy(durable_model.networks[1].password, "password-b");
+        fake_wifi_set_network("old-hotspot", true, true);
+        fake_wifi_set_network("saved-b", true, true);
+        fake_scan_show("saved-b");
+        boot();
+        ready();
+        assert(s_model.selected_network == 0 && s_connected_network_index == 0 && connected);
+        fake_wifi_networks[0].available = false; /* Previously successful AP left the area. */
+        wifi_disconnected(9, "old-hotspot");
+        now_ms += 500;
+        tick(false);
+        tick_until_wifi_connects(2);
+        assert(s_network_attempt_index == 0 && wifi_connects == 2 &&
+               !strcmp((const char *)wifi_config.sta.ssid, "old-hotspot"));
+        now_ms += 25000;
+        tick(false);
+        tick_until_network_attempt(1);
+        assert(s_network_attempt_index == 1 && wifi_connects == 3 && associated && connected &&
+               !strcmp((const char *)wifi_config.sta.ssid, "saved-b"));
+        now_ms += 500;
+        tick(false);
+        assert(s_model.selected_network == 1 && durable_model.selected_network == 1 &&
+               s_connected_network_index == 1);
+    } else if (!strcmp(argv[1], "staged-fallback-unknown")) {
+        seed_model();
+        durable_model.network_count = 2;
+        strcpy(durable_model.networks[1].ssid, "saved-b");
+        strcpy(durable_model.networks[1].password, "password-b");
+        fake_wifi_set_network("old-hotspot", false, true);
+        fake_wifi_set_network("saved-b", true, true);
+        fake_scan_show("saved-b");
+        uint64_t initial_sequence = durable_sequence;
+        boot();
+        usb_open();
+        quota_portable_command_t net = {.op = QUOTA_PORTABLE_OP_NETWORK_SAVE, .network_index = 0};
+        strcpy(net.request_id, "12345678");
+        strcpy(net.ssid, "old-hotspot");
+        strcpy(net.password, "bad-password");
+        submit_usb(&net);
+        quota_portable_command_t validate = {.op = QUOTA_PORTABLE_OP_VALIDATE};
+        strcpy(validate.request_id, "22345678");
+        submit_usb(&validate);
+        now_ms += 500;
+        tick(false);
+        assert(s_candidate_pending &&
+               !strcmp((const char *)wifi_config.sta.password, "bad-password"));
+        wifi_disconnected(WIFI_REASON_AUTH_FAIL, "old-hotspot");
+        now_ms += 500;
+        tick(false);
+        assert(!s_candidate_pending && s_staged.present &&
+               !strcmp(network_state(0, NULL), "failed"));
+        now_ms += 500;
+        tick(false);
+        assert(s_network_attempt_index == 0 &&
+               !strcmp((const char *)wifi_config.sta.password, "password"));
+        now_ms += 25000;
+        tick(false);
+        tick_until_wifi_connects(3);
+        tick_until_network_attempt(1);
+        assert(s_network_attempt_index == 1 && associated && connected &&
+               !strcmp((const char *)wifi_config.sta.ssid, "saved-b"));
+        model_unknown = true;
+        model_apply_unknown = true;
+        now_ms += 500;
+        tick(false);
+        assert(s_dirty_model && s_staged.present && s_model.selected_network == 0 &&
+               s_network_selection.kind == NETWORK_SELECTION_NORMAL &&
+               durable_model.selected_network == 1 && durable_sequence == initial_sequence + 1 &&
+               !quota_portable_service_http_allowed());
+        unsigned connects = wifi_connects;
+        model_unknown = false;
+        now_ms += 1000;
+        tick(true);
+        const char *error = NULL;
+        assert(!s_dirty_model && !s_staged.present && s_model.selected_network == 1 &&
+               durable_model.selected_network == 1 && durable_sequence == initial_sequence + 1 &&
+               wifi_connects == connects &&
+               !strcmp(durable_model.networks[0].password, "bad-password") &&
+               !strcmp(network_state(0, &error), "failed") && !strcmp(error, "wifi_auth_failed") &&
+               !strcmp(network_state(1, NULL), "ok"));
+    } else if (!strcmp(argv[1], "network-index-unknown")) {
+        seed_model();
+        durable_model.network_count = 3;
+        durable_model.selected_network = 2;
+        strcpy(durable_model.networks[1].ssid, "saved-b");
+        strcpy(durable_model.networks[1].password, "password-b");
+        strcpy(durable_model.networks[2].ssid, "saved-c");
+        strcpy(durable_model.networks[2].password, "password-c");
+        fake_wifi_set_network("old-hotspot", true, true);
+        fake_wifi_set_network("saved-b", true, true);
+        fake_wifi_set_network("saved-c", false, true);
+        boot();
+        tick(false);
+        assert(s_network_attempt_index == 2 && s_network_tried == (1u << 2) &&
+               !strcmp((const char *)wifi_config.sta.ssid, "saved-c"));
+        usb_open();
+        model_unknown = true;
+        quota_portable_command_t remove = {.op = QUOTA_PORTABLE_OP_NETWORK_REMOVE,
+                                           .network_index = 0};
+        strcpy(remove.request_id, "12345678");
+        submit_usb(&remove);
+        assert(s_dirty_model && s_model.network_count == 3 && s_model.selected_network == 2 &&
+               s_network_attempt_index == 2 && s_network_tried == (1u << 2));
+        model_unknown = false;
+        now_ms += 1000;
+        tick(false);
+        assert(!s_dirty_model && s_model.network_count == 2 && s_model.selected_network == 1 &&
+               s_network_attempt_index == 1 && s_network_tried == (1u << 1) &&
+               !strcmp(s_model.networks[1].ssid, "saved-c") &&
+               !strcmp((const char *)wifi_config.sta.ssid, "saved-c"));
+    } else if (!strcmp(argv[1], "staged-duplicate-settings")) {
+        seed_model();
+        durable_model.network_count = 3;
+        durable_model.selected_network = 1;
+        strcpy(durable_model.networks[1].ssid, durable_model.networks[0].ssid);
+        strcpy(durable_model.networks[1].password, durable_model.networks[0].password);
+        strcpy(durable_model.networks[2].ssid, "saved-c");
+        strcpy(durable_model.networks[2].password, "password-c");
+        boot();
+        usb_open();
+        quota_portable_command_t net = {.op = QUOTA_PORTABLE_OP_NETWORK_SAVE, .network_index = 1};
+        strcpy(net.request_id, "12345678");
+        strcpy(net.ssid, "old-hotspot");
+        strcpy(net.password, "staged-password");
+        submit_usb(&net);
+        assert(s_staged.present && s_staged.index == 1);
+        quota_portable_command_t settings = {.op = QUOTA_PORTABLE_OP_SETTINGS_SAVE,
+                                             .refresh_seconds = 900,
+                                             .screen_timeout_seconds = 120};
+        strcpy(settings.request_id, "22345678");
+        submit_usb(&settings);
+        assert(s_model.refresh_seconds == 900 && s_staged.present && s_staged.index == 1 &&
+               !strcmp(s_staged.network.password, "staged-password"));
+    } else if (!strcmp(argv[1], "staged-duplicate-remove-before-unknown")) {
+        seed_model();
+        network_ok = false;
+        durable_model.network_count = 3;
+        durable_model.selected_network = 2;
+        strcpy(durable_model.networks[1].ssid, durable_model.networks[0].ssid);
+        strcpy(durable_model.networks[1].password, durable_model.networks[0].password);
+        strcpy(durable_model.networks[2].ssid, durable_model.networks[0].ssid);
+        strcpy(durable_model.networks[2].password, durable_model.networks[0].password);
+        boot();
+        usb_open();
+        quota_portable_command_t net = {.op = QUOTA_PORTABLE_OP_NETWORK_SAVE, .network_index = 2};
+        strcpy(net.request_id, "12345678");
+        strcpy(net.ssid, "old-hotspot");
+        strcpy(net.password, "staged-password");
+        submit_usb(&net);
+        assert(s_staged.present && s_staged.index == 2 && s_network_attempt_index == 2);
+        model_unknown = true;
+        quota_portable_command_t remove = {.op = QUOTA_PORTABLE_OP_NETWORK_REMOVE,
+                                           .network_index = 0};
+        strcpy(remove.request_id, "22345678");
+        submit_usb(&remove);
+        assert(s_dirty_model && s_model.network_count == 3 && s_staged.index == 2 &&
+               s_network_attempt_index == 2);
+        model_unknown = false;
+        now_ms += 1000;
+        tick(false);
+        assert(!s_dirty_model && s_model.network_count == 2 && s_staged.present &&
+               s_staged.index == 1 && s_network_attempt_index == 1 &&
+               !strcmp(s_staged.network.password, "staged-password"));
+    } else if (!strcmp(argv[1], "staged-duplicate-remove-self-unknown")) {
+        seed_model();
+        durable_model.network_count = 3;
+        durable_model.selected_network = 2;
+        strcpy(durable_model.networks[1].ssid, durable_model.networks[0].ssid);
+        strcpy(durable_model.networks[1].password, durable_model.networks[0].password);
+        strcpy(durable_model.networks[2].ssid, durable_model.networks[0].ssid);
+        strcpy(durable_model.networks[2].password, durable_model.networks[0].password);
+        boot();
+        usb_open();
+        quota_portable_command_t net = {.op = QUOTA_PORTABLE_OP_NETWORK_SAVE, .network_index = 2};
+        strcpy(net.request_id, "12345678");
+        strcpy(net.ssid, "old-hotspot");
+        strcpy(net.password, "staged-password");
+        submit_usb(&net);
+        assert(s_staged.present && s_staged.index == 2);
+        model_unknown = true;
+        quota_portable_command_t remove = {.op = QUOTA_PORTABLE_OP_NETWORK_REMOVE,
+                                           .network_index = 2};
+        strcpy(remove.request_id, "22345678");
+        submit_usb(&remove);
+        assert(s_dirty_model && s_staged.present && s_staged.index == 2);
+        model_unknown = false;
+        now_ms += 1000;
+        tick(false);
+        assert(!s_dirty_model && s_model.network_count == 2 && !s_staged.present &&
+               !s_staged.network.password[0]);
+    } else if (!strcmp(argv[1], "staged-duplicate-replace-unknown")) {
+        seed_model();
+        network_ok = false;
+        durable_model.network_count = 3;
+        durable_model.selected_network = 2;
+        strcpy(durable_model.networks[1].ssid, durable_model.networks[0].ssid);
+        strcpy(durable_model.networks[1].password, durable_model.networks[0].password);
+        strcpy(durable_model.networks[2].ssid, durable_model.networks[0].ssid);
+        strcpy(durable_model.networks[2].password, durable_model.networks[0].password);
+        boot();
+        usb_open();
+        quota_portable_command_t staged = {.op = QUOTA_PORTABLE_OP_NETWORK_SAVE,
+                                           .network_index = 2};
+        strcpy(staged.request_id, "12345678");
+        strcpy(staged.ssid, "old-hotspot");
+        strcpy(staged.password, "staged-password");
+        submit_usb(&staged);
+        assert(s_staged.present && s_staged.index == 2 && s_network_attempt_index == 2);
+        model_unknown = true;
+        quota_portable_command_t replace = {.op = QUOTA_PORTABLE_OP_NETWORK_SAVE,
+                                            .network_index = 1};
+        strcpy(replace.request_id, "22345678");
+        strcpy(replace.ssid, "old-hotspot");
+        strcpy(replace.password, "replacement-password");
+        submit_usb(&replace);
+        assert(s_dirty_model && s_model.networks[1].password[0] == 'p' && s_staged.index == 2);
+        model_unknown = false;
+        now_ms += 1000;
+        tick(false);
+        assert(!s_dirty_model && s_model.networks[1].password[0] == 'r' && s_staged.present &&
+               s_staged.index == 2 && s_network_attempt_index == 2);
+    } else if (!strcmp(argv[1], "candidate-deadline-disconnect")) {
+        seed_model();
+        fake_wifi_set_network("old-hotspot", true, true);
+        boot();
+        ready();
+        usb_open();
+        quota_portable_command_t net = {.op = QUOTA_PORTABLE_OP_NETWORK_SAVE, .network_index = 0};
+        strcpy(net.request_id, "12345678");
+        strcpy(net.ssid, "old-hotspot");
+        strcpy(net.password, "bad-password");
+        submit_usb(&net);
+        quota_portable_command_t validate = {.op = QUOTA_PORTABLE_OP_VALIDATE};
+        strcpy(validate.request_id, "22345678");
+        submit_usb(&validate);
+        now_ms += 500;
+        tick(false);
+        assert(s_candidate_pending &&
+               !strcmp((const char *)wifi_config.sta.password, "bad-password"));
+        now_ms = s_candidate_deadline - 1;
+        wifi_disconnected(WIFI_REASON_AUTH_FAIL, "old-hotspot");
+        now_ms = s_candidate_deadline;
+        tick(false);
+        const char *error = NULL;
+        assert(!s_candidate_pending && !strcmp(network_state(0, &error), "failed") &&
+               !strcmp(error, "wifi_auth_failed"));
     } else if (!strcmp(argv[1], "staged-credentials")) {
         boot();
         ready();
@@ -1982,10 +3093,16 @@ int main(int argc, char **argv)
         strcpy(validate.request_id, "22345678");
         network_ok = false;
         submit_usb(&validate);
+        /* This request has the same SSID as the active link, but it owns a different
+         * staged password. While driver retirement is pending, the old DHCP/IP state remains
+         * observable to the fake SDK and must not validate or commit the candidate. */
+        assert(s_candidate_pending && fake_retire_pending && associated && connected);
+        assert(!strcmp(durable_model.networks[0].password, "password"));
         now_ms += 500;
         tick(false);
-        assert(!strcmp((char *)wifi_config.sta.password, "wrong-password"));
-        quota_portable_service_disconnected(WIFI_REASON_AUTH_FAIL);
+        assert(!fake_retire_pending && !associated && !connected &&
+               !strcmp((char *)wifi_config.sta.password, "wrong-password"));
+        wifi_disconnected(WIFI_REASON_AUTH_FAIL, (const char *)wifi_config.sta.ssid);
         network_ok = true;
         settle();
         const char *error = NULL;
@@ -2075,7 +3192,7 @@ int main(int argc, char **argv)
         tick(false);
         assert(s_validation.active && s_operation.kind == OP_LOGIN && !s_operation.started);
         quota_portable_service_open();
-        tick(false);
+        tick_until_setup_ready();
         assert(portal_active && !s_validation.active && s_operation.kind == OP_NONE && !acquired);
         assert(durable_model.intent.kind == QUOTA_INTENT_NONE && s_login_queue.present &&
                !s_login_queue.error[0] && !strcmp(account_state(2, NULL), "pending"));
@@ -2098,7 +3215,7 @@ int main(int argc, char **argv)
             now_ms += 500;
             tick(false);
             if (!connected && strstr((const char *)wifi_config.sta.password, "bad"))
-                quota_portable_service_disconnected(WIFI_REASON_AUTH_FAIL);
+                wifi_disconnected(WIFI_REASON_AUTH_FAIL, (const char *)wifi_config.sta.ssid);
         }
         const char *error = NULL;
         assert(!strcmp(network_state(0, &error), "failed") && !strcmp(error, "wifi_auth_failed"));
@@ -2144,7 +3261,7 @@ int main(int argc, char **argv)
             now_ms += 500;
             tick(false);
             if (!connected && strstr((const char *)wifi_config.sta.password, "bad"))
-                quota_portable_service_disconnected(WIFI_REASON_AUTH_FAIL);
+                wifi_disconnected(WIFI_REASON_AUTH_FAIL, (const char *)wifi_config.sta.ssid);
         }
         /* The second network took over; the refused password was stored for the first one, which
          * is no longer in use, and it still counts as failed. */

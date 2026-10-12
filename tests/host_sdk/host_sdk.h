@@ -47,16 +47,30 @@ typedef void *esp_event_handler_instance_t;
 typedef void (*esp_event_handler_t)(void *argument, esp_event_base_t base, int32_t id, void *data);
 extern const char *const WIFI_EVENT;
 extern const char *const IP_EVENT;
-enum { WIFI_EVENT_STA_DISCONNECTED = 5, IP_EVENT_STA_GOT_IP = 0 };
+enum {
+    ESP_ERR_WIFI_NOT_STARTED = 0x3002,
+    WIFI_EVENT_SCAN_DONE = 1,
+    WIFI_EVENT_STA_STOP = 3,
+    WIFI_EVENT_STA_DISCONNECTED = 5,
+    IP_EVENT_STA_GOT_IP = 0
+};
 esp_err_t esp_event_loop_create_default(void);
 esp_err_t esp_event_handler_instance_register(esp_event_base_t base, int32_t id,
                                               esp_event_handler_t handler, void *argument,
                                               esp_event_handler_instance_t *instance);
 esp_err_t esp_event_handler_instance_unregister(esp_event_base_t base, int32_t id,
                                                 esp_event_handler_instance_t instance);
+esp_err_t esp_event_post(esp_event_base_t base, int32_t id, const void *data, size_t size,
+                         TickType_t wait);
 typedef struct {
     int unused;
 } esp_netif_t;
+typedef struct {
+    uint32_t addr;
+} esp_ip4_addr_t;
+typedef struct {
+    esp_ip4_addr_t ip;
+} esp_netif_ip_info_t;
 typedef struct {
     int unused;
 } esp_netif_config_t;
@@ -65,26 +79,70 @@ esp_err_t esp_netif_init(void);
 esp_netif_t *esp_netif_new(const esp_netif_config_t *config);
 esp_err_t esp_netif_attach_wifi_station(esp_netif_t *netif);
 void esp_netif_destroy_default_wifi(void *netif);
+void esp_netif_action_stop(void *netif, esp_event_base_t base, int32_t id, void *data);
+bool esp_netif_is_netif_up(esp_netif_t *netif);
+esp_err_t esp_netif_get_ip_info(esp_netif_t *netif, esp_netif_ip_info_t *info);
+typedef enum { ESP_NETIF_DHCP_STOPPED, ESP_NETIF_DHCP_STARTED } esp_netif_dhcp_status_t;
+esp_err_t esp_netif_dhcpc_get_status(esp_netif_t *netif, esp_netif_dhcp_status_t *status);
 typedef struct {
     int unused;
 } wifi_init_config_t;
+typedef enum { WIFI_MODE_NULL, WIFI_MODE_STA = 1, WIFI_MODE_AP, WIFI_MODE_APSTA } wifi_mode_t;
+typedef struct {
+    struct {
+        uint32_t min, max;
+    } active;
+    uint32_t passive;
+} wifi_scan_time_t;
+typedef struct {
+    uint8_t *ssid;
+    uint8_t *bssid;
+    uint8_t channel;
+    bool show_hidden;
+    int scan_type;
+    wifi_scan_time_t scan_time;
+    uint8_t home_chan_dwell_time;
+} wifi_scan_config_t;
+typedef struct {
+    uint32_t status;
+    uint8_t number;
+    uint8_t scan_id;
+} wifi_event_sta_scan_done_t;
 typedef struct {
     unsigned char ssid[33];
     signed char rssi;
 } wifi_ap_record_t;
 typedef struct {
+    uint8_t ssid[32];
+    uint8_t ssid_len;
+    uint8_t bssid[6];
     uint8_t reason;
+    int8_t rssi;
 } wifi_event_sta_disconnected_t;
 #define WIFI_INIT_CONFIG_DEFAULT() {0}
-enum { WIFI_STORAGE_RAM = 1, WIFI_MODE_STA = 1 };
+enum {
+    WIFI_STORAGE_RAM = 1,
+    WIFI_SCAN_TYPE_ACTIVE = 0,
+    WIFI_ALL_CHANNEL_SCAN = 1,
+    WIFI_CONNECT_AP_BY_SIGNAL = 0,
+    WIFI_IF_STA = 0,
+    WIFI_IF_AP = 1,
+    WIFI_AUTH_OPEN = 0,
+    WIFI_AUTH_WPA2_PSK = 3
+};
 esp_err_t esp_wifi_set_default_wifi_sta_handlers(void);
 esp_err_t esp_wifi_init(const wifi_init_config_t *config);
 esp_err_t esp_wifi_deinit(void);
 esp_err_t esp_wifi_set_storage(int storage);
-esp_err_t esp_wifi_set_mode(int mode);
+esp_err_t esp_wifi_set_mode(wifi_mode_t mode);
 esp_err_t esp_wifi_start(void);
 esp_err_t esp_wifi_stop(void);
 esp_err_t esp_wifi_sta_get_ap_info(wifi_ap_record_t *record);
+esp_err_t esp_wifi_scan_start(const wifi_scan_config_t *config, bool block);
+esp_err_t esp_wifi_scan_stop(void);
+esp_err_t esp_wifi_scan_get_ap_num(uint16_t *number);
+esp_err_t esp_wifi_scan_get_ap_record(wifi_ap_record_t *record);
+esp_err_t esp_wifi_clear_ap_list(void);
 
 typedef void *i2c_master_bus_handle_t;
 

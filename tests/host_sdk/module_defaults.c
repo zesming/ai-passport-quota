@@ -62,9 +62,15 @@ WEAK bool quota_portable_service_state_json(char *buffer, size_t capacity, size_
     (void)transport;
     return false;
 }
-WEAK void quota_portable_service_disconnected(uint8_t reason)
+WEAK void quota_portable_service_disconnected(uint8_t reason, const uint8_t *ssid, size_t ssid_len)
 {
     (void)reason;
+    (void)ssid;
+    (void)ssid_len;
+}
+WEAK void quota_portable_service_scan_done(bool success)
+{
+    (void)success;
 }
 WEAK void quota_portable_service_open(void) {}
 WEAK void quota_portable_service_close(void) {}
@@ -121,6 +127,22 @@ WEAK bool quota_wifi_start(void)
 {
     return true;
 }
+WEAK quota_wifi_result_t quota_wifi_prepare(uint32_t request_id, wifi_mode_t mode)
+{
+    (void)request_id;
+    (void)mode;
+    return QUOTA_WIFI_READY;
+}
+WEAK void quota_wifi_retire_begin(void) {}
+WEAK quota_wifi_result_t quota_wifi_retire_poll(void)
+{
+    return QUOTA_WIFI_READY;
+}
+WEAK uint64_t quota_wifi_next_deadline_ms(bool sleeping)
+{
+    (void)sleeping;
+    return UINT64_MAX;
+}
 WEAK bool quota_wifi_stop(void)
 {
     return true;
@@ -128,6 +150,31 @@ WEAK bool quota_wifi_stop(void)
 WEAK bool quota_wifi_started(void)
 {
     return false;
+}
+WEAK bool quota_wifi_operation_active(uint32_t request_id, wifi_mode_t mode)
+{
+    (void)request_id;
+    (void)mode;
+    return false;
+}
+WEAK bool quota_wifi_scan_start(const wifi_scan_config_t *config)
+{
+    (void)config;
+    return false;
+}
+WEAK esp_err_t quota_wifi_scan_get_ap_num(uint16_t *number)
+{
+    (void)number;
+    return ESP_FAIL;
+}
+WEAK esp_err_t quota_wifi_scan_get_ap_record(wifi_ap_record_t *record)
+{
+    (void)record;
+    return ESP_FAIL;
+}
+WEAK esp_err_t quota_wifi_scan_clear_ap_list(void)
+{
+    return ESP_OK;
 }
 
 WEAK esp_err_t bsp_i2c_init(void)

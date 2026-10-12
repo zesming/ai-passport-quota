@@ -444,6 +444,12 @@ static bool login_active(const quota_portable_view_t *portable)
            portable->login_state <= QUOTA_PORTABLE_LOGIN_EXCHANGING;
 }
 
+static bool wifi_no_available(const quota_portable_view_t *portable)
+{
+    return portable->network_state == QUOTA_PORTABLE_NETWORK_ERROR &&
+           strcmp(portable->network_error, "wifi_no_available") == 0 && !portable->validating;
+}
+
 static void set_bg_color(lv_obj_t *object, uint32_t hex)
 {
     if (!lv_color_eq(lv_obj_get_style_bg_color(object, 0), color(hex)))
@@ -564,6 +570,7 @@ static void build_status_line(const quota_service_view_t *service, size_t select
         .reauth_needed = account->status == QUOTA_STATUS_EXPIRED ||
                          strcmp(error, "codex_expired") == 0 || strcmp(error, "auth_required") == 0,
         .unverified_items = (uint8_t)(portable->pending_items + portable->failed_items),
+        .wifi_no_available = wifi_no_available(portable),
         .wifi_failed = portable->network_state == QUOTA_PORTABLE_NETWORK_ERROR,
         .rate_limited = strcmp(error, "rate_limited") == 0,
         .update_failed = error[0] != '\0' || account->status == QUOTA_STATUS_ERROR ||
@@ -597,7 +604,11 @@ static void build_status_line(const quota_service_view_t *service, size_t select
         *tone = UI_AMBER;
         break;
     case QUOTA_STATUS_LINE_WIFI_FAILED:
-        if (account->has_observed_at)
+        if (input.wifi_no_available && account->has_observed_at)
+            snprintf(text, capacity, "无可用网络 · 显示 %s 的数据", clock_text);
+        else if (input.wifi_no_available)
+            snprintf(text, capacity, "无可用网络");
+        else if (account->has_observed_at)
             snprintf(text, capacity, "Wi-Fi 连接失败 · 显示 %s 的数据", clock_text);
         else
             snprintf(text, capacity, "Wi-Fi 连接失败");
@@ -646,7 +657,9 @@ static void render_welcome(const quota_service_view_t *service)
         return;
     }
     put_text(T_SUB, MARGIN, 90, CONTENT_W, 22, &quota_font_16, UI_MUTED, LV_TEXT_ALIGN_CENTER,
-             "Passport 还没有账户");
+             wifi_no_available(&service->portable) && service->portable.saved_network_count > 0
+                 ? "无可用网络"
+                 : "Passport 还没有账户");
     put_text(T_NAME0, MARGIN, 128, CONTENT_W, 16, &quota_font_12, UI_INK, LV_TEXT_ALIGN_LEFT,
              "手机：按 OK 开启热点设置");
     put_text(T_NAME1, MARGIN, 148, CONTENT_W, 16, &quota_font_12, UI_INK, LV_TEXT_ALIGN_LEFT,
@@ -882,7 +895,7 @@ static void render_info(const quota_service_view_t *service, int battery_percent
         snprintf(wifi, sizeof(wifi), "连接中");
         break;
     case QUOTA_PORTABLE_NETWORK_ERROR:
-        snprintf(wifi, sizeof(wifi), "连接失败");
+        snprintf(wifi, sizeof(wifi), wifi_no_available(portable) ? "无可用网络" : "连接失败");
         break;
     default:
         snprintf(wifi, sizeof(wifi), portable->saved_network_count ? "未连接" : "未设置");
