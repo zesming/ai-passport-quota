@@ -1378,6 +1378,7 @@ for (const transport of ['usb', 'http']) {
   SCENARIOS.default(device);
   device.openUsb();
   let staleSnapshot = null;
+  let stallNextState = false;
   let releaseStalePoll = null;
   let droppedAcks = 0;
   let freshPollAfterUncertain = 0;
@@ -1408,9 +1409,10 @@ for (const transport of ['usb', 'http']) {
                   freshPollAfterUncertain += 1;
                   return chunk;
                 }
-                // Stall this background poll while command is retrying, then return stale state
-                // without the new job so only a subsequent fresh poll can prove admission.
-                if (droppedAcks === 2 && !releaseStalePoll) {
+                // Stall one background poll right before the 180s retry timeout so app.pollPromise
+                // is actively in flight when usb_uncertain_receipt fires, then return stale state.
+                if (stallNextState && !releaseStalePoll) {
+                  stallNextState = false;
                   await new Promise((resolve) => {
                     releaseStalePoll = resolve;
                   });
@@ -1420,7 +1422,7 @@ for (const transport of ['usb', 'http']) {
                     value: new TextEncoder().encode(`@AIQ:${JSON.stringify(staleFrame)}\n`),
                   };
                 }
-                // While command is in flight before final timeout, keep app.state stale.
+                // Keep app.state stale before uncertain recovery so only a fresh poll succeeds.
                 if (droppedAcks > 0) {
                   const staleFrame = { ...frame, state: staleSnapshot };
                   return {
@@ -1450,14 +1452,19 @@ for (const transport of ['usb', 'http']) {
   const saveRun = page.node('sleep-select').dispatch('change');
   await flush();
   assert.equal(droppedAcks, 1, 'initial command ack dropped');
-  // Advance past the first 90s timeout (triggers retry -> droppedAcks === 2) and up to 179s so a
-  // background poll is actively in flight (stalled on releaseStalePoll) when 180s hits.
-  await page.advance(179000, 1000);
+  // Advance to t=176s without stalling polls so the session stays connected across retry ack 2.
+  await page.advance(176000, 1000);
+  assert.equal(connected(page), true, 'session stays connected before uncertain receipt');
   assert.equal(droppedAcks, 2, 'retry command ack dropped');
+  // Now stall the next background poll right before t=180s (within its 5s STATE_TRY_MS window).
+  stallNextState = true;
+  await page.advance(3000, 1000);
+  assert.equal(connected(page), true, 'session still connected at t=179s');
   assert(releaseStalePoll, 'stale background poll is actively in flight at uncertain receipt');
   // Cross the 180s retry timeout: mutation() rejects with usb_uncertain_receipt and calls
   // poll({ fresh: true }), which must wait for releaseStalePoll then send a new state_get.
   await page.advance(2000, 1000);
+  assert.equal(connected(page), true, 'session stays connected across uncertain receipt');
   uncertainTriggered = true;
   releaseStalePoll();
   await flush();

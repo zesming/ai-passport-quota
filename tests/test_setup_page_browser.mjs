@@ -183,9 +183,10 @@ await withBrowser(async (port, profile) => {
       new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, cancelable: true }),
     );
     const wrappedBackward = document.activeElement === last;
-    document.body.focus();
+    last.blur();
+    const blurredToBody = document.activeElement === document.body;
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', cancelable: true }));
-    const trappedFromBody = document.activeElement === first;
+    const trappedFromBody = blurredToBody && document.activeElement === first;
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     const restored = document.activeElement === trigger;
     return { wrappedForward, wrappedBackward, trappedFromBody, restored };
