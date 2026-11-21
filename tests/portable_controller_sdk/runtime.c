@@ -262,6 +262,7 @@ esp_err_t esp_wifi_disconnect(void)
     connected = false;
     return ESP_OK;
 }
+static int8_t fake_ap_rssi = -58;
 esp_err_t esp_wifi_sta_get_ap_info(wifi_ap_record_t *out)
 {
     unlocked();
@@ -269,6 +270,7 @@ esp_err_t esp_wifi_sta_get_ap_info(wifi_ap_record_t *out)
         return ESP_FAIL;
     memset(out, 0, sizeof(*out));
     memcpy(out->ssid, associated_ssid, strlen(associated_ssid));
+    out->rssi = fake_ap_rssi;
     return ESP_OK;
 }
 esp_err_t esp_netif_sntp_init(const esp_sntp_config_t *config)
@@ -715,6 +717,26 @@ static quota_model_t durable_model;
 static uint64_t durable_sequence;
 static quota_store_read_result_t model_read_error = QUOTA_STORE_READ_OK;
 static bool model_fail, model_unknown, model_apply_unknown;
+static char select_during_model_save[QUOTA_ACCOUNT_ID_BYTES + 1];
+static size_t oom_fail_at, oom_calls, oom_live;
+static void *oom_malloc(size_t size)
+{
+    oom_calls++;
+    if (oom_fail_at && oom_calls == oom_fail_at)
+        return NULL;
+    void *ptr = malloc(size);
+    if (ptr)
+        oom_live++;
+    return ptr;
+}
+static void oom_free(void *ptr)
+{
+    if (ptr) {
+        assert(oom_live > 0);
+        oom_live--;
+    }
+    free(ptr);
+}
 quota_store_read_result_t quota_store_load_model_result(quota_model_t *out, uint64_t *sequence)
 {
     unlocked();
@@ -752,6 +774,12 @@ quota_model_write_result_t quota_store_save_model_verified(uint64_t previous,
     assert(durable_sequence == previous);
     durable_model = *candidate;
     durable_sequence = sequence;
+    if (select_during_model_save[0]) {
+        char next_id[QUOTA_ACCOUNT_ID_BYTES + 1];
+        strcpy(next_id, select_during_model_save);
+        select_during_model_save[0] = 0;
+        quota_portable_service_select(next_id);
+    }
     return QUOTA_MODEL_APPLIED;
 }
 bool quota_store_save_observations(const quota_model_t *model, const quota_snapshot_t *snapshot,
@@ -1127,7 +1155,7 @@ int main(int argc, char **argv)
         assert(!strcmp(state_item(root, "saved_networks", 0, "ssid"), "new-hotspot"));
         cJSON_Delete(root);
         assert(public_view.portable.saved_network_count == 1 &&
-               !strcmp(public_view.portable.saved_network_ssids[0], "old-hotspot") &&
+               !strcmp(public_view.portable.saved_network_ssids[0], "new-hotspot") &&
                public_view.portable.saved_network_validation[0] == QUOTA_VALIDATION_PENDING &&
                public_view.portable.pending_items == 1);
     } else if (!strcmp(argv[1], "cadence")) {
@@ -3357,6 +3385,157 @@ int main(int argc, char **argv)
         /* At rest nothing is being saved; "saving" follows storage work, not a login state. */
         assert(!public_view.portable.saving);
         assert(!public_view.portable.setup_result && !public_view.portable.setup_opening);
+    } else if (!strcmp(argv[1], "batch2-hardening")) {
+        boot();
+        ready();
+        /* CD-10: wifi_rssi follows quota_network connected_ip() and clears on sleep. */
+        assert(public_view.connected && public_view.wifi_rssi == -58);
+        fake_ap_rssi = -71;
+        now_ms += 500;
+        tick(false);
+        assert(public_view.wifi_rssi == -71);
+        tick(true);
+        assert(!public_view.connected && public_view.wifi_rssi == 0);
+        tick(false);
+        ready();
+        assert(public_view.wifi_rssi == -71);
+
+        /* CD-01: start_account() rejects non-ASCII and space api_key without writing intent. */
+        usb_open();
+        quota_portable_command_t bad_key = {.op = QUOTA_PORTABLE_OP_DEEPSEEK_SAVE};
+        strcpy(bad_key.request_id, "11111111");
+        strcpy(bad_key.label, "Bad");
+        strcpy(bad_key.api_key, "sk-bad key");
+        submit_usb(&bad_key);
+        assert(job(bad_key.request_id)->state == 3 &&
+               !strcmp(job(bad_key.request_id)->error, "invalid_request"));
+        assert(s_operation.kind == OP_NONE && s_model.intent.kind == QUOTA_INTENT_NONE);
+        strcpy(bad_key.request_id, "11111112");
+        strcpy(bad_key.api_key, "sk-\xc3\xa9");
+        submit_usb(&bad_key);
+        assert(job(bad_key.request_id)->state == 3 &&
+               !strcmp(job(bad_key.request_id)->error, "invalid_request"));
+        assert(s_operation.kind == OP_NONE && s_model.intent.kind == QUOTA_INTENT_NONE);
+
+        /* PD-07: unknown command op reports unsupported_operation. */
+        quota_portable_command_t unknown_cmd = {.op = (quota_portable_op_t)99};
+        strcpy(unknown_cmd.request_id, "11111113");
+        submit_usb(&unknown_cmd);
+        assert(job(unknown_cmd.request_id)->state == 3 &&
+               !strcmp(job(unknown_cmd.request_id)->error, "unsupported_operation"));
+
+        /* CD-04: selection arriving while submit_model() is in flight is not dropped. */
+        char first_id[QUOTA_ACCOUNT_ID_BYTES + 1];
+        char second_id[QUOTA_ACCOUNT_ID_BYTES + 1];
+        strcpy(first_id, s_model.entries[0].logical_id);
+        strcpy(second_id, s_model.entries[1].logical_id);
+        quota_portable_service_select(second_id);
+        strcpy(select_during_model_save, first_id);
+        tick(false);
+        assert(s_selection_dirty && !strcmp(s_selected_pending, first_id));
+        tick(false);
+        assert(!s_selection_dirty && !strcmp(durable_model.selected_account_id, first_id));
+
+        /* CD-06 + PD-01: queued re-auth of existing ChatGPT deduplicates counts and overrides
+         * account_validation/error; queued new ChatGPT populates queued_login_* fields. */
+        quota_portable_command_t reauth = {.op = QUOTA_PORTABLE_OP_CODEX_QUEUE};
+        strcpy(reauth.request_id, "22222221");
+        strcpy(reauth.account_id, first_id);
+        submit_usb(&reauth);
+        assert(public_view.portable.pending_items == 1 && public_view.portable.failed_items == 0);
+        assert(!public_view.portable.queued_login_new);
+        assert(public_view.portable.account_validation[0] == QUOTA_VALIDATION_PENDING);
+        strcpy(s_login_queue.error, "login_disabled");
+        common_lock();
+        sync_public_locked();
+        common_unlock();
+        assert(public_view.portable.pending_items == 0 && public_view.portable.failed_items == 1);
+        assert(public_view.portable.account_validation[0] == QUOTA_VALIDATION_FAILED &&
+               !strcmp(public_view.portable.account_errors[0], "login_disabled"));
+
+        /* CD-12: failed ACCOUNT_REMOVE preserves s_login_queue. */
+        model_fail = true;
+        quota_portable_command_t rm = {.op = QUOTA_PORTABLE_OP_ACCOUNT_REMOVE};
+        strcpy(rm.request_id, "22222222");
+        strcpy(rm.account_id, first_id);
+        submit_usb(&rm);
+        model_fail = false;
+        assert(job(rm.request_id)->state == 3 && s_login_queue.present &&
+               !strcmp(s_login_queue.id, first_id));
+
+        /* Replace queue with a new ChatGPT account and check queued_login_* in public_view. */
+        quota_portable_command_t cancel = {.op = QUOTA_PORTABLE_OP_OPERATION_CANCEL};
+        strcpy(cancel.request_id, "22222223");
+        strcpy(cancel.target_request_id, reauth.request_id);
+        submit_usb(&cancel);
+        assert(!s_login_queue.present);
+        quota_portable_command_t new_codex = {.op = QUOTA_PORTABLE_OP_CODEX_QUEUE};
+        strcpy(new_codex.request_id, "22222224");
+        strcpy(new_codex.label, "TeamGPT");
+        submit_usb(&new_codex);
+        assert(public_view.portable.pending_items == 1 && public_view.portable.failed_items == 0);
+        assert(public_view.portable.queued_login_new &&
+               !strcmp(public_view.portable.queued_login_label, "TeamGPT") &&
+               public_view.portable.queued_login_validation == QUOTA_VALIDATION_PENDING &&
+               !public_view.portable.queued_login_error[0]);
+        strcpy(s_login_queue.error, "network_unavailable");
+        common_lock();
+        sync_public_locked();
+        common_unlock();
+        assert(public_view.portable.pending_items == 0 && public_view.portable.failed_items == 1);
+        assert(public_view.portable.queued_login_validation == QUOTA_VALIDATION_FAILED &&
+               !strcmp(public_view.portable.queued_login_error, "network_unavailable"));
+
+        /* PD-03: state_json() emits USD-only and multi-currency DeepSeek balance_infos. */
+        int ds_idx = quota_find_account_by_id(&s_snapshot, second_id);
+        assert(ds_idx >= 0);
+        s_snapshot.balances[ds_idx].present = true;
+        s_snapshot.balances[ds_idx].currency_count = 2;
+        strcpy(s_snapshot.balances[ds_idx].balance_infos[0].currency, "USD");
+        strcpy(s_snapshot.balances[ds_idx].balance_infos[0].total_balance, "12.30");
+        strcpy(s_snapshot.balances[ds_idx].balance_infos[1].currency, "CNY");
+        strcpy(s_snapshot.balances[ds_idx].balance_infos[1].total_balance, "8.50");
+        cJSON *root = state_of(QUOTA_SETUP_USB);
+        cJSON *accounts = cJSON_GetObjectItemCaseSensitive(root, "accounts");
+        cJSON *ds_json = cJSON_GetArrayItem(accounts, 1);
+        cJSON *bal = cJSON_GetObjectItemCaseSensitive(ds_json, "balance");
+        cJSON *infos = cJSON_GetObjectItemCaseSensitive(bal, "balance_infos");
+        assert(cJSON_GetArraySize(infos) == 2);
+        assert(!strcmp(
+            cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(infos, 0), "currency")->valuestring,
+            "USD"));
+        assert(
+            !strcmp(cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(infos, 0), "total_balance")
+                        ->valuestring,
+                    "12.30"));
+        assert(!strcmp(
+            cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(infos, 1), "currency")->valuestring,
+            "CNY"));
+        cJSON_Delete(root);
+
+        /* CD-20: every cJSON allocation failure in state_json() returns false with zero leaks. */
+        cJSON_Hooks hooks = {.malloc_fn = oom_malloc, .free_fn = oom_free};
+        cJSON_InitHooks(&hooks);
+        char json_buf[QUOTA_PORTABLE_STATE_BYTES];
+        size_t json_len = 0;
+        for (unsigned mode = 0; mode < 2; mode++) {
+            quota_setup_transport_t tx = mode == 0 ? QUOTA_SETUP_AP : QUOTA_SETUP_USB;
+            oom_fail_at = 0;
+            oom_calls = 0;
+            oom_live = 0;
+            assert(quota_portable_service_state_json(json_buf, sizeof(json_buf), &json_len, tx));
+            size_t total_allocs = oom_calls;
+            assert(total_allocs > 20 && oom_live == 0);
+            for (size_t fail = 1; fail <= total_allocs; fail++) {
+                oom_fail_at = fail;
+                oom_calls = 0;
+                oom_live = 0;
+                assert(
+                    !quota_portable_service_state_json(json_buf, sizeof(json_buf), &json_len, tx));
+                assert(oom_live == 0);
+            }
+        }
+        cJSON_InitHooks(NULL);
     } else
         assert(false);
     puts("whole controller runtime passed");

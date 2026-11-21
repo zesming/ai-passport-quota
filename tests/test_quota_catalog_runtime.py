@@ -322,6 +322,49 @@ int main(void)
     model.entries[8] = model.entries[7];
     model.entry_count = 9;
     assert(!quota_catalog_valid(&model)); /* Cannot silently exceed capacity or duplicate slots. */
+
+    /* Upgrade scrub cleans interrupted new_row and DELETE_NATIVE intents of retired providers,
+     * while leaving corrupt intent kinds untouched so quota_catalog_valid() rejects them. */
+    memset(&model, 0, sizeof(model));
+    model.refresh_seconds = 300;
+    model.screen_timeout_seconds = 120;
+    add_native(0);
+    quota_catalog_removed_t removed;
+    memset(intent, 0, sizeof(*intent));
+    intent->kind = QUOTA_INTENT_UPSERT_NATIVE;
+    intent->provider = (quota_provider_t)1;
+    intent->slot = 2;
+    intent->new_row = true;
+    intent->previous_missing = true;
+    strcpy(intent->logical_id, "00000000000000000000000000000042");
+    strcpy(intent->target_credential_id, intent->logical_id);
+    intent->target_credential_generation = 1;
+    assert(quota_catalog_scrub_removed(&model, &removed));
+    assert(model.intent.kind == QUOTA_INTENT_NONE && quota_catalog_valid(&model));
+    assert(removed.count == 1 && removed.rows[0].owns_slot && removed.rows[0].slot == 2 &&
+           removed.rows[0].credential_generation == 1 &&
+           !strcmp(removed.rows[0].credential_id, "00000000000000000000000000000042"));
+
+    memset(intent, 0, sizeof(*intent));
+    intent->kind = QUOTA_INTENT_DELETE_NATIVE;
+    intent->provider = (quota_provider_t)1;
+    intent->slot = 3;
+    strcpy(intent->logical_id, "00000000000000000000000000000043");
+    strcpy(intent->previous_credential_id, intent->logical_id);
+    strcpy(intent->target_credential_id, intent->logical_id);
+    intent->previous_credential_generation = 4;
+    intent->target_credential_generation = 5;
+    assert(quota_catalog_scrub_removed(&model, &removed));
+    assert(model.intent.kind == QUOTA_INTENT_NONE && quota_catalog_valid(&model));
+    assert(removed.count == 1 && removed.rows[0].owns_slot && removed.rows[0].slot == 3 &&
+           !strcmp(removed.rows[0].logical_id, "00000000000000000000000000000043"));
+
+    memset(intent, 0, sizeof(*intent));
+    intent->kind = (quota_intent_kind_t)99;
+    intent->provider = (quota_provider_t)1;
+    intent->slot = 4;
+    assert(!quota_catalog_scrub_removed(&model, &removed));
+    assert(!quota_catalog_valid(&model));
     puts("catalog durability/cache checks passed");
 }
 '''

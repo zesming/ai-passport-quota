@@ -408,6 +408,13 @@ static void factory_reset_erases_everything(void)
     nvs_stub_fail_partition_erase = 1;
     assert(quota_store_factory_reset() == QUOTA_FACTORY_RESET_FAILED);
     nvs_stub_fail_partition_erase = 0;
+    /* When s_ready is false and partition erase succeeds but re-init fails, the catalog is gone. */
+    nvs_stub_put(STORE_PARTITION, STORE_NAMESPACE, "model_v2", "accounts and wifi", 18);
+    nvs_stub_fail_partition_init = 1;
+    assert(quota_store_factory_reset() == QUOTA_FACTORY_RESET_CATALOG_GONE);
+    nvs_stub_fail_partition_init = 0;
+    assert(!nvs_stub_find(STORE_PARTITION, STORE_NAMESPACE, "model_v2"));
+    assert(quota_store_init());
 }
 
 static void unusable_rows_fail_closed(void)
@@ -529,6 +536,85 @@ static void stale_cache_rows_do_not_discard_the_rest(void)
            QUOTA_STORE_READ_INVALID);
 }
 
+static void retired_orphan_padding_and_utf8_credits(void)
+{
+    /* CD-05: valid-CRC retired-provider orphan slot is tombstoned preserving id and generation. */
+    memset(&nvs_stub, 0, sizeof(nvs_stub));
+    nvs_stub.cut_after = -1;
+    s_ready = false;
+    assert(quota_store_init());
+    credential_record_t *retired = calloc(1, sizeof(*retired));
+    assert(retired);
+    retired->magic = CREDENTIAL_MAGIC;
+    retired->version = STORE_VERSION;
+    retired->bytes = sizeof(*retired);
+    retired->value.slot = 5;
+    retired->value.provider = (quota_provider_t)OLD_PROVIDER_OTHER;
+    retired->value.generation = 9;
+    static const char retired_id[] = "0000000000000000000000000000d009";
+    strcpy(retired->value.id, retired_id);
+    strcpy(retired->value.api_key, "retired-secret");
+    retired->crc = store_crc(retired, offsetof(credential_record_t, crc));
+    nvs_stub_put(STORE_PARTITION, STORE_NAMESPACE, "account5", retired, sizeof(*retired));
+    free(retired);
+    assert(quota_store_release_orphan_credentials() == QUOTA_STORE_READ_OK);
+    static quota_portable_credential_t loaded;
+    assert(quota_store_load_credential_result(5, &loaded) == QUOTA_STORE_READ_OK);
+    assert(loaded.tombstone && loaded.generation == 9 && !strcmp(loaded.id, retired_id));
+    assert(
+        !contains(nvs_stub_find(STORE_PARTITION, STORE_NAMESPACE, "account5"), "retired-secret"));
+
+    /* CD-07: dirty struct padding in quota_model_t is canonicalized to zero before CRC/memcmp. */
+    quota_model_t dirty;
+    memset(&dirty, 0xAA, sizeof(dirty));
+    dirty.network_count = 0;
+    dirty.selected_network = 0;
+    memset(dirty.networks, 0, sizeof(dirty.networks));
+    memset(dirty.reserved_pending_network, 0, sizeof(dirty.reserved_pending_network));
+    dirty.refresh_seconds = 300;
+    dirty.screen_timeout_seconds = 120;
+    dirty.auto_refresh = true;
+    memset(dirty.selected_account_id, 0, sizeof(dirty.selected_account_id));
+    dirty.last_known_time = 1790000000;
+    memset(dirty.reserved_legacy_endpoint, 0, sizeof(dirty.reserved_legacy_endpoint));
+    dirty.entry_count = 1;
+    memset(dirty.entries, 0, sizeof(dirty.entries));
+    strcpy(dirty.entries[0].logical_id, ID_CODEX);
+    dirty.entries[0].provider = QUOTA_PROVIDER_CODEX;
+    dirty.entries[0].source = QUOTA_ACCOUNT_DEVICE;
+    dirty.entries[0].activity = QUOTA_ACCOUNT_ACTIVE;
+    dirty.entries[0].row_generation = 1;
+    dirty.entries[0].binding.native.slot = 0;
+    strcpy(dirty.entries[0].binding.native.credential_id, CRED_CODEX);
+    dirty.entries[0].binding.native.credential_generation = 1;
+    memset(&dirty.intent, 0, sizeof(dirty.intent));
+    assert(quota_store_save_model_verified(0, &dirty, 1) == QUOTA_MODEL_APPLIED);
+    quota_model_t clean_expected, reloaded;
+    quota_catalog_canonicalize_model(&clean_expected, &dirty);
+    memset(&reloaded, 0x55, sizeof(reloaded));
+    uint64_t seq = 0;
+    assert(quota_store_load_model_result(&reloaded, &seq) == QUOTA_STORE_READ_OK && seq == 1);
+    assert(memcmp(&reloaded, &clean_expected, sizeof(reloaded)) == 0);
+
+    /* CD-13: observations_v2 preserves valid non-ASCII UTF-8 credits_balance strings. */
+    quota_snapshot_t snap = {0};
+    snap.account_count = 1;
+    strcpy(snap.accounts[0].id, ID_CODEX);
+    snap.accounts[0].provider = QUOTA_PROVIDER_CODEX;
+    snap.accounts[0].status = QUOTA_STATUS_OK;
+    snap.accounts[0].has_observed_at = true;
+    snap.accounts[0].observed_at = 1790000000;
+    snap.codex_extras[0].has_credits = true;
+    strcpy(snap.codex_extras[0].credits_balance, "\xe2\x82\xac" "12.50");
+    assert(quota_store_save_observations(&reloaded, &snap, 1790000000));
+    quota_snapshot_t restored = {0};
+    restored.account_count = 1;
+    strcpy(restored.accounts[0].id, ID_CODEX);
+    assert(quota_store_load_observations(&reloaded, 1790000001, &restored) == QUOTA_STORE_READ_OK);
+    assert(restored.codex_extras[0].has_credits &&
+           !strcmp(restored.codex_extras[0].credits_balance, "\xe2\x82\xac" "12.50"));
+}
+
 int main(void)
 {
     upgrade_and_power_cut(false);
@@ -538,6 +624,7 @@ int main(void)
     unusable_rows_fail_closed();
     orphan_credentials_are_freed();
     stale_cache_rows_do_not_discard_the_rest();
+    retired_orphan_padding_and_utf8_credits();
     puts("upgrade cleanup passed");
 }
 '''

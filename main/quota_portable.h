@@ -117,6 +117,11 @@ typedef struct {
     uint8_t pending_items, failed_items;
     /* Validation result of each account, indexed like the active snapshot (quota_validation_t). */
     uint8_t account_validation[QUOTA_MAX_ACCOUNTS];
+    /* New queued ChatGPT account not yet committed to the catalog/snapshot. */
+    bool queued_login_new;
+    char queued_login_label[QUOTA_PLAN_MAX_BYTES + 1];
+    uint8_t queued_login_validation;
+    char queued_login_error[QUOTA_PORTABLE_ERROR_BYTES + 1];
     char firmware[QUOTA_FIRMWARE_VERSION_BYTES + 1];
 } quota_portable_view_t;
 
@@ -218,4 +223,23 @@ static inline void quota_portable_clear_secret(void *memory, size_t length)
     volatile unsigned char *bytes = (volatile unsigned char *)memory;
     while (length-- != 0)
         *bytes++ = 0;
+}
+
+/* Printable non-space ASCII token check (0x21..0x7e), matching HTTP header/direct-client safety. */
+static inline bool quota_portable_token_is_safe(const char *value, size_t max_bytes)
+{
+    if (!value || value[0] == 0)
+        return false;
+    size_t length = 0;
+    for (; value[length] != 0; length++) {
+        unsigned char c = (unsigned char)value[length];
+        if (length >= max_bytes || c < 0x21U || c > 0x7eU)
+            return false;
+    }
+    return true;
+}
+
+static inline uint64_t quota_remaining_seconds(uint64_t deadline_ms, uint64_t now_ms)
+{
+    return deadline_ms > now_ms ? (deadline_ms - now_ms + 999ULL) / 1000ULL : 0;
 }

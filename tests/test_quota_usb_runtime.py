@@ -32,7 +32,9 @@ extern char s_usb_opener[9];
 void handle_serial_frame(const char *frame, size_t length);
 
 static uint64_t now_ms = 1000;
-static unsigned state_calls, command_calls;
+static uint64_t advance_on_time_read_ms;
+static unsigned state_calls, command_calls, lock_calls;
+static int lock_depth;
 static char last_command_id[9];
 static quota_portable_submit_result_t next_submit_result = QUOTA_PORTABLE_SUBMIT_ACCEPTED;
 static bool state_succeeds = true, expire_while_serializing;
@@ -41,7 +43,12 @@ static quota_service_view_t service_view;
 
 int64_t esp_timer_get_time(void)
 {
-    return (int64_t)now_ms * 1000;
+    uint64_t current = now_ms;
+    if (advance_on_time_read_ms) {
+        now_ms += advance_on_time_read_ms;
+        advance_on_time_read_ms = 0;
+    }
+    return (int64_t)current * 1000;
 }
 uint32_t esp_random(void)
 {
@@ -49,8 +56,16 @@ uint32_t esp_random(void)
     next = next * 1103515245u + 12345u;
     return next >> 8;
 }
-void quota_service_lock(void) {}
-void quota_service_unlock(void) {}
+void quota_service_lock(void)
+{
+    lock_depth++;
+    lock_calls++;
+}
+void quota_service_unlock(void)
+{
+    assert(lock_depth > 0);
+    lock_depth--;
+}
 quota_service_view_t *quota_service_view(void)
 {
     return &service_view;
@@ -263,11 +278,18 @@ static void test_session_state_and_expiry(void)
     active_session();
     char frame[512];
     char *response;
+    assert(quota_remaining_seconds(1000, 1000) == 0);
+    assert(quota_remaining_seconds(1000, 1500) == 0);
+    assert(quota_remaining_seconds(1001, 1000) == 1);
+    assert(quota_remaining_seconds(2000, 1000) == 1);
+    assert(quota_remaining_seconds(2001, 1000) == 2);
+    unsigned locks_before = lock_calls;
     make_open(frame, "01020304");
     response = dispatch(frame);
     assert_contains(response, "\"ok\":true");
     assert_contains(response, "\"session_id\":\"0123456789abcdef0123456789abcdef\"");
     assert(!strcmp(s_usb_opener, "01020304"));
+    assert(lock_calls > locks_before && lock_depth == 0);
     free(response);
 
     make_open(frame, "01020304");
@@ -327,6 +349,17 @@ static void test_session_state_and_expiry(void)
     response = dispatch(frame);
     assert_contains(response, "\"error_code\":\"session_expired\"");
     assert(state_calls == 3);
+    free(response);
+
+    /* Crossing the deadline between quota_usb_active() and session_open must not underflow. */
+    active_session();
+    now_ms = atomic_load(&s_usb_deadline) - 1;
+    advance_on_time_read_ms = 5;
+    make_open(frame, "66666666");
+    response = dispatch(frame);
+    assert_contains(response, "\"error_code\":\"session_expired\"");
+    assert(!strstr(response, "\"remaining_seconds\""));
+    assert(lock_depth == 0);
     free(response);
     puts("USB session pinning, state bounds and expiry checks passed");
 }

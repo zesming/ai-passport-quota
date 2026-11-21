@@ -100,6 +100,8 @@ typedef struct {
 
 /* Pure bounded helpers; persistence and ownership stay in the service. */
 bool quota_catalog_valid(const quota_model_t *model);
+/* Copy all logical fields into a zeroed destination so unnamed struct padding stays zero. */
+void quota_catalog_canonicalize_model(quota_model_t *dst, const quota_model_t *src);
 /* Upgrade cleanup, run before quota_catalog_valid. Zeroes and compacts rows that the product
  * no longer has (other providers, other sources, pending rows), the pending network and the
  * legacy endpoint. Returns true when anything changed. Idempotent. */

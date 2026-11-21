@@ -70,6 +70,7 @@ static quota_portable_command_t *s_queue;
 static unsigned s_head, s_count, s_job_count;
 static job_t s_jobs[QUEUE_DEPTH];
 static bool s_store_ready, s_clock_ready, s_sntp, s_sleeping, s_wifi_active;
+static int8_t s_wifi_rssi;
 static bool s_open, s_close, s_cancel, s_refresh, s_reconnect, s_selection_dirty, s_factory_reset,
     s_factory_reset_failed, s_setup_result;
 static uint64_t s_open_retry_at;
@@ -649,6 +650,15 @@ static bool apply_network_runtime_locked(const quota_model_t *old, const quota_m
     }
     return disconnect;
 }
+static quota_model_t *clone_model(const quota_model_t *source)
+{
+    quota_model_t *copy_out = calloc(1, sizeof(*copy_out));
+    if (!copy_out)
+        return NULL;
+    if (source)
+        quota_catalog_canonicalize_model(copy_out, source);
+    return copy_out;
+}
 static void apply_model(quota_model_t *candidate, bool effective, quota_model_t *previous)
 {
     bool directory_changed = previous->network_count != candidate->network_count;
@@ -662,7 +672,7 @@ static void apply_model(quota_model_t *candidate, bool effective, quota_model_t 
     unsigned changed_index = s_network_change.index;
     lock();
     reconcile_networks_locked(&s_model, candidate, change, changed_index);
-    s_model = *candidate;
+    quota_catalog_canonicalize_model(&s_model, candidate);
     s_sequence++;
     s_model_ready = true;
     disconnect = apply_network_runtime_locked(previous, candidate, change, changed_index);
@@ -716,18 +726,18 @@ static bool submit_model(quota_model_t *candidate, bool effective, const char *j
 {
     if (s_dirty_model || s_recovery_blocked || s_sequence == UINT64_MAX)
         return false;
-    quota_model_t *previous = malloc(sizeof(*previous));
+    quota_model_t *previous = clone_model(&s_model);
     if (!previous) {
         storage_failed(QUOTA_STORE_READ_NO_MEMORY);
         return false;
     }
-    *previous = s_model;
     quota_model_write_result_t result =
         quota_store_save_model_verified(s_sequence, candidate, s_sequence + 1);
     if (result == QUOTA_MODEL_APPLIED) {
         apply_model(candidate, effective, previous);
         return true;
     }
+    quota_portable_clear_secret(previous, sizeof(*previous));
     free(previous);
     if (result == QUOTA_MODEL_WRITE_UNKNOWN) {
         s_dirty_model = candidate;
@@ -754,13 +764,12 @@ static void retry_dirty(void)
 {
     if (!s_dirty_model || s_recovery_blocked || millis() < s_storage_retry_at)
         return;
-    quota_model_t *previous = malloc(sizeof(*previous));
+    quota_model_t *previous = clone_model(&s_model);
     if (!previous) {
         copy(s_storage_error, sizeof(s_storage_error), "no_memory");
         s_storage_retry_at = millis() + 5000;
         return;
     }
-    *previous = s_model;
     quota_model_write_result_t result =
         quota_store_save_model_verified(s_sequence, s_dirty_model, s_sequence + 1);
     if (result == QUOTA_MODEL_WRITE_UNKNOWN) {
@@ -781,7 +790,7 @@ static void retry_dirty(void)
             s_recovery_blocked = true;
         } else if (read != QUOTA_STORE_READ_OK && read != QUOTA_STORE_READ_MISSING)
             copy(s_storage_error, sizeof(s_storage_error), read_error(read));
-        *previous = s_model;
+        quota_catalog_canonicalize_model(previous, &s_model);
     }
     if (result == QUOTA_MODEL_APPLIED) {
         quota_model_t *candidate = s_dirty_model;
@@ -794,6 +803,7 @@ static void retry_dirty(void)
             finish_job(s_dirty_job, NULL);
         s_dirty_job[0] = 0;
     } else {
+        quota_portable_clear_secret(previous, sizeof(*previous));
         free(previous);
         s_storage_retry_at = millis() + 5000;
     }
@@ -820,12 +830,11 @@ static bool finalize_native(const quota_direct_credential_t *credential)
     const quota_model_intent_t *intent = &s_model.intent;
     if (!intent_target(credential->id, credential->generation) || !finalizable(credential))
         return false;
-    quota_model_t *candidate = malloc(sizeof(*candidate));
+    quota_model_t *candidate = clone_model(&s_model);
     if (!candidate) {
         storage_failed(QUOTA_STORE_READ_NO_MEMORY);
         return false;
     }
-    *candidate = s_model;
     int row = quota_catalog_find(candidate, intent->logical_id);
     if (row < 0)
         row = candidate->entry_count++;
@@ -1030,14 +1039,75 @@ static void random_text(char *out, size_t length, const char *alphabet)
         out[i] = alphabet[esp_random() % count];
     out[length] = 0;
 }
-static cJSON *window_json(const quota_window_t *window)
+static cJSON *json_add_obj(cJSON *parent, const char *name, bool *ok)
 {
+    if (!*ok || !parent) {
+        *ok = false;
+        return NULL;
+    }
+    cJSON *child = cJSON_AddObjectToObject(parent, name);
+    if (!child)
+        *ok = false;
+    return child;
+}
+static cJSON *json_add_arr(cJSON *parent, const char *name, bool *ok)
+{
+    if (!*ok || !parent) {
+        *ok = false;
+        return NULL;
+    }
+    cJSON *child = cJSON_AddArrayToObject(parent, name);
+    if (!child)
+        *ok = false;
+    return child;
+}
+static void json_add_str(cJSON *parent, const char *name, const char *value, bool *ok)
+{
+    if (!*ok || !parent || !cJSON_AddStringToObject(parent, name, value))
+        *ok = false;
+}
+static void json_add_num(cJSON *parent, const char *name, double value, bool *ok)
+{
+    if (!*ok || !parent || !cJSON_AddNumberToObject(parent, name, value))
+        *ok = false;
+}
+static void json_add_bool(cJSON *parent, const char *name, bool value, bool *ok)
+{
+    if (!*ok || !parent || !cJSON_AddBoolToObject(parent, name, value))
+        *ok = false;
+}
+static void json_push_item(cJSON *array, cJSON *item, bool *ok)
+{
+    if (!*ok || !array || !item || !cJSON_AddItemToArray(array, item)) {
+        cJSON_Delete(item);
+        *ok = false;
+    }
+}
+static void json_set_item(cJSON *parent, const char *name, cJSON *item, bool *ok)
+{
+    if (!*ok || !parent || !item || !cJSON_AddItemToObject(parent, name, item)) {
+        cJSON_Delete(item);
+        *ok = false;
+    }
+}
+static cJSON *window_json(const quota_window_t *window, bool *ok)
+{
+    if (!*ok)
+        return NULL;
     cJSON *json = cJSON_CreateObject();
-    cJSON_AddBoolToObject(json, "present", window->present);
+    if (!json) {
+        *ok = false;
+        return NULL;
+    }
+    json_add_bool(json, "present", window->present, ok);
     if (window->present) {
-        cJSON_AddNumberToObject(json, "remaining_percent", window->remaining_percent);
+        json_add_num(json, "remaining_percent", window->remaining_percent, ok);
         if (window->has_resets_at)
-            cJSON_AddNumberToObject(json, "resets_at", (double)window->resets_at);
+            json_add_num(json, "resets_at", (double)window->resets_at, ok);
+    }
+    if (!*ok) {
+        cJSON_Delete(json);
+        return NULL;
     }
     return json;
 }
@@ -1155,12 +1225,11 @@ static void recover_intent(void)
         return;
     }
     quota_store_credential_release(credential);
-    quota_model_t *candidate = malloc(sizeof(*candidate));
+    quota_model_t *candidate = clone_model(&s_model);
     if (!candidate) {
         storage_failed(QUOTA_STORE_READ_NO_MEMORY);
         return;
     }
-    *candidate = s_model;
     memset(&candidate->intent, 0, sizeof(candidate->intent));
     if (!submit_model(candidate, false, NULL) && !s_dirty_model)
         s_storage_retry_at = millis() + 5000;
@@ -1291,158 +1360,179 @@ bool quota_portable_service_state_json(char *buffer, size_t capacity, size_t *le
         free(state);
         return false;
     }
-    cJSON_AddNumberToObject(json, "protocol", QUOTA_PROTOCOL_VERSION);
-    cJSON_AddStringToObject(json, "firmware", quota_portable_service_firmware());
-    cJSON_AddStringToObject(json, "storage_error", state->storage_error);
-    cJSON_AddBoolToObject(json, "validating", state->validating);
-    cJSON_AddStringToObject(json, "validation_step", state->validation_step);
-    cJSON *session = cJSON_AddObjectToObject(json, "session");
-    cJSON_AddNumberToObject(session, "remaining_seconds",
-                            millis() < state->setup_deadline
-                                ? (double)((state->setup_deadline - millis() + 999) / 1000)
-                                : 0);
-    cJSON *network = cJSON_AddObjectToObject(json, "network");
-    cJSON_AddBoolToObject(network, "connected", state->connected);
-    cJSON_AddStringToObject(network, "state", state->connected ? "connected" : "disconnected");
-    cJSON_AddStringToObject(network, "ssid", state->network_ssid);
-    cJSON_AddStringToObject(network, "ip", state->network_ip);
-    cJSON *networks = cJSON_AddArrayToObject(network, "saved_networks");
-    for (unsigned i = 0; i < state->network_count; i++) {
+    bool ok = true;
+    uint64_t now = millis();
+    uint64_t now_epoch = epoch();
+    json_add_num(json, "protocol", QUOTA_PROTOCOL_VERSION, &ok);
+    json_add_str(json, "firmware", quota_portable_service_firmware(), &ok);
+    json_add_str(json, "storage_error", state->storage_error, &ok);
+    json_add_bool(json, "validating", state->validating, &ok);
+    json_add_str(json, "validation_step", state->validation_step, &ok);
+    cJSON *session = json_add_obj(json, "session", &ok);
+    json_add_num(session, "remaining_seconds",
+                 (double)quota_remaining_seconds(state->setup_deadline, now), &ok);
+    cJSON *network = json_add_obj(json, "network", &ok);
+    json_add_bool(network, "connected", state->connected, &ok);
+    json_add_str(network, "state", state->connected ? "connected" : "disconnected", &ok);
+    json_add_str(network, "ssid", state->network_ssid, &ok);
+    json_add_str(network, "ip", state->network_ip, &ok);
+    cJSON *networks = json_add_arr(network, "saved_networks", &ok);
+    for (unsigned i = 0; ok && i < state->network_count; i++) {
         cJSON *item = cJSON_CreateObject();
-        cJSON_AddNumberToObject(item, "index", i);
-        cJSON_AddStringToObject(item, "ssid", state->ssids[i]);
-        cJSON_AddBoolToObject(item, "selected", i == state->selected_network);
-        cJSON_AddStringToObject(item, "validation", validation_name(state->network_validation[i]));
-        cJSON_AddStringToObject(item, "error_code", state->network_errors[i]);
-        cJSON_AddItemToArray(networks, item);
+        if (!item) {
+            ok = false;
+            break;
+        }
+        json_add_num(item, "index", i, &ok);
+        json_add_str(item, "ssid", state->ssids[i], &ok);
+        json_add_bool(item, "selected", i == state->selected_network, &ok);
+        json_add_str(item, "validation", validation_name(state->network_validation[i]), &ok);
+        json_add_str(item, "error_code", state->network_errors[i], &ok);
+        json_push_item(networks, item, &ok);
     }
-    cJSON *clock = cJSON_AddObjectToObject(json, "clock");
-    cJSON_AddNumberToObject(clock, "epoch", (double)epoch());
-    cJSON_AddBoolToObject(clock, "synchronized", state->clock_ready);
-    cJSON *settings = cJSON_AddObjectToObject(json, "settings");
-    cJSON_AddNumberToObject(settings, "refresh_seconds", state->refresh_seconds);
-    cJSON_AddBoolToObject(settings, "auto_refresh", state->auto_refresh);
-    cJSON_AddNumberToObject(settings, "screen_timeout_seconds", state->screen_timeout_seconds);
-    cJSON *accounts = cJSON_AddArrayToObject(json, "accounts");
+    cJSON *clock = json_add_obj(json, "clock", &ok);
+    json_add_num(clock, "epoch", (double)now_epoch, &ok);
+    json_add_bool(clock, "synchronized", state->clock_ready, &ok);
+    cJSON *settings = json_add_obj(json, "settings", &ok);
+    json_add_num(settings, "refresh_seconds", state->refresh_seconds, &ok);
+    json_add_bool(settings, "auto_refresh", state->auto_refresh, &ok);
+    json_add_num(settings, "screen_timeout_seconds", state->screen_timeout_seconds, &ok);
+    cJSON *accounts = json_add_arr(json, "accounts", &ok);
     static const char *statuses[] = {"ok", "waiting", "expired", "error", "unsupported"},
                       *auth_names[] = {"pending", "ready", "expired", "error"};
-    for (unsigned row = 0; row < state->entry_count; row++) {
+    for (unsigned row = 0; ok && row < state->entry_count; row++) {
         const quota_catalog_entry_t *entry = &state->entries[row];
         cJSON *item = cJSON_CreateObject();
-        cJSON_AddStringToObject(item, "id", entry->logical_id);
-        cJSON_AddStringToObject(item, "provider", provider_name(entry->provider));
-        cJSON_AddStringToObject(item, "label", entry->label);
+        if (!item) {
+            ok = false;
+            break;
+        }
+        json_add_str(item, "id", entry->logical_id, &ok);
+        json_add_str(item, "provider", provider_name(entry->provider), &ok);
+        json_add_str(item, "label", entry->label, &ok);
         bool queued = state->queue.present && !strcmp(state->queue.id, entry->logical_id);
-        cJSON_AddStringToObject(item, "error_code",
-                                queued && state->queue.error[0] ? state->queue.error
-                                                                : state->metadata[row].error);
-        cJSON_AddStringToObject(item, "validation",
-                                queued ? (state->queue.error[0] ? "failed" : "pending")
-                                       : account_validation_name(state->metadata[row].auth));
+        json_add_str(
+            item, "error_code",
+            queued && state->queue.error[0] ? state->queue.error : state->metadata[row].error, &ok);
+        json_add_str(item, "validation",
+                     queued ? (state->queue.error[0] ? "failed" : "pending")
+                            : account_validation_name(state->metadata[row].auth),
+                     &ok);
         int index = quota_find_account_by_id(&state->snapshot, entry->logical_id);
         const quota_account_t *account = index >= 0 ? &state->snapshot.accounts[index] : NULL;
-        cJSON_AddStringToObject(item, "status",
-                                account
-                                    ? statuses[(unsigned)account->status <= QUOTA_STATUS_UNSUPPORTED
-                                                   ? account->status
-                                                   : QUOTA_STATUS_ERROR]
-                                    : "waiting");
-        cJSON_AddStringToObject(
-            item, "auth_state",
-            auth_names[(unsigned)state->metadata[row].auth <= QUOTA_PORTABLE_AUTH_ERROR
-                           ? state->metadata[row].auth
-                           : QUOTA_PORTABLE_AUTH_ERROR]);
-        uint64_t remaining = state->metadata[row].retry_ms > millis()
-                                 ? (state->metadata[row].retry_ms - millis() + 999) / 1000
-                                 : 0;
-        cJSON_AddNumberToObject(item, "retry_after_seconds", (double)remaining);
+        json_add_str(item, "status",
+                     account ? statuses[(unsigned)account->status <= QUOTA_STATUS_UNSUPPORTED
+                                            ? account->status
+                                            : QUOTA_STATUS_ERROR]
+                             : "waiting",
+                     &ok);
+        json_add_str(item, "auth_state",
+                     auth_names[(unsigned)state->metadata[row].auth <= QUOTA_PORTABLE_AUTH_ERROR
+                                    ? state->metadata[row].auth
+                                    : QUOTA_PORTABLE_AUTH_ERROR],
+                     &ok);
+        uint64_t remaining = quota_remaining_seconds(state->metadata[row].retry_ms, now);
+        json_add_num(item, "retry_after_seconds", (double)remaining, &ok);
         if (state->clock_ready && remaining)
-            cJSON_AddNumberToObject(item, "retry_at", (double)(epoch() + remaining));
+            json_add_num(item, "retry_at", (double)(now_epoch + remaining), &ok);
         if (account) {
-            cJSON_AddStringToObject(item, "email", account->email);
-            cJSON_AddStringToObject(item, "plan", account->plan);
+            json_add_str(item, "email", account->email, &ok);
+            json_add_str(item, "plan", account->plan, &ok);
             if (account->has_observed_at)
-                cJSON_AddNumberToObject(item, "observed_at", (double)account->observed_at);
-            cJSON_AddItemToObject(item, "five_hour", window_json(&account->five_hour));
-            cJSON_AddItemToObject(item, "seven_day", window_json(&account->seven_day));
-            cJSON *balance = cJSON_AddObjectToObject(item, "balance"),
-                  *infos = cJSON_AddArrayToObject(balance, "balance_infos");
-            const quota_currency_balance_t *cny =
-                quota_balance_cny(&state->snapshot.balances[index]);
-            if (cny) {
+                json_add_num(item, "observed_at", (double)account->observed_at, &ok);
+            json_set_item(item, "five_hour", window_json(&account->five_hour, &ok), &ok);
+            json_set_item(item, "seven_day", window_json(&account->seven_day, &ok), &ok);
+            cJSON *balance = json_add_obj(item, "balance", &ok);
+            cJSON *infos = json_add_arr(balance, "balance_infos", &ok);
+            const quota_balance_t *bal = &state->snapshot.balances[index];
+            for (unsigned c = 0;
+                 ok && bal->present && c < bal->currency_count && c < QUOTA_BALANCE_CURRENCIES;
+                 c++) {
+                if (!bal->balance_infos[c].currency[0] || !bal->balance_infos[c].total_balance[0])
+                    continue;
                 cJSON *info = cJSON_CreateObject();
-                cJSON_AddStringToObject(info, "currency", "CNY");
-                cJSON_AddStringToObject(info, "total_balance", cny->total_balance);
-                cJSON_AddItemToArray(infos, info);
+                if (!info) {
+                    ok = false;
+                    break;
+                }
+                json_add_str(info, "currency", bal->balance_infos[c].currency, &ok);
+                json_add_str(info, "total_balance", bal->balance_infos[c].total_balance, &ok);
+                json_push_item(infos, info, &ok);
             }
         }
-        cJSON_AddItemToArray(accounts, item);
+        json_push_item(accounts, item, &ok);
     }
     /* A new ChatGPT account has no row until it is authorized; it is listed as pending. */
     bool listed = false;
     for (unsigned row = 0; row < state->entry_count; row++)
         listed = listed || !strcmp(state->entries[row].logical_id, state->queue.id);
-    if (state->queue.present && !listed) {
+    if (ok && state->queue.present && !listed) {
         cJSON *item = cJSON_CreateObject();
-        cJSON_AddStringToObject(item, "id", state->queue.id);
-        cJSON_AddStringToObject(item, "provider", provider_name(QUOTA_PROVIDER_CODEX));
-        cJSON_AddStringToObject(item, "label", state->queue.label);
-        cJSON_AddStringToObject(item, "error_code", state->queue.error);
-        cJSON_AddStringToObject(item, "status", "waiting");
-        cJSON_AddStringToObject(item, "auth_state", "pending");
-        cJSON_AddStringToObject(item, "validation", state->queue.error[0] ? "failed" : "pending");
-        cJSON_AddNumberToObject(item, "retry_after_seconds", 0);
-        cJSON_AddItemToArray(accounts, item);
+        if (!item)
+            ok = false;
+        else {
+            json_add_str(item, "id", state->queue.id, &ok);
+            json_add_str(item, "provider", provider_name(QUOTA_PROVIDER_CODEX), &ok);
+            json_add_str(item, "label", state->queue.label, &ok);
+            json_add_str(item, "error_code", state->queue.error, &ok);
+            json_add_str(item, "status", "waiting", &ok);
+            json_add_str(item, "auth_state", "pending", &ok);
+            json_add_str(item, "validation", state->queue.error[0] ? "failed" : "pending", &ok);
+            json_add_num(item, "retry_after_seconds", 0, &ok);
+            json_push_item(accounts, item, &ok);
+        }
     }
-    cJSON *operation = cJSON_AddObjectToObject(json, "operation");
+    cJSON *operation = json_add_obj(json, "operation", &ok);
     static const char *operations[] = {"none", "login", "key", "query", "save"};
-    cJSON_AddStringToObject(operation, "kind", operations[state->operation_kind]);
-    cJSON_AddStringToObject(operation, "request_id", state->operation_job);
-    cJSON_AddStringToObject(operation, "state",
-                            state->operation_kind == OP_SAVE                        ? "saving"
-                            : state->login_state == QUOTA_PORTABLE_LOGIN_QUEUED     ? "queued"
-                            : state->login_state == QUOTA_PORTABLE_LOGIN_EXCHANGING ? "exchanging"
-                                                                                    : "waiting");
-    cJSON_AddNumberToObject(operation, "seconds_left",
-                            state->operation_deadline > millis()
-                                ? (double)((state->operation_deadline - millis() + 999) / 1000)
-                                : 0);
-    cJSON_AddBoolToObject(operation, "cancelable",
-                          state->operation_kind != OP_NONE && state->operation_kind != OP_SAVE);
+    json_add_str(operation, "kind", operations[state->operation_kind], &ok);
+    json_add_str(operation, "request_id", state->operation_job, &ok);
+    json_add_str(operation, "state",
+                 state->operation_kind == OP_SAVE                        ? "saving"
+                 : state->login_state == QUOTA_PORTABLE_LOGIN_QUEUED     ? "queued"
+                 : state->login_state == QUOTA_PORTABLE_LOGIN_EXCHANGING ? "exchanging"
+                                                                         : "waiting",
+                 &ok);
+    json_add_num(operation, "seconds_left",
+                 (double)quota_remaining_seconds(state->operation_deadline, now), &ok);
+    json_add_bool(operation, "cancelable",
+                  state->operation_kind != OP_NONE && state->operation_kind != OP_SAVE, &ok);
     if (transport == QUOTA_SETUP_USB) {
         static const char *login_names[] = {
             "idle",       "queued",    "connecting", "requesting_code", "waiting",
             "exchanging", "succeeded", "failed",     "canceled",        "expired"};
-        cJSON *login = cJSON_AddObjectToObject(json, "login");
-        cJSON_AddStringToObject(login, "state",
-                                (unsigned)state->login_state <
-                                        sizeof(login_names) / sizeof(login_names[0])
-                                    ? login_names[state->login_state]
-                                    : "failed");
+        cJSON *login = json_add_obj(json, "login", &ok);
+        json_add_str(login, "state",
+                     (unsigned)state->login_state < sizeof(login_names) / sizeof(login_names[0])
+                         ? login_names[state->login_state]
+                         : "failed",
+                     &ok);
         bool awaiting =
             state->operation_kind == OP_LOGIN && state->login_state == QUOTA_PORTABLE_LOGIN_WAITING;
-        cJSON_AddStringToObject(login, "verification_url",
-                                awaiting && state->login_code[0] ? QUOTA_DIRECT_VERIFICATION_URL
-                                                                 : "");
-        cJSON_AddStringToObject(login, "user_code", awaiting ? state->login_code : "");
-        cJSON_AddStringToObject(login, "error_code", state->login_error);
-        cJSON_AddStringToObject(login, "account_id", state->queue.present ? state->queue.id : "");
-        cJSON_AddNumberToObject(login, "seconds_left",
-                                awaiting && state->login_deadline > millis()
-                                    ? (double)((state->login_deadline - millis() + 999) / 1000)
-                                    : 0);
+        json_add_str(login, "verification_url",
+                     awaiting && state->login_code[0] ? QUOTA_DIRECT_VERIFICATION_URL : "", &ok);
+        json_add_str(login, "user_code", awaiting ? state->login_code : "", &ok);
+        json_add_str(login, "error_code", state->login_error, &ok);
+        json_add_str(login, "account_id", state->queue.present ? state->queue.id : "", &ok);
+        json_add_num(login, "seconds_left",
+                     awaiting ? (double)quota_remaining_seconds(state->login_deadline, now) : 0,
+                     &ok);
     }
-    cJSON *jobs = cJSON_AddArrayToObject(json, "jobs");
+    cJSON *jobs = json_add_arr(json, "jobs", &ok);
     static const char *job_states[] = {"queued", "running", "succeeded", "failed"};
-    for (unsigned i = 0; i < state->job_count; i++) {
+    for (unsigned i = 0; ok && i < state->job_count; i++) {
         cJSON *job = cJSON_CreateObject();
-        cJSON_AddStringToObject(job, "request_id", state->jobs[i].id);
-        cJSON_AddStringToObject(job, "op", op_name(state->jobs[i].op));
-        cJSON_AddStringToObject(job, "status", job_states[state->jobs[i].state]);
-        cJSON_AddStringToObject(job, "error_code", state->jobs[i].error);
-        cJSON_AddItemToArray(jobs, job);
+        if (!job) {
+            ok = false;
+            break;
+        }
+        json_add_str(job, "request_id", state->jobs[i].id, &ok);
+        json_add_str(job, "op", op_name(state->jobs[i].op), &ok);
+        json_add_str(job, "status", job_states[state->jobs[i].state], &ok);
+        json_add_str(job, "error_code", state->jobs[i].error, &ok);
+        json_push_item(jobs, job, &ok);
     }
-    bool ok = cJSON_PrintPreallocated(json, buffer, (int)capacity, false);
+    if (ok)
+        ok = cJSON_PrintPreallocated(json, buffer, (int)capacity, false);
     cJSON_Delete(json);
     free(state);
     if (ok)
@@ -1458,6 +1548,7 @@ static void clear_ready_network_view(void)
 {
     bool changed_view = false;
     lock();
+    s_wifi_rssi = 0;
     if (s_view.network_state == QUOTA_PORTABLE_NETWORK_READY ||
         s_view.network_state == QUOTA_PORTABLE_NETWORK_CONNECTED) {
         s_view.network_state =
@@ -1686,9 +1777,9 @@ static void open_attempt(void)
     }
     unlock();
 }
-static bool connected_ip(const quota_portable_network_t *network, char ip[16])
+static bool connected_ip(const quota_portable_network_t *network, char ip[16], int8_t *rssi)
 {
-    wifi_ap_record_t ap;
+    wifi_ap_record_t ap = {0};
     esp_netif_ip_info_t info;
     esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     size_t ssid_len = network ? strlen(network->ssid) : 0;
@@ -1698,6 +1789,8 @@ static bool connected_ip(const quota_portable_network_t *network, char ip[16])
         !info.ip.addr)
         return false;
     snprintf(ip, 16, IPSTR, IP2STR(&info.ip));
+    if (rssi)
+        *rssi = ap.rssi < 0 ? ap.rssi : 0;
     return true;
 }
 static uint32_t next_wifi_request_id(void)
@@ -1749,6 +1842,7 @@ static bool connect_network(const quota_portable_network_t *network)
     s_retry_at = millis() + (s_resume_budget_pending ? s_resume_budget_ms : NETWORK_TIMEOUT_MS);
     clear_network_attempt_budget();
     lock();
+    s_wifi_rssi = 0;
     s_view.network_state = ok ? QUOTA_PORTABLE_NETWORK_CONNECTING : QUOTA_PORTABLE_NETWORK_ERROR;
     copy(s_view.network_ssid, sizeof(s_view.network_ssid), network->ssid);
     s_view.network_ip[0] = 0;
@@ -1793,10 +1887,13 @@ static const char *result_error(quota_direct_result_code_t code)
 static void sync_public_locked(void)
 {
     quota_service_view_t *view = s_hooks.view;
+    uint64_t now = millis();
+    uint64_t now_epoch = epoch();
     view->configured = s_model_ready;
     view->snapshot_valid = s_model_ready;
     view->connected = s_view.network_state == QUOTA_PORTABLE_NETWORK_READY ||
                       s_view.network_state == QUOTA_PORTABLE_NETWORK_CONNECTED;
+    view->wifi_rssi = view->connected ? s_wifi_rssi : 0;
     view->refreshing = !s_sleeping && s_refreshing;
     s_view.validating = s_validation.active;
     s_view.setup_opening = s_open && !s_view.setup_active;
@@ -1808,7 +1905,7 @@ static void sync_public_locked(void)
     view->auto_refresh = s_model.auto_refresh;
     view->screen_timeout_seconds = s_model.screen_timeout_seconds;
     view->clock_synchronized = s_clock_ready;
-    view->now_epoch = epoch();
+    view->now_epoch = now_epoch;
     copy(s_view.storage_error, sizeof(s_view.storage_error), s_storage_error);
     s_view.saved_network_count = s_model.network_count <= QUOTA_PORTABLE_NETWORKS
                                      ? s_model.network_count
@@ -1817,7 +1914,8 @@ static void sync_public_locked(void)
     memset(s_view.saved_network_ssids, 0, sizeof(s_view.saved_network_ssids));
     for (unsigned i = 0; i < s_view.saved_network_count; i++) {
         copy(s_view.saved_network_ssids[i], sizeof(s_view.saved_network_ssids[i]),
-             s_model.networks[i].ssid);
+             s_staged.present && s_staged.index == i ? s_staged.network.ssid
+                                                     : s_model.networks[i].ssid);
     }
     unsigned pending = 0, failed = 0;
     memset(s_view.saved_network_validation, 0, sizeof(s_view.saved_network_validation));
@@ -1829,39 +1927,60 @@ static void sync_public_locked(void)
         pending += s_network_validation[i] == QUOTA_VALIDATION_PENDING;
         failed += s_network_validation[i] == QUOTA_VALIDATION_FAILED;
     }
+    bool queue_listed = false;
     for (unsigned row = 0; row < s_model.entry_count; row++) {
-        pending += s_accounts[row].auth == QUOTA_PORTABLE_AUTH_PENDING;
-        failed += s_accounts[row].auth == QUOTA_PORTABLE_AUTH_REAUTH ||
-                  s_accounts[row].auth == QUOTA_PORTABLE_AUTH_ERROR;
+        bool queued =
+            s_login_queue.present && !strcmp(s_login_queue.id, s_model.entries[row].logical_id);
+        if (queued) {
+            queue_listed = true;
+            pending += s_login_queue.error[0] == 0;
+            failed += s_login_queue.error[0] != 0;
+        } else {
+            pending += s_accounts[row].auth == QUOTA_PORTABLE_AUTH_PENDING;
+            failed += s_accounts[row].auth == QUOTA_PORTABLE_AUTH_REAUTH ||
+                      s_accounts[row].auth == QUOTA_PORTABLE_AUTH_ERROR;
+        }
     }
-    if (s_login_queue.present) {
+    s_view.queued_login_new = false;
+    s_view.queued_login_label[0] = 0;
+    s_view.queued_login_validation = QUOTA_VALIDATION_SAVED;
+    s_view.queued_login_error[0] = 0;
+    if (s_login_queue.present && !queue_listed) {
         pending += s_login_queue.error[0] == 0;
         failed += s_login_queue.error[0] != 0;
+        s_view.queued_login_new = true;
+        copy(s_view.queued_login_label, sizeof(s_view.queued_login_label), s_login_queue.label);
+        s_view.queued_login_validation =
+            s_login_queue.error[0] ? QUOTA_VALIDATION_FAILED : QUOTA_VALIDATION_PENDING;
+        copy(s_view.queued_login_error, sizeof(s_view.queued_login_error), s_login_queue.error);
     }
     copy(s_view.firmware, sizeof(s_view.firmware), quota_portable_service_firmware());
     memset(s_view.account_validation, 0, sizeof(s_view.account_validation));
-    for (unsigned i = 0; i < s_snapshot.account_count; i++) {
-        int row = quota_catalog_find(&s_model, s_snapshot.accounts[i].id);
-        if (row < 0)
-            continue;
-        s_view.account_validation[i] =
-            s_accounts[row].auth == QUOTA_PORTABLE_AUTH_READY     ? QUOTA_VALIDATION_OK
-            : s_accounts[row].auth == QUOTA_PORTABLE_AUTH_PENDING ? QUOTA_VALIDATION_PENDING
-                                                                  : QUOTA_VALIDATION_FAILED;
-    }
-    s_view.pending_items = pending > UINT8_MAX ? UINT8_MAX : (uint8_t)pending;
-    s_view.failed_items = failed > UINT8_MAX ? UINT8_MAX : (uint8_t)failed;
     memset(s_view.account_errors, 0, sizeof(s_view.account_errors));
     memset(s_view.account_retry_at, 0, sizeof(s_view.account_retry_at));
     for (unsigned i = 0; i < s_snapshot.account_count; i++) {
         int row = quota_catalog_find(&s_model, s_snapshot.accounts[i].id);
         if (row < 0)
             continue;
-        copy(s_view.account_errors[i], sizeof(s_view.account_errors[i]), s_accounts[row].error);
-        uint64_t retry = s_accounts[row].retry_ms;
-        s_view.account_retry_at[i] =
-            s_clock_ready && retry > millis() ? epoch() + (retry - millis() + 999) / 1000 : 0;
+        bool queued =
+            s_login_queue.present && !strcmp(s_login_queue.id, s_model.entries[row].logical_id);
+        if (queued) {
+            s_view.account_validation[i] =
+                s_login_queue.error[0] ? QUOTA_VALIDATION_FAILED : QUOTA_VALIDATION_PENDING;
+            copy(s_view.account_errors[i], sizeof(s_view.account_errors[i]),
+                 s_login_queue.error[0] ? s_login_queue.error : s_accounts[row].error);
+        } else {
+            s_view.account_validation[i] =
+                s_accounts[row].auth == QUOTA_PORTABLE_AUTH_READY     ? QUOTA_VALIDATION_OK
+                : s_accounts[row].auth == QUOTA_PORTABLE_AUTH_PENDING ? QUOTA_VALIDATION_PENDING
+                                                                      : QUOTA_VALIDATION_FAILED;
+            copy(s_view.account_errors[i], sizeof(s_view.account_errors[i]), s_accounts[row].error);
+        }
+        uint64_t retry_left = quota_remaining_seconds(s_accounts[row].retry_ms, now);
+        s_view.account_retry_at[i] = s_clock_ready && retry_left ? now_epoch + retry_left : 0;
     }
+    s_view.pending_items = pending > UINT8_MAX ? UINT8_MAX : (uint8_t)pending;
+    s_view.failed_items = failed > UINT8_MAX ? UINT8_MAX : (uint8_t)failed;
 }
 /* The candidate network failed its validation. */
 static void cancel_candidate(const char *error)
@@ -2011,12 +2130,11 @@ static bool select_connected_network(unsigned index, network_selection_kind_t ki
         changed();
         return true;
     }
-    quota_model_t *candidate = malloc(sizeof(*candidate));
+    quota_model_t *candidate = clone_model(&s_model);
     if (!candidate) {
         storage_failed(QUOTA_STORE_READ_NO_MEMORY);
         return false;
     }
-    *candidate = s_model;
     if (commit_staged)
         candidate->networks[s_staged.index] = s_staged.network;
     candidate->selected_network = (uint8_t)index;
@@ -2211,7 +2329,7 @@ static void collect_scan_records(uint64_t now)
     if (!s_scan_results_remaining)
         finish_scan_collection(now);
 }
-static void mark_network_ready(unsigned index, const char *ip)
+static void mark_network_ready(unsigned index, const char *ip, int8_t rssi)
 {
     lock();
     if (index < s_model.network_count && index == s_model.selected_network &&
@@ -2221,6 +2339,7 @@ static void mark_network_ready(unsigned index, const char *ip)
         s_network_validation[index] = QUOTA_VALIDATION_OK;
         s_network_error[index][0] = 0;
     }
+    s_wifi_rssi = rssi;
     s_view.network_state =
         s_clock_ready ? QUOTA_PORTABLE_NETWORK_READY : QUOTA_PORTABLE_NETWORK_CONNECTED;
     copy(s_view.network_ip, sizeof(s_view.network_ip), ip);
@@ -2324,7 +2443,8 @@ static void maintain_network(void)
             return;
         }
         char ip[16];
-        if (connected_ip(target, ip)) {
+        int8_t rssi = 0;
+        if (connected_ip(target, ip, &rssi)) {
             if (candidate || s_network_attempt_index != UINT8_MAX) {
                 network_selection_kind_t kind =
                     candidate ? NETWORK_SELECTION_CANDIDATE : NETWORK_SELECTION_NORMAL;
@@ -2366,7 +2486,7 @@ static void maintain_network(void)
             }
             unsigned connected_index = s_connected_network_index;
             if (connected_index < s_model.network_count)
-                mark_network_ready(connected_index, ip);
+                mark_network_ready(connected_index, ip, rssi);
             return; /* A failed SNTP attempt keeps this Wi-Fi link in use. */
         }
 
@@ -2481,12 +2601,11 @@ static void finish_operation(const char *error)
         return;
     operation_kind_t kind = s_operation.kind == OP_SAVE ? s_operation.save_kind : s_operation.kind;
     if (s_model.intent.kind == QUOTA_INTENT_UPSERT_NATIVE) {
-        quota_model_t *candidate = malloc(sizeof(*candidate));
+        quota_model_t *candidate = clone_model(&s_model);
         if (!candidate) {
             storage_failed(QUOTA_STORE_READ_NO_MEMORY);
             return;
         }
-        *candidate = s_model;
         memset(&candidate->intent, 0, sizeof(candidate->intent));
         bool cleared = submit_model(candidate, false, NULL);
         dispose_candidate(candidate);
@@ -2583,15 +2702,16 @@ static const char *start_account(const quota_portable_command_t *command, operat
     if (kind == OP_KEY && !command->api_key[0]) {
         if (row < 0)
             return "invalid_request";
-        quota_model_t *candidate = malloc(sizeof(*candidate));
+        quota_model_t *candidate = clone_model(&s_model);
         if (!candidate)
             return "no_memory";
-        *candidate = s_model;
         copy(candidate->entries[row].label, sizeof(candidate->entries[row].label), command->label);
         bool saved = submit_model(candidate, true, command->request_id);
         dispose_candidate(candidate);
         return saved || s_dirty_model ? NULL : "storage_failed";
     }
+    if (kind == OP_KEY && !quota_portable_token_is_safe(command->api_key, QUOTA_PORTABLE_KEY_BYTES))
+        return "invalid_request";
     /* A new ChatGPT account the user queued will take a row too. */
     unsigned rows = s_model.entry_count +
                     (kind == OP_KEY && s_login_queue.present && s_login_queue.is_new ? 1 : 0);
@@ -2645,12 +2765,11 @@ static const char *start_account(const quota_portable_command_t *command, operat
         quota_store_credential_release(credential);
         return "generation_exhausted";
     }
-    quota_model_t *candidate = malloc(sizeof(*candidate));
+    quota_model_t *candidate = clone_model(&s_model);
     if (!candidate) {
         quota_store_credential_release(credential);
         return "no_memory";
     }
-    *candidate = s_model;
     quota_model_intent_t *intent = &candidate->intent;
     memset(intent, 0, sizeof(*intent));
     intent->kind = QUOTA_INTENT_UPSERT_NATIVE;
@@ -2724,10 +2843,9 @@ static const char *start_account(const quota_portable_command_t *command, operat
 }
 static const char *catalog_command(const quota_portable_command_t *command)
 {
-    quota_model_t *candidate = malloc(sizeof(*candidate));
+    quota_model_t *candidate = clone_model(&s_model);
     if (!candidate)
         return "no_memory";
-    *candidate = s_model;
     const char *error = NULL;
     int row = quota_catalog_find(candidate, command->account_id);
     if (row < 0)
@@ -2889,10 +3007,9 @@ static const char *save_network(const quota_portable_command_t *command)
         unlock();
         return NULL;
     }
-    quota_model_t *candidate = malloc(sizeof(*candidate));
+    quota_model_t *candidate = clone_model(&s_model);
     if (!candidate)
         return "no_memory";
-    *candidate = s_model;
     copy(candidate->networks[index].ssid, sizeof(candidate->networks[index].ssid), command->ssid);
     copy(candidate->networks[index].password, sizeof(candidate->networks[index].password),
          command->password);
@@ -2908,10 +3025,9 @@ static const char *remove_network(const quota_portable_command_t *command)
     unsigned index = command->network_index;
     if (index >= s_model.network_count)
         return "invalid_request";
-    quota_model_t *candidate = malloc(sizeof(*candidate));
+    quota_model_t *candidate = clone_model(&s_model);
     if (!candidate)
         return "no_memory";
-    *candidate = s_model;
     memmove(&candidate->networks[index], &candidate->networks[index + 1],
             (candidate->network_count - index - 1) * sizeof(candidate->networks[0]));
     quota_portable_clear_secret(&candidate->networks[--candidate->network_count],
@@ -2968,12 +3084,11 @@ static void process_command(quota_portable_command_t *command)
             error = "invalid_request";
             break;
         }
-        quota_model_t *candidate = malloc(sizeof(*candidate));
+        quota_model_t *candidate = clone_model(&s_model);
         if (!candidate) {
             error = "no_memory";
             break;
         }
-        *candidate = s_model;
         bool timer_changed = candidate->refresh_seconds != command->refresh_seconds ||
                              candidate->auto_refresh != command->auto_refresh;
         candidate->refresh_seconds = command->refresh_seconds;
@@ -3018,15 +3133,16 @@ static void process_command(quota_portable_command_t *command)
         } else if (s_operation.kind != OP_NONE)
             error = "busy";
         else {
-            if (s_login_queue.present && !strcmp(s_login_queue.id, command->account_id)) {
-                lock();
-                s_login_queue.present = false;
-                unlock();
-            }
             error = catalog_command(command);
             if (error && !strcmp(error, "storage_pending")) {
                 error = NULL;
                 pending = true;
+            }
+            if (!error && s_login_queue.present && !strcmp(s_login_queue.id, command->account_id)) {
+                lock();
+                s_login_queue.present = false;
+                sync_public_locked();
+                unlock();
             }
         }
         break;
@@ -3048,7 +3164,7 @@ static void process_command(quota_portable_command_t *command)
         cancel_operation(command->target_request_id);
         break;
     default:
-        error = "unsupported";
+        error = "unsupported_operation";
         break;
     }
     if (!pending)
@@ -3440,7 +3556,7 @@ static void load_authority(void)
     if (s_dirty_model || s_recovery_blocked || s_operation.kind != OP_NONE ||
         millis() < s_init_retry_at)
         return;
-    quota_model_t *loaded = malloc(sizeof(*loaded));
+    quota_model_t *loaded = calloc(1, sizeof(*loaded));
     if (!loaded) {
         storage_failed(QUOTA_STORE_READ_NO_MEMORY);
         s_init_retry_at = millis() + 5000;
@@ -3450,7 +3566,7 @@ static void load_authority(void)
     quota_store_read_result_t result = quota_store_load_model_result(loaded, &sequence);
     if (result == QUOTA_STORE_READ_OK) {
         lock();
-        s_model = *loaded;
+        quota_catalog_canonicalize_model(&s_model, loaded);
         s_sequence = sequence;
         s_model_ready = true;
         unlock();
@@ -3486,7 +3602,8 @@ static void load_authority(void)
         /* No catalog: a new device starts empty, without accounts or Wi-Fi, and stale credentials
          * are freed. */
         quota_store_read_result_t orphans = quota_store_release_orphan_credentials();
-        quota_model_t *initial = orphans == QUOTA_STORE_READ_OK ? malloc(sizeof(*initial)) : NULL;
+        quota_model_t *initial =
+            orphans == QUOTA_STORE_READ_OK ? calloc(1, sizeof(*initial)) : NULL;
         if (orphans != QUOTA_STORE_READ_OK) {
             storage_failed(orphans);
             s_model_ready = false;
@@ -3515,9 +3632,8 @@ static void cache_tick(void)
     s_cache_at = millis() + (ok ? CACHE_INTERVAL_MS : 30000);
     if (ok) {
         s_cache_dirty = false;
-        quota_model_t *candidate = malloc(sizeof(*candidate));
+        quota_model_t *candidate = clone_model(&s_model);
         if (candidate) {
-            *candidate = s_model;
             candidate->last_known_time = epoch();
             (void)submit_model(candidate, false, NULL);
             dispose_candidate(candidate);
@@ -3688,15 +3804,22 @@ void quota_portable_service_tick(bool sleeping, uint32_t generation)
         quota_portable_clear_secret(finished_queue, QUEUE_DEPTH * sizeof(*finished_queue));
         free(finished_queue);
     }
-    if (s_local_settings_pending && !storage_barrier()) {
-        quota_portable_command_t local = {
-            .op = QUOTA_PORTABLE_OP_SETTINGS_SAVE,
-            .refresh_seconds = s_local_settings.refresh_seconds,
-            .auto_refresh = s_local_settings.auto_refresh,
-            .screen_timeout_seconds = s_local_settings.screen_timeout_seconds,
-            .accepted_config_generation = s_local_settings_generation};
-        s_local_settings_pending = false;
-        process_command(&local);
+    if (!storage_barrier()) {
+        quota_portable_command_t local = {0};
+        bool run_local = false;
+        lock();
+        if (s_local_settings_pending) {
+            local.op = QUOTA_PORTABLE_OP_SETTINGS_SAVE;
+            local.refresh_seconds = s_local_settings.refresh_seconds;
+            local.auto_refresh = s_local_settings.auto_refresh;
+            local.screen_timeout_seconds = s_local_settings.screen_timeout_seconds;
+            local.accepted_config_generation = s_local_settings_generation;
+            s_local_settings_pending = false;
+            run_local = true;
+        }
+        unlock();
+        if (run_local)
+            process_command(&local);
     }
     if (sleeping) {
         stop_clock();
@@ -3704,6 +3827,7 @@ void quota_portable_service_tick(bool sleeping, uint32_t generation)
             s_wifi_active = false;
         pause_network_for_sleep();
         lock();
+        s_wifi_rssi = 0;
         s_view.network_state = QUOTA_PORTABLE_NETWORK_OFF;
         s_view.network_ip[0] = 0;
         s_refreshing = false;
@@ -3734,19 +3858,33 @@ void quota_portable_service_tick(bool sleeping, uint32_t generation)
             login_tick();
         else if (!s_validation.active)
             source_tick();
-        if (s_selection_dirty && s_operation.kind == OP_NONE) {
-            quota_model_t *candidate = malloc(sizeof(*candidate));
-            if (candidate) {
-                *candidate = s_model;
-                int row = quota_catalog_find(candidate, s_selected_pending);
-                if (row >= 0 && candidate->entries[row].activity == QUOTA_ACCOUNT_ACTIVE) {
-                    copy(candidate->selected_account_id, sizeof(candidate->selected_account_id),
-                         s_selected_pending);
-                    if (submit_model(candidate, true, NULL))
-                        s_selection_dirty = false;
-                } else
-                    s_selection_dirty = false;
-                dispose_candidate(candidate);
+        if (s_operation.kind == OP_NONE) {
+            char pending_id[QUOTA_ACCOUNT_ID_BYTES + 1] = {0};
+            bool dirty = false;
+            lock();
+            if (s_selection_dirty) {
+                copy(pending_id, sizeof(pending_id), s_selected_pending);
+                dirty = true;
+            }
+            unlock();
+            if (dirty) {
+                quota_model_t *candidate = clone_model(&s_model);
+                if (candidate) {
+                    int row = quota_catalog_find(candidate, pending_id);
+                    bool clear_dirty = true;
+                    if (row >= 0 && candidate->entries[row].activity == QUOTA_ACCOUNT_ACTIVE) {
+                        copy(candidate->selected_account_id, sizeof(candidate->selected_account_id),
+                             pending_id);
+                        clear_dirty = submit_model(candidate, true, NULL);
+                    }
+                    if (clear_dirty) {
+                        lock();
+                        if (!strcmp(s_selected_pending, pending_id))
+                            s_selection_dirty = false;
+                        unlock();
+                    }
+                    dispose_candidate(candidate);
+                }
             }
         }
         cache_tick();

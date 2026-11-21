@@ -85,7 +85,8 @@ static bool credential_valid(const quota_portable_credential_t *credential, uint
            text_valid(credential->label, sizeof(credential->label), true, false) &&
            text_valid(credential->access_token, sizeof(credential->access_token), true, true) &&
            text_valid(credential->refresh_token, sizeof(credential->refresh_token), true, true) &&
-           text_valid(credential->api_key, sizeof(credential->api_key), true, true);
+           (credential->api_key[0] == 0 ||
+            quota_portable_token_is_safe(credential->api_key, QUOTA_PORTABLE_KEY_BYTES));
 }
 
 static quota_store_read_result_t nvs_read_error(esp_err_t error)
@@ -149,8 +150,7 @@ bool quota_store_init(void)
     return s_ready;
 }
 
-/* A namespace that does not exist is left alone, so a clean device is never written. */
-bool quota_store_erase_retired(bool default_partition_ready)
+static bool erase_retired_default_namespace(bool default_partition_ready)
 {
     bool ok = true;
     nvs_handle_t handle;
@@ -162,6 +162,14 @@ bool quota_store_erase_retired(bool default_partition_ready)
             nvs_close(handle);
         }
     }
+    return ok;
+}
+
+/* A namespace that does not exist is left alone, so a clean device is never written. */
+bool quota_store_erase_retired(bool default_partition_ready)
+{
+    bool ok = erase_retired_default_namespace(default_partition_ready);
+    nvs_handle_t handle;
     if (s_ready && nvs_open_from_partition(STORE_PARTITION, STORE_NAMESPACE, NVS_READONLY,
                                            &handle) == ESP_OK) {
         nvs_close(handle);
@@ -181,9 +189,9 @@ bool quota_store_erase_retired(bool default_partition_ready)
 
 quota_factory_reset_result_t quota_store_factory_reset(void)
 {
-    /* Without an initialized store the catalog was never deleted, so a failed erase leaves the
-       data untouched and must be reported as a failure rather than a restart-worthy result. */
-    bool catalog_deleted = s_ready;
+    /* Without an initialized store the catalog was not deleted up front; it only becomes deleted
+       once nvs_flash_erase_partition(STORE_PARTITION) actually succeeds. */
+    bool catalog_deleted = false;
     if (s_ready) {
         nvs_handle_t handle;
         if (nvs_open_from_partition(STORE_PARTITION, STORE_NAMESPACE, NVS_READWRITE, &handle) !=
@@ -195,13 +203,18 @@ quota_factory_reset_result_t quota_store_factory_reset(void)
         nvs_close(handle);
         if (error != ESP_OK)
             return QUOTA_FACTORY_RESET_FAILED;
+        catalog_deleted = true;
     }
-    bool ok = quota_store_erase_retired(true);
+    /* Skip erasing retired keys on STORE_PARTITION since the whole partition is erased below. */
+    bool ok = erase_retired_default_namespace(true);
     if (s_ready) {
         s_ready = false;
         ok = nvs_flash_deinit_partition(STORE_PARTITION) == ESP_OK && ok;
     }
-    ok = nvs_flash_erase_partition(STORE_PARTITION) == ESP_OK && ok;
+    bool erased = nvs_flash_erase_partition(STORE_PARTITION) == ESP_OK;
+    if (erased)
+        catalog_deleted = true;
+    ok = erased && ok;
     s_ready = nvs_flash_init_partition(STORE_PARTITION) == ESP_OK;
     if (ok && s_ready)
         return QUOTA_FACTORY_RESET_OK;
@@ -369,10 +382,13 @@ static quota_store_read_result_t read_model_record(model_record_t *record,
 }
 
 /* Replace the slot's credential with a tombstone; a slot that is already free or a tombstone is
- * left alone. The tombstone keeps the generation so later reuse stays monotonic. */
+ * left alone. The tombstone keeps the generation so later reuse stays monotonic. A valid CRC
+ * record of a retired provider is also tombstoned so upgrade cleanup never leaks capacity. */
 static quota_store_read_result_t release_slot(uint8_t slot, const char *fallback_id,
                                               uint32_t fallback_generation)
 {
+    if (slot >= QUOTA_MAX_ACCOUNTS)
+        return QUOTA_STORE_READ_INVALID;
     quota_portable_credential_t *credential = quota_store_credential_acquire();
     if (!credential)
         return s_credential_record ? QUOTA_STORE_READ_BUSY : QUOTA_STORE_READ_NO_MEMORY;
@@ -382,9 +398,29 @@ static quota_store_read_result_t release_slot(uint8_t slot, const char *fallback
     if (result == QUOTA_STORE_READ_OK && !credential->tombstone) {
         memcpy(id, credential->id, sizeof(id));
         generation = credential->generation;
-    } else if (result == QUOTA_STORE_READ_INVALID && quota_id_is_valid(fallback_id)) {
-        memcpy(id, fallback_id, sizeof(id));
-        generation = fallback_generation; /* Unreadable: overwrite. */
+    } else if (result == QUOTA_STORE_READ_INVALID) {
+        /* Check whether the record has a valid envelope/CRC and only failed because its provider
+         * was retired in an upgrade; if so, preserve its id and generation in the tombstone. */
+        credential_record_t *record = s_credential_record;
+        quota_portable_clear_secret(record, sizeof(*record));
+        char key[] = "account0";
+        key[7] = (char)('0' + slot);
+        if (read_record(key, record, sizeof(*record)) == QUOTA_STORE_READ_OK &&
+            record->magic == CREDENTIAL_MAGIC && record->version == STORE_VERSION &&
+            record->bytes == sizeof(*record) &&
+            record->crc == store_crc(record, offsetof(credential_record_t, crc)) &&
+            record->value.slot == slot && record->value.generation != 0 &&
+            record->value.provider != QUOTA_PROVIDER_CODEX &&
+            record->value.provider != QUOTA_PROVIDER_DEEPSEEK &&
+            text_valid(record->value.id, sizeof(record->value.id), false, true) &&
+            quota_id_is_valid(record->value.id)) {
+            memcpy(id, record->value.id, sizeof(id));
+            generation = record->value.generation;
+        } else if (quota_id_is_valid(fallback_id)) {
+            memcpy(id, fallback_id, sizeof(id));
+            generation = fallback_generation; /* Unreadable: overwrite. */
+        }
+        quota_portable_clear_secret(record, sizeof(*record));
     }
     quota_store_credential_release(credential);
     if (result != QUOTA_STORE_READ_OK && result != QUOTA_STORE_READ_MISSING &&
@@ -474,10 +510,10 @@ static quota_store_read_result_t commit_scrubbed_model(model_record_t *record,
     quota_store_read_result_t result = scrub_observations(removed);
     if (result != QUOTA_STORE_READ_OK)
         return result;
-    quota_model_t *scrubbed = malloc(sizeof(*scrubbed));
+    quota_model_t *scrubbed = calloc(1, sizeof(*scrubbed));
     if (!scrubbed)
         return QUOTA_STORE_READ_NO_MEMORY;
-    *scrubbed = record->value;
+    quota_catalog_canonicalize_model(scrubbed, &record->value);
     uint64_t sequence = record->sequence;
     quota_model_write_result_t written =
         quota_store_save_model_verified(sequence, scrubbed, sequence + 1);
@@ -519,7 +555,7 @@ quota_store_read_result_t quota_store_load_model_result(quota_model_t *model, ui
     if (result == QUOTA_STORE_READ_OK && scrubbed)
         result = commit_scrubbed_model(record, removed);
     if (result == QUOTA_STORE_READ_OK) {
-        *model = record->value;
+        quota_catalog_canonicalize_model(model, &record->value);
         *sequence = record->sequence;
     }
     quota_portable_clear_secret(record, sizeof(*record));
@@ -536,19 +572,28 @@ quota_model_write_result_t quota_store_save_model_verified(uint64_t expected_pre
         candidate_sequence != expected_previous_sequence + 1)
         return QUOTA_MODEL_NOT_APPLIED;
     model_record_t *record = calloc(1, sizeof(*record));
-    if (!record)
+    quota_model_t *canonical = calloc(1, sizeof(*canonical));
+    if (!record || !canonical) {
+        free(record);
+        free(canonical);
         return QUOTA_MODEL_WRITE_UNKNOWN; /* A prior attempt may be durable. */
+    }
+    quota_catalog_canonicalize_model(canonical, candidate);
     quota_store_read_result_t before = read_model_record(record, NULL, NULL);
     if (before == QUOTA_STORE_READ_OK && record->sequence == candidate_sequence &&
-        !memcmp(&record->value, candidate, sizeof(*candidate))) {
+        !memcmp(&record->value, canonical, sizeof(*canonical))) {
         quota_portable_clear_secret(record, sizeof(*record));
+        quota_portable_clear_secret(canonical, sizeof(*canonical));
         free(record);
+        free(canonical);
         return QUOTA_MODEL_APPLIED;
     }
     if (!((before == QUOTA_STORE_READ_OK && record->sequence == expected_previous_sequence) ||
           (before == QUOTA_STORE_READ_MISSING && expected_previous_sequence == 0))) {
         quota_portable_clear_secret(record, sizeof(*record));
+        quota_portable_clear_secret(canonical, sizeof(*canonical));
         free(record);
+        free(canonical);
         return QUOTA_MODEL_WRITE_UNKNOWN;
     }
     memset(record, 0, sizeof(*record));
@@ -556,7 +601,7 @@ quota_model_write_result_t quota_store_save_model_verified(uint64_t expected_pre
     record->version = MODEL_VERSION;
     record->bytes = sizeof(*record);
     record->sequence = candidate_sequence;
-    record->value = *candidate;
+    memcpy(&record->value, canonical, sizeof(*canonical));
     record->crc = store_crc(record, offsetof(model_record_t, crc));
     /* A failed write/commit may still be durable. Read back before deciding. */
     (void)write_record("model_v2", record, sizeof(*record));
@@ -565,14 +610,16 @@ quota_model_write_result_t quota_store_save_model_verified(uint64_t expected_pre
     quota_model_write_result_t outcome = QUOTA_MODEL_WRITE_UNKNOWN;
     if (result == QUOTA_STORE_READ_OK) {
         if (record->sequence == candidate_sequence &&
-            !memcmp(&record->value, candidate, sizeof(*candidate)))
+            !memcmp(&record->value, canonical, sizeof(*canonical)))
             outcome = QUOTA_MODEL_APPLIED;
         else if (record->sequence == expected_previous_sequence)
             outcome = QUOTA_MODEL_NOT_APPLIED;
     } else if (result == QUOTA_STORE_READ_MISSING && expected_previous_sequence == 0)
         outcome = QUOTA_MODEL_NOT_APPLIED;
     quota_portable_clear_secret(record, sizeof(*record));
+    quota_portable_clear_secret(canonical, sizeof(*canonical));
     free(record);
+    free(canonical);
     return outcome;
 }
 
@@ -591,7 +638,7 @@ static bool observation_valid(const observation_t *row)
         (unsigned)row->status > QUOTA_STATUS_UNSUPPORTED ||
         (row->has_observed_at && !row->observed_at) || !window_valid(&row->five_hour) ||
         !window_valid(&row->seven_day) || !quota_balance_is_valid(&row->balance) ||
-        !text_valid(row->extras.credits_balance, sizeof(row->extras.credits_balance), true, true))
+        !text_valid(row->extras.credits_balance, sizeof(row->extras.credits_balance), true, false))
         return false;
     return row->binding.native.slot < QUOTA_MAX_ACCOUNTS &&
            row->binding.native.credential_generation &&

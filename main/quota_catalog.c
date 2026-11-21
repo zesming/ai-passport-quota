@@ -119,6 +119,28 @@ bool quota_catalog_scrub_removed(quota_model_t *model, quota_catalog_removed_t *
         memset(&model->entries[kept], 0, (model->entry_count - kept) * sizeof(model->entries[0]));
         model->entry_count = (uint8_t)kept;
     }
+    /* An interrupted add (new_row) or delete of a removed provider has no row in entries[]; clear
+     * it here and record its target slot so quota_catalog_valid() does not reject the catalog. */
+    quota_model_intent_t *intent = &model->intent;
+    if ((intent->kind == QUOTA_INTENT_UPSERT_NATIVE ||
+         intent->kind == QUOTA_INTENT_DELETE_NATIVE) &&
+        intent->slot < QUOTA_MAX_ACCOUNTS && intent->provider != QUOTA_PROVIDER_CODEX &&
+        intent->provider != QUOTA_PROVIDER_DEEPSEEK) {
+        if (removed && removed->count < QUOTA_CATALOG_STORED_ROWS + 1) {
+            if (!intent->new_row)
+                memcpy(removed->rows[removed->count].logical_id, intent->logical_id,
+                       sizeof(intent->logical_id));
+            removed->rows[removed->count].owns_slot = true;
+            removed->rows[removed->count].slot = intent->slot;
+            memcpy(removed->rows[removed->count].credential_id, intent->target_credential_id,
+                   sizeof(intent->target_credential_id));
+            removed->rows[removed->count].credential_generation =
+                intent->target_credential_generation;
+            removed->count++;
+        }
+        memset(intent, 0, sizeof(*intent));
+        changed = true;
+    }
     if (selected_removed) {
         memset(model->selected_account_id, 0, sizeof(model->selected_account_id));
         if (kept)
@@ -134,6 +156,61 @@ bool quota_catalog_scrub_removed(quota_model_t *model, quota_catalog_removed_t *
         changed = true;
     }
     return changed;
+}
+
+void quota_catalog_canonicalize_model(quota_model_t *dst, const quota_model_t *src)
+{
+    if (!dst || !src)
+        return;
+    memset(dst, 0, sizeof(*dst));
+    dst->network_count = src->network_count;
+    dst->selected_network = src->selected_network;
+    for (unsigned i = 0; i < QUOTA_PORTABLE_NETWORKS; i++) {
+        memcpy(dst->networks[i].ssid, src->networks[i].ssid, sizeof(dst->networks[i].ssid));
+        memcpy(dst->networks[i].password, src->networks[i].password,
+               sizeof(dst->networks[i].password));
+    }
+    memcpy(dst->reserved_pending_network, src->reserved_pending_network,
+           sizeof(dst->reserved_pending_network));
+    dst->refresh_seconds = src->refresh_seconds;
+    dst->screen_timeout_seconds = src->screen_timeout_seconds;
+    dst->auto_refresh = src->auto_refresh;
+    memcpy(dst->selected_account_id, src->selected_account_id, sizeof(dst->selected_account_id));
+    dst->last_known_time = src->last_known_time;
+    memcpy(dst->reserved_legacy_endpoint, src->reserved_legacy_endpoint,
+           sizeof(dst->reserved_legacy_endpoint));
+    dst->entry_count = src->entry_count;
+    for (unsigned i = 0; i < QUOTA_CATALOG_STORED_ROWS; i++) {
+        const quota_catalog_entry_t *se = &src->entries[i];
+        quota_catalog_entry_t *de = &dst->entries[i];
+        memcpy(de->logical_id, se->logical_id, sizeof(de->logical_id));
+        de->provider = se->provider;
+        de->source = se->source;
+        de->activity = se->activity;
+        de->row_generation = se->row_generation;
+        memcpy(de->label, se->label, sizeof(de->label));
+        de->binding.native.slot = se->binding.native.slot;
+        memcpy(de->binding.native.credential_id, se->binding.native.credential_id,
+               sizeof(de->binding.native.credential_id));
+        de->binding.native.credential_generation = se->binding.native.credential_generation;
+    }
+    const quota_model_intent_t *si = &src->intent;
+    quota_model_intent_t *di = &dst->intent;
+    di->kind = si->kind;
+    memcpy(di->request_id, si->request_id, sizeof(di->request_id));
+    memcpy(di->logical_id, si->logical_id, sizeof(di->logical_id));
+    di->expected_row_generation = si->expected_row_generation;
+    di->provider = si->provider;
+    di->slot = si->slot;
+    di->previous_missing = si->previous_missing;
+    di->previous_tombstone = si->previous_tombstone;
+    memcpy(di->previous_credential_id, si->previous_credential_id,
+           sizeof(di->previous_credential_id));
+    di->previous_credential_generation = si->previous_credential_generation;
+    memcpy(di->target_credential_id, si->target_credential_id, sizeof(di->target_credential_id));
+    di->target_credential_generation = si->target_credential_generation;
+    memcpy(di->desired_label, si->desired_label, sizeof(di->desired_label));
+    di->new_row = si->new_row;
 }
 
 bool quota_catalog_valid(const quota_model_t *model)

@@ -98,6 +98,11 @@ int main(void)
     assert(parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"deepseek_save\",\"label\":\"My "
                  "API\",\"api_key\":\"sk-fake\"}"));
     assert(strcmp(command.api_key, "sk-fake") == 0);
+    /* CD-01: DeepSeek api_key must be printable non-whitespace ASCII (0x21..0x7e). */
+    assert(!parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"deepseek_save\",\"label\":\"My "
+                  "API\",\"api_key\":\"sk-bad key\"}"));
+    assert(!parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"deepseek_save\",\"label\":\"My "
+                  "API\",\"api_key\":\"sk-中文\"}"));
     assert(
         parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"codex_queue\",\"label\":\"Work\"}"));
     assert(parse(
@@ -735,6 +740,18 @@ int main(void)
     memset(c->access_token, 'x', sizeof(c->access_token));
     assert(!quota_store_save_credential(0, c) && commits == before);
     strcpy(c->access_token, "new-access");
+    /* CD-01: DeepSeek api_key with space or non-ASCII is rejected at store level too. */
+    quota_portable_credential_t ds = {0};
+    strcpy(ds.id, "22222222222222222222222222222222");
+    ds.slot = 2;
+    ds.provider = QUOTA_PROVIDER_DEEPSEEK;
+    ds.generation = 1;
+    strcpy(ds.api_key, "sk-bad key");
+    assert(!quota_store_save_credential(2, &ds) && commits == before);
+    strcpy(ds.api_key, "sk-\xc3\xa9");
+    assert(!quota_store_save_credential(2, &ds) && commits == before);
+    strcpy(ds.api_key, "sk-valid-key");
+    assert(quota_store_save_credential(2, &ds) && commits == before + 1);
     assert(store_allocations > allocations &&
            !s_credential_record); /* External records are temporary. */
     reject_store_allocation = false;

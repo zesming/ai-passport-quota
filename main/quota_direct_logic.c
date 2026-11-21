@@ -438,6 +438,8 @@ bool quota_direct_parse_authorization(const char *body, size_t length,
     if (cJSON_IsString(verifier))
         quota_direct_secure_clear(verifier->valuestring, strlen(verifier->valuestring));
     secure_json_delete(root);
+    if (!valid)
+        quota_direct_secure_clear(code, sizeof(*code));
     return valid;
 }
 

@@ -47,10 +47,11 @@ static int power_ok(void)
     return 1;
 }
 
+int nvs_stub_fail_partition_init;
 esp_err_t nvs_flash_init_partition(const char *partition)
 {
     (void)partition;
-    return ESP_OK;
+    return nvs_stub_fail_partition_init ? ESP_FAIL : ESP_OK;
 }
 
 esp_err_t nvs_flash_deinit_partition(const char *partition)

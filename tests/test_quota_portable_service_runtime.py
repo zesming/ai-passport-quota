@@ -123,6 +123,7 @@ class PortableServiceRuntime(unittest.TestCase):
                 "staged-stale",
                 "factory-reset",
                 "view-results",
+                "batch2-hardening",
             ):
                 with self.subTest(case=case):
                     result = subprocess.run([str(executable), case], capture_output=True, text=True)

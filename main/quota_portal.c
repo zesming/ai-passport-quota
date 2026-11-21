@@ -220,6 +220,8 @@ bool quota_portal_parse_command(const char *json, size_t length, quota_portable_
              copy_text(root, "api_key", command->api_key, sizeof(command->api_key), false, false) &&
              copy_text(root, "label", command->label, sizeof(command->label), true, false) &&
              (command->account_id[0] == 0 || quota_id_is_valid(command->account_id)) &&
+             (command->api_key[0] == 0 ||
+              quota_portable_token_is_safe(command->api_key, QUOTA_PORTABLE_KEY_BYTES)) &&
              (command->api_key[0] != 0 || command->account_id[0] != 0);
     } else if (ok && strcmp(op, "codex_queue") == 0) {
         command->op = QUOTA_PORTABLE_OP_CODEX_QUEUE;
