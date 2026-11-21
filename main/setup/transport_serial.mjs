@@ -238,15 +238,6 @@ async function openPort(port) {
   }
 }
 
-export function startDeviceSerial(port, requestId) {
-  if (!REQUEST_ID.test(requestId ?? '')) throw new DeviceSerialError('serial_invalid_request_id');
-  const session = startReader(port);
-  return {
-    send: (frameBytes, options) => session.send(frameBytes, requestId, options),
-    close: session.close,
-  };
-}
-
 // The primary settings page opens this once before the user starts the device's
 // physical USB Settings window. The same port remains open for session_open.
 export async function openUsbDeviceSession(port, options = {}) {
@@ -428,22 +419,29 @@ export class UsbDeviceSession {
       session_id: this.sessionId,
       body: frame.body,
     };
+    const encodedBytes = encoder.encode(`@AIQ:${JSON.stringify(packet)}\n`).byteLength;
+    if (encodedBytes > this.limits.max_frame_bytes) throw new DeviceSerialError('frame_too_long');
     const pending = { requestId: frame.request_id, sessionId: this.sessionId };
     this.pendingMutation = pending;
     const remainingMs = () => Math.max(0, this.sessionExpiresAt - this.now());
+    let transmitted = false;
     // onTransmit fires only once a frame has been written to the port; a rejection before that
     // never reached the device.
     const send = (timeoutMs) =>
       this.exchange(packet, {
         timeoutMs,
         maxFrameBytes: this.limits.max_frame_bytes,
-        onWritten: frame.onTransmit,
+        onWritten: () => {
+          transmitted = true;
+          frame.onTransmit?.();
+        },
       });
     let result;
     let retried = false;
     try {
       result = await send(Math.min(90000, remainingMs()));
     } catch (error) {
+      if (!transmitted && this.pendingMutation === pending) this.pendingMutation = null;
       if (
         error?.code !== 'serial_timeout' ||
         this.closed ||
@@ -512,10 +510,13 @@ export function serialErrorMessage(error) {
       'USB 设置还没有打开，或设置时间已到。' +
       '请在 Passport 上：长按 OK，按下键，再按 OK，然后重新连接。',
   };
-  if (error?.code?.startsWith('device_'))
-    return (
-      rejected[error.code.slice(7)] ?? '设备收到配置，但拒绝了此次请求。请重新打开 USB 设置后重试。'
-    );
+  if (error?.code === 'frame_too_long') return rejected.frame_too_long;
+  if (error?.code?.startsWith('device_')) {
+    const code = error.code.slice(7);
+    if (rejected[code]) return rejected[code];
+    if (error?.jobError) return null;
+    return '设备收到配置，但拒绝了此次请求。请重新打开 USB 设置后重试。';
+  }
   return null;
 }
 

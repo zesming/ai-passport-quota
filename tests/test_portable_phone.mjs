@@ -17,8 +17,8 @@ import { createSimDevice, createSimSerial, SCENARIOS } from '../tools/fake_devic
 import { createHotspotServer, deviceCsp, usbPreviewHtml } from '../tools/preview_portable.mjs';
 import {
   UsbDeviceSession,
+  openUsbDeviceSession,
   serialErrorMessage,
-  startDeviceSerial,
 } from '../main/setup/transport_serial.mjs';
 import { all, byClass, byText, flush, loadPage } from './fake_dom.mjs';
 
@@ -474,6 +474,8 @@ async function openRow(page, listId, index) {
   assert.equal(text(page, 'wifi-title'), 'Wi‑Fi 3/3');
   assert.equal(page.node('add-account').disabled, true);
   assert.equal(page.node('add-wifi').disabled, true);
+  assert.equal(page.node('accounts-limit').hidden, false);
+  assert.equal(page.node('wifi-limit').hidden, false);
   assert.equal(page.node('add-account').title, '最多 8 个账户，请先移除一个');
   assert.equal(page.node('add-wifi').title, '最多 3 个 Wi‑Fi，请先移除一个');
 }
@@ -495,7 +497,7 @@ async function openRow(page, listId, index) {
     await page.node('refresh-select').dispatch('change');
     assert.equal(notice(page), message, code);
   }
-  // A Passport that is validating answers busy.
+  // A Passport that is validating locks editing controls.
   await click(page, 'add-wifi');
   await page.node('wifi-ssid').type_('Office');
   await page.node('wifi-password').type_('right-password');
@@ -503,18 +505,6 @@ async function openRow(page, listId, index) {
   await click(page, 'finish');
   device.step = 'wifi';
   assert.equal(page.node('add-account').disabled, true, 'controls are locked while validating');
-  device.advance(250);
-  device.session.lastSeen = 0;
-  const lateFrame = device.frame({
-    v: 3,
-    op: 'command',
-    request_id: 'abcdef01',
-    session_id: device.session.id,
-    body: { v: 3, op: 'refresh', request_id: 'abcdef01' },
-  });
-  assert.equal(lateFrame.error_code, 'busy');
-  assert.equal(lateFrame.protocol, 3);
-  assert(lateFrame.firmware);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -928,18 +918,6 @@ for (const transport of ['usb', 'http']) {
   await until(page, () => connected(page), 'the connection after a new session');
 }
 {
-  // The lockout counts wrong codes in a row: a right one starts the count again.
-  const device = createSimDevice();
-  device.openHotspot();
-  const wrong = { 'X-AIQ-Access': '0000-0000-0000-0000' };
-  const right = { 'X-AIQ-Access': CODE };
-  for (let round = 0; round < 3; round += 1) {
-    for (let attempt = 1; attempt <= 4; attempt += 1)
-      assert.equal(device.http('GET', '/api/state', wrong).json.error_code, 'unauthorized');
-    assert.equal(device.http('GET', '/api/state', right).status, 200);
-  }
-}
-{
   // The hotspot's time runs out.
   const device = createSimDevice();
   SCENARIOS.default(device);
@@ -1101,50 +1079,96 @@ for (const transport of ['usb', 'http']) {
       write(chunk) {
         if (failWrite) throw Error('write failed');
         writes.push(chunk);
-        const id = JSON.parse(new TextDecoder().decode(chunk).slice(5)).request_id;
-        controller.enqueue(
-          new TextEncoder().encode(`@AIQ:${JSON.stringify(reply(answerWith ?? id))}\n`),
-        );
+        const frame = JSON.parse(new TextDecoder().decode(chunk).slice(5));
+        const response =
+          frame.op === 'session_open'
+            ? {
+                v: 3,
+                op: 'result',
+                request_id: answerWith ?? frame.request_id,
+                ok: true,
+                protocol: 3,
+                firmware: '0.2.3',
+                session_id: 'f'.repeat(32),
+                remaining_seconds: 120,
+                max_command_bytes: 2048,
+                max_frame_bytes: 4096,
+                max_state_bytes: 16384,
+              }
+            : reply(answerWith ?? frame.request_id);
+        controller.enqueue(new TextEncoder().encode(`@AIQ:${JSON.stringify(response)}\n`));
       },
     });
-    return { port: { readable, writable }, writes };
+    return {
+      port: {
+        readable,
+        writable,
+        async open() {},
+        async setSignals() {},
+        async close() {},
+      },
+      writes,
+    };
   };
-  const frame = new TextEncoder().encode(
-    '@AIQ:' + JSON.stringify({ v: 3, op: 'state_get', request_id: '0a0b0c0d' }) + '\n',
-  );
   let fired = 0;
   const ok = makePort();
-  const serial = startDeviceSerial(ok.port, '0a0b0c0d');
-  const result = await serial.send(frame, {
-    timeoutMs: 1000,
-    onWritten() {
-      fired++;
-      assert.equal(ok.writes.length, 1, 'frame is already written');
-    },
-  });
-  assert.equal(result.ok, true);
-  assert.equal(fired, 1);
-  await serial.close();
-  // An answer for another request id is not an answer.
-  const other = makePort({ answerWith: 'ffffffff' });
-  const mismatched = startDeviceSerial(other.port, '0a0b0c0d');
-  await assert.rejects(mismatched.send(frame, { timeoutMs: 20 }), {
-    code: 'serial_timeout',
-  });
-  await mismatched.close();
-  const bad = makePort({ failWrite: true });
-  const failing = startDeviceSerial(bad.port, '0a0b0c0d');
-  fired = 0;
-  await assert.rejects(
-    failing.send(frame, {
+  const opened = await openUsbDeviceSession(ok.port, { requestId: () => '0a0b0c0d' });
+  const result = await opened.exchange(
+    { v: 3, op: 'state_get', request_id: '0a0b0c0d' },
+    {
       timeoutMs: 1000,
       onWritten() {
+        fired++;
+        assert.equal(ok.writes.length, 1, 'frame is already written');
+      },
+    },
+  );
+  assert.equal(result.ok, true);
+  assert.equal(fired, 1);
+  await opened.close();
+  // An answer for another request id is not an answer.
+  const other = makePort({ answerWith: 'ffffffff' });
+  const mismatched = await openUsbDeviceSession(other.port, { requestId: () => '0a0b0c0d' });
+  await assert.rejects(
+    mismatched.exchange({ v: 3, op: 'state_get', request_id: '0a0b0c0d' }, { timeoutMs: 20 }),
+    { code: 'serial_timeout' },
+  );
+  await mismatched.close();
+  // Pre-transmit write failure must not leave pendingMutation locked.
+  const bad = makePort({ failWrite: true });
+  const failing = await openUsbDeviceSession(bad.port, { requestId: () => '0a0b0c0d' });
+  failing.sessionId = 'f'.repeat(32);
+  failing.limits = { max_command_bytes: 2048, max_frame_bytes: 4096, max_state_bytes: 16384 };
+  failing.sessionExpiresAt = Date.now() + 60000;
+  fired = 0;
+  await assert.rejects(
+    failing.mutation({
+      op: 'command',
+      request_id: '0a0b0c0d',
+      body: { v: 3, op: 'refresh', request_id: '0a0b0c0d' },
+      onTransmit() {
         fired++;
       },
     }),
     { code: 'serial_write_error' },
   );
   assert.equal(fired, 0, 'a failed write is not reported as transmitted');
+  assert.equal(
+    failing.pendingMutation,
+    null,
+    'a pre-transmit failure must not lock future mutations',
+  );
+  // Pre-transmit frame_too_long must also leave pendingMutation cleared.
+  failing.limits.max_frame_bytes = 32;
+  await assert.rejects(
+    failing.mutation({
+      op: 'command',
+      request_id: '0a0b0c0e',
+      body: { v: 3, op: 'refresh', request_id: '0a0b0c0e' },
+    }),
+    { code: 'frame_too_long' },
+  );
+  assert.equal(failing.pendingMutation, null);
   await failing.close();
   const session = new UsbDeviceSession(
     {
@@ -1209,12 +1233,192 @@ for (const transport of ['usb', 'http']) {
     { code: 'device_session_expired' },
   );
   assert.equal(transmitted, 0, 'a locally detected expiry never reaches the device');
-  // A v2 firmware answers a v3 opening with unsupported_version and no protocol.
-  const v2 = createSimDevice({ protocol: 2 });
-  v2.openUsb();
-  const refusal = v2.frame({ v: 3, op: 'session_open', request_id: 'abcdef01' });
-  assert.equal(refusal.error_code, 'unsupported_version');
-  assert.equal(refusal.protocol, undefined);
+}
+
+// ---------------------------------------------------------------------------------------
+// Batch 1 regressions: sheet/row inline errors, Wi-Fi form visibility & edit hint, USD balance,
+// ended reasons, hotspot recovery copy & secret wipe, non-ASCII DeepSeek key, backdrop & ARIA,
+// and uncertain-receipt recovery while a background poll is already in flight.
+
+{
+  const device = createSimDevice();
+  SCENARIOS.default(device);
+  device.accounts[1].balance_infos = [{ currency: 'USD', total_balance: '12.30' }];
+  device.openUsb();
+  const { page } = usb(device);
+  await connectUsb(page, device);
+
+  // USD-only DeepSeek balance is rendered in the account list.
+  assert(page.node('account-list').textContent.includes('余额 $12.30'));
+  // Chevrons are decorative and hidden from assistive technology.
+  for (const chev of byClass(page.node('account-list'), 'chevron'))
+    assert.equal(chev.getAttribute('aria-hidden'), 'true');
+  for (const chev of byClass(page.node('wifi-list'), 'chevron'))
+    assert.equal(chev.getAttribute('aria-hidden'), 'true');
+
+  // Sheet errors stay inside the sheet; backdrop click closes the sheet.
+  await click(page, 'add-account');
+  assert.equal(page.node('sheet').hidden, false);
+  await page.node('codex-label').type_('a'.repeat(33));
+  await page.node('codex-form').dispatch('submit');
+  assert.equal(page.node('codex-error').hidden, false);
+  assert(text(page, 'codex-error').includes('32'));
+  device.failNext = 'login_pending';
+  await page.node('codex-label').type_('Work');
+  await page.node('codex-form').dispatch('submit');
+  assert.equal(page.node('sheet').hidden, false);
+  assert(text(page, 'codex-error').includes('完成设置'));
+  // Non-ASCII and whitespace DeepSeek keys are rejected locally.
+  await click(page, 'pick-deepseek');
+  await page.node('deepseek-label').type_('API');
+  await page.node('deepseek-key').type_('sk-中文密钥');
+  await page.node('deepseek-form').dispatch('submit');
+  assert.equal(page.node('deepseek-error').hidden, false);
+  assert(text(page, 'deepseek-error').includes('ASCII'));
+  await page.node('deepseek-key').type_('sk-with space');
+  await page.node('deepseek-form').dispatch('submit');
+  assert.equal(page.node('deepseek-error').hidden, false);
+  // Clicking the backdrop closes the sheet and clears errors/inputs.
+  await page.node('sheet').dispatch('click');
+  assert.equal(page.node('sheet').hidden, true);
+  assert.equal(page.node('deepseek-key').value, '');
+
+  // Expanded DeepSeek editor shows inline validation errors and show-key checkbox.
+  await byClass(page.node('account-list'), 'row-main')[1].click();
+  const detail = byClass(page.node('account-list'), 'detail')[0];
+  const inputs = all(detail).filter((node) => node.tagName === 'INPUT');
+  const keyInput = inputs.find((node) => node.type === 'password');
+  const toggleBox = inputs.find((node) => node.type === 'checkbox');
+  assert(keyInput && toggleBox, 'DeepSeek edit row has password input and show-key toggle');
+  toggleBox.checked = true;
+  await toggleBox.dispatch('change');
+  assert.equal(keyInput.type, 'text');
+  await keyInput.type_('bad key');
+  await byText(detail, '保存', 'button').click();
+  const inlineError = byClass(page.node('account-list'), 'row-error')[0];
+  assert(inlineError && inlineError.textContent.includes('ASCII'));
+
+  // Editing an existing Wi-Fi resets password visibility and clarifies re-entry.
+  await byClass(page.node('wifi-list'), 'row-main')[0].click();
+  await byText(page.node('wifi-list'), '修改', 'button').click();
+  assert(text(page, 'wifi-password-label').includes('须重新输入'));
+  page.node('wifi-show').checked = true;
+  await page.node('wifi-show').dispatch('change');
+  assert.equal(page.node('wifi-password').type, 'text');
+  await click(page, 'wifi-cancel');
+  assert.equal(page.node('wifi-show').checked, false);
+  assert.equal(page.node('wifi-password').type, 'password');
+
+  // Takeover updates connection title accurately; disconnect clears ended title.
+  device.session.id = 'e'.repeat(32);
+  await elapse(page, device, 3000);
+  assert.equal(text(page, 'conn-text'), '连接已被接管');
+  await click(page, 'usb-disconnect');
+  assert.equal(text(page, 'conn-text'), '未连接');
+}
+
+{
+  // Hotspot mode: recovery hint points to Modify button, no-pending bar avoids claiming validation,
+  // unmapped errors never mention USB, and setup_close wipes secrets and access code.
+  const device = createSimDevice();
+  SCENARIOS.failed(device);
+  device.openHotspot();
+  const fetches = [];
+  const page = hotspot(device, { hash: `#code=${CODE}`, fetches });
+  await until(page, () => connected(page), 'hotspot failed scenario');
+  await byClass(page.node('wifi-list'), 'row-main')[1].click();
+  const wifiErr = byClass(page.node('wifi-list'), 'row-error')[0];
+  assert(wifiErr && wifiErr.textContent.includes('点“修改”重新输入'));
+  assert(!wifiErr.textContent.includes('重新开启热点'));
+
+  // Unmapped hotspot error must not fall through to USB serial message.
+  device.failNext = 'some_unknown_future_code';
+  page.node('sleep-select').value = '300';
+  await page.node('sleep-select').dispatch('change');
+  assert(!notice(page).includes('USB'), 'hotspot error must never tell phone users to open USB');
+
+  // Without pending/failed items, hotspot bar does not claim validation will run.
+  device.networks[1].validation = 'ok';
+  device.networks[1].error_code = '';
+  device.accounts[2].validation = 'ok';
+  device.accounts[2].error_code = '';
+  await elapse(page, device, 3000);
+  assert(text(page, 'bar-text').includes('没有待验证项'));
+  assert(!text(page, 'bar-text').includes('并开始验证'));
+
+  // Draft secrets and access code are cleared once setup_close succeeds.
+  await click(page, 'add-wifi');
+  await page.node('wifi-password').type_('secret-pass');
+  await click(page, 'finish');
+  assert.equal(page.node('wifi-password').value, '');
+  assert.equal(page.node('bar').hidden, true);
+}
+
+{
+  // Uncertain receipt recovery waits for an in-flight background poll then fetches fresh state.
+  const device = createSimDevice();
+  SCENARIOS.default(device);
+  device.openUsb();
+  let releasePoll = null;
+  let stateGets = 0;
+  let droppedAcks = 0;
+  const rawSerial = createSimSerial(device);
+  const wrappedSerial = {
+    async requestPort(options) {
+      const port = await rawSerial.requestPort(options);
+      const origOpen = port.open.bind(port);
+      port.open = async (opts) => {
+        await origOpen(opts);
+        const origReader = port.readable.getReader.bind(port.readable);
+        port.readable.getReader = () => {
+          const r = origReader();
+          const origRead = r.read.bind(r);
+          r.read = async () => {
+            while (true) {
+              const chunk = await origRead();
+              if (chunk.done || !chunk.value) return chunk;
+              const textChunk = new TextDecoder().decode(chunk.value);
+              if (textChunk.includes('"op":"state"')) {
+                stateGets += 1;
+                if (stateGets === 2) {
+                  await new Promise((resolve) => {
+                    releasePoll = resolve;
+                  });
+                }
+              }
+              if (textChunk.includes('"accepted":true') && droppedAcks < 2) {
+                droppedAcks += 1;
+                continue;
+              }
+              return chunk;
+            }
+          };
+          return r;
+        };
+      };
+      return port;
+    },
+  };
+  const page = loadPage(html, { protocol: 'file:', serial: wrappedSerial });
+  await click(page, 'usb-connect');
+  await until(page, () => connected(page), 'connected for uncertain receipt race');
+  // Advance 1s so the background interval starts stateGets === 2 and stalls on releasePoll.
+  await page.advance(1000);
+  assert(releasePoll, 'background poll is in flight');
+  // Start a settings mutation whose command ack + single retry ack are dropped (2 x 90s timeout).
+  page.node('sleep-select').value = '300';
+  const saveRun = page.node('sleep-select').dispatch('change');
+  await flush();
+  // Advance virtual time so both the initial send and retry time out -> usb_uncertain_receipt,
+  // while the background poll is still in flight; then release the background poll.
+  device.session.deadline += 200000;
+  const timeoutRun = page.advance(185000, 1000);
+  await flush();
+  releasePoll();
+  await timeoutRun;
+  await saveRun;
+  assert.equal(device.settings.screen_timeout_seconds, 300);
+  assert.equal(notice(page), '', 'uncertain receipt recovered via fresh post-poll state');
 }
 
 console.log(

@@ -260,7 +260,11 @@ export function createSimDevice(options = {}) {
       five_hour: item.five_hour ?? { present: false },
       seven_day: item.seven_day ?? { present: false },
       balance: {
-        balance_infos: item.balance ? [{ currency: 'CNY', total_balance: item.balance }] : [],
+        balance_infos: Array.isArray(item.balance_infos)
+          ? item.balance_infos
+          : item.balance
+            ? [{ currency: item.currency ?? 'CNY', total_balance: item.balance }]
+            : [],
       },
     }));
     if (device.queue?.is_new && !accounts.some((item) => item.id === device.queue.id))

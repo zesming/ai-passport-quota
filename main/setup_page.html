@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="referrer" content="no-referrer">
 <meta name="color-scheme" content="light dark">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-RVx168a4hhe/+Pb4Cttz48q2jWq/+Boch0bg5M4BVKg='; style-src 'sha256-zgrRC0AuVh56eldsd60oHr8D70H6+CV98qQOSMWzvAg='; img-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-FJDe+yMXv3hdr6YirNuAk8J3Bk4UnJD6nX29JYCK3Vk='; style-src 'sha256-HTHpQDj203Jz1oyaGkCZ6rD5pOLmkM+wc6LQWImWRUU='; img-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
 <title>Passport 设置</title>
 <style>
 :root {
@@ -25,6 +25,7 @@
   --bad: #a1362c;
   --bad-bg: #fbe8e5;
   --focus: #2f8a63;
+  --radius: 14px;
   --shadow: 0 1px 2px rgba(20, 40, 28, 0.06);
   font-family:
     -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
@@ -495,7 +496,7 @@ ul.rows {
   padding: 16px 0;
 }
 
-.bar {
+.skeleton-bar {
   display: block;
   width: 40%;
   height: 12px;
@@ -504,7 +505,7 @@ ul.rows {
   animation: pulse 1.4s ease-in-out infinite;
 }
 
-.bar.wide-bar {
+.skeleton-bar.wide {
   width: 65%;
 }
 
@@ -515,7 +516,7 @@ ul.rows {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .bar {
+  .skeleton-bar {
     animation: none;
   }
 }
@@ -565,6 +566,7 @@ ul.rows {
       </div>
       <p id="accounts-hint" class="muted" hidden>先添加 Wi‑Fi</p>
       <p id="accounts-empty" class="muted">还没有账户</p>
+      <p id="accounts-limit" class="muted" hidden>已达 8 个账户上限，新增前请先移除一个</p>
       <ul id="account-list" class="rows"></ul>
     </section>
     <section id="wifi-section" class="card" aria-labelledby="wifi-title">
@@ -573,12 +575,13 @@ ul.rows {
         <button id="add-wifi" class="small" type="button">+ 添加</button>
       </div>
       <p id="wifi-empty" class="muted">Passport 联网用的网络，最多 3 个，普通 2.4 GHz</p>
+      <p id="wifi-limit" class="muted" hidden>已达 3 个 Wi‑Fi 上限，新增前请先移除一个</p>
       <ul id="wifi-list" class="rows"></ul>
       <form id="wifi-form" autocomplete="off" hidden>
         <label class="field"><span>名称</span>
           <input id="wifi-ssid" autocomplete="off" autocapitalize="none" spellcheck="false">
         </label>
-        <label class="field"><span>密码（无密码的网络请留空）</span>
+        <label class="field"><span id="wifi-password-label">密码（无密码的网络请留空）</span>
           <input id="wifi-password" type="password" autocomplete="new-password"
             autocapitalize="none" spellcheck="false">
         </label>
@@ -637,6 +640,7 @@ ul.rows {
       <label class="field"><span>备注名（可不填）</span>
         <input id="codex-label" autocomplete="off" maxlength="32">
       </label>
+      <p id="codex-error" class="row-error" hidden></p>
       <button id="codex-add" class="primary wide" type="submit">添加</button>
     </form>
     <form id="deepseek-form" autocomplete="off" hidden>
@@ -965,15 +969,6 @@ async function openPort(port) {
   }
 }
 
-function startDeviceSerial(port, requestId) {
-  if (!REQUEST_ID.test(requestId ?? '')) throw new DeviceSerialError('serial_invalid_request_id');
-  const session = startReader(port);
-  return {
-    send: (frameBytes, options) => session.send(frameBytes, requestId, options),
-    close: session.close,
-  };
-}
-
 // The primary settings page opens this once before the user starts the device's
 // physical USB Settings window. The same port remains open for session_open.
 async function openUsbDeviceSession(port, options = {}) {
@@ -1155,22 +1150,29 @@ class UsbDeviceSession {
       session_id: this.sessionId,
       body: frame.body,
     };
+    const encodedBytes = encoder.encode(`@AIQ:${JSON.stringify(packet)}\n`).byteLength;
+    if (encodedBytes > this.limits.max_frame_bytes) throw new DeviceSerialError('frame_too_long');
     const pending = { requestId: frame.request_id, sessionId: this.sessionId };
     this.pendingMutation = pending;
     const remainingMs = () => Math.max(0, this.sessionExpiresAt - this.now());
+    let transmitted = false;
     // onTransmit fires only once a frame has been written to the port; a rejection before that
     // never reached the device.
     const send = (timeoutMs) =>
       this.exchange(packet, {
         timeoutMs,
         maxFrameBytes: this.limits.max_frame_bytes,
-        onWritten: frame.onTransmit,
+        onWritten: () => {
+          transmitted = true;
+          frame.onTransmit?.();
+        },
       });
     let result;
     let retried = false;
     try {
       result = await send(Math.min(90000, remainingMs()));
     } catch (error) {
+      if (!transmitted && this.pendingMutation === pending) this.pendingMutation = null;
       if (
         error?.code !== 'serial_timeout' ||
         this.closed ||
@@ -1239,10 +1241,13 @@ function serialErrorMessage(error) {
       'USB 设置还没有打开，或设置时间已到。' +
       '请在 Passport 上：长按 OK，按下键，再按 OK，然后重新连接。',
   };
-  if (error?.code?.startsWith('device_'))
-    return (
-      rejected[error.code.slice(7)] ?? '设备收到配置，但拒绝了此次请求。请重新打开 USB 设置后重试。'
-    );
+  if (error?.code === 'frame_too_long') return rejected.frame_too_long;
+  if (error?.code?.startsWith('device_')) {
+    const code = error.code.slice(7);
+    if (rejected[code]) return rejected[code];
+    if (error?.jobError) return null;
+    return '设备收到配置，但拒绝了此次请求。请重新打开 USB 设置后重试。';
+  }
   return null;
 }
 
@@ -1338,18 +1343,22 @@ const MESSAGES = {
   storage_busy: 'Passport 正在处理存储，请稍后重试',
   storage_invalid: 'Passport 的存储记录损坏，请保留数据并检查设备',
   storage_io_error: 'Passport 的存储暂时不可读，请稍后重试',
+  storage_missing: 'Passport 还没有保存这份记录，请刷新后重试',
+  state_unavailable: 'Passport 暂时无法读取当前状态，请稍后重试',
   recovery_conflict: 'Passport 的存储记录不一致，请保留数据并检查设备',
   generation_exhausted: '这个账户已保存太多次，请移除后重新添加',
   native_credential_limit: '凭证位置已满，请先移除一个账户',
   operation_expired: '操作超时，请重试',
   unsupported_operation: 'Passport 不支持这个操作',
+  unsupported: 'Passport 不支持这个操作',
+  invalid_size: '提交的内容过大或为空，请检查后重试',
+  incomplete_request: '请求没有发送完整，请重试',
   serial_busy: '串口被占用，请关闭其他设置页或串口工具',
   http_unreachable: '连不上 Passport，请确认手机仍连着 Passport 的热点',
   http_bad_response: 'Passport 返回了无法识别的内容，请重试',
 };
 // Row errors whose recovery is a button on the row itself.
 const WIFI_RECOVERY = '点“修改”重新输入';
-const HOTSPOT_WIFI_RECOVERY = '在 Passport 上重新开启热点设置后再修改';
 
 const LOGOS = {
   codex:
@@ -1399,11 +1408,11 @@ const app = {
   waiting: false, // USB port open, waiting for the Passport's USB setting to be opened
   saving: null, // the row a change is being saved for: { type, id }
   closing: false, // the hotspot is about to close
-  ended: false, // the session ended; a new one needs the Passport
+  ended: '', // '' | 'expired' | 'taken_over' | 'restarted'
   state: null,
   stateAt: 0,
   busy: false,
-  polling: false,
+  pollPromise: null,
   silentSince: 0, // since when the Passport has answered no state read
   lastPollAt: 0,
   validateJob: '',
@@ -1412,6 +1421,9 @@ const app = {
   removeTimer: 0,
   wifiForm: null, // { index } while the Wi‑Fi form is open (index -1 adds)
   sheet: null, // 'codex' | 'deepseek' while the add-account sheet is open
+  sheetTrigger: null,
+  showDeepseekKey: false,
+  rowErrors: new Map(),
   notice: null, // { text, kind, action }
   summary: '',
   drafts: new Map(), // what the user typed into the row editors
@@ -1470,7 +1482,12 @@ function textProblem(value, { min = 0, max, what }) {
 const labelProblem = (label, required) =>
   textProblem(label, { min: required ? 1 : 0, max: 32, what: '备注名' });
 const ssidProblem = (ssid) => textProblem(ssid, { min: 1, max: 32, what: 'Wi‑Fi 名称' });
-const keyProblem = (key) => textProblem(key, { min: 1, max: 511, what: '密钥' });
+function keyProblem(key) {
+  const base = textProblem(key, { min: 1, max: 511, what: '密钥' });
+  if (base) return base;
+  if (!/^[\x21-\x7e]+$/.test(key)) return '密钥只能包含可见 ASCII 字符，不能包含空格或中文';
+  return '';
+}
 // 8 to 63 bytes, or exactly 64 hexadecimal digits (a raw WPA2 key); empty means an open network.
 function wifiPasswordProblem(password) {
   if (password === '') return '';
@@ -1487,9 +1504,10 @@ function wifiPasswordProblem(password) {
 function failureText(error) {
   const code = String(error?.code ?? '');
   const device = code.startsWith('device_') ? code.slice(7) : code;
+  const serialFallback = app.transport?.kind === 'serial' ? serialErrorMessage(error) : null;
   return (
     MESSAGES[device] ??
-    serialErrorMessage(error) ??
+    serialFallback ??
     (error?.jobError ? '操作没有完成，请重试' : 'Passport 没有完成这次操作，请重试')
   );
 }
@@ -1601,9 +1619,7 @@ function field(name, label, props = {}) {
 function errorLine(item, kind) {
   if (!failedOf(item) || !item.error_code) return null;
   const known = MESSAGES[item.error_code] ?? '验证没有通过';
-  let hint = '';
-  if (kind === 'network')
-    hint = app.transport.kind === 'http' ? `，${HOTSPOT_WIFI_RECOVERY}` : `，${WIFI_RECOVERY}`;
+  const hint = kind === 'network' ? `，${WIFI_RECOVERY}` : '';
   return h('p', { class: 'row-error', text: known + hint });
 }
 
@@ -1618,8 +1634,11 @@ function accountSub(account) {
 
 function accountValue(account) {
   if (account.provider === 'deepseek') {
-    const cny = account.balance?.balance_infos?.find((info) => info.currency === 'CNY');
-    return cny ? `余额 ¥${cny.total_balance}` : '';
+    const infos = account.balance?.balance_infos ?? [];
+    const cny = infos.find((info) => info.currency === 'CNY');
+    if (cny) return `余额 ¥${cny.total_balance}`;
+    const usd = infos.find((info) => info.currency === 'USD');
+    return usd ? `余额 $${usd.total_balance}` : '';
   }
   return [
     ['five_hour', '5 小时额度'],
@@ -1634,6 +1653,8 @@ function toggle(type, id) {
   const same = app.expanded?.type === type && app.expanded.id === id;
   app.expanded = same ? null : { type, id };
   app.removing = null;
+  app.showDeepseekKey = false;
+  app.rowErrors.clear();
   clearDrafts();
   render(true);
 }
@@ -1667,14 +1688,30 @@ function accountDetail(account) {
   const locked = !interactive();
   const pieces = [errorLine(account, 'account')];
   if (account.provider === 'deepseek') {
+    const editError = app.rowErrors.get(account.id);
     pieces.push(
       field(`label:${account.id}`, '备注名', { value: account.label ?? '', maxlength: 32 }),
       field(`key:${account.id}`, '新密钥（不改密钥就留空）', {
-        type: 'password',
+        type: app.showDeepseekKey ? 'text' : 'password',
         autocomplete: 'new-password',
         autocapitalize: 'none',
         spellcheck: 'false',
       }),
+      h(
+        'label',
+        { class: 'check' },
+        h('input', {
+          type: 'checkbox',
+          checked: app.showDeepseekKey,
+          onchange: (event) => {
+            app.showDeepseekKey = Boolean(event.target.checked);
+            const input = app.inputs.get(`key:${account.id}`);
+            if (input) input.type = app.showDeepseekKey ? 'text' : 'password';
+          },
+        }),
+        '显示密钥',
+      ),
+      editError ? h('p', { class: 'row-error', text: editError }) : null,
       h(
         'div',
         { class: 'actions' },
@@ -1735,7 +1772,7 @@ function accountRow(account) {
         value ? h('span', { class: 'row-sub', text: value }) : null,
       ),
       rowChip('account', account.id, account.validation),
-      h('span', { class: 'chevron', text: open ? '⌄' : '›' }),
+      h('span', { class: 'chevron', 'aria-hidden': 'true', text: open ? '⌄' : '›' }),
     ),
     open ? accountDetail(account) : null,
   );
@@ -1782,7 +1819,7 @@ function networkRow(network) {
           : null,
       ),
       rowChip('network', String(network.index), network.validation),
-      h('span', { class: 'chevron', text: open ? '⌄' : '›' }),
+      h('span', { class: 'chevron', 'aria-hidden': 'true', text: open ? '⌄' : '›' }),
     ),
     open ? networkDetail(network) : null,
   );
@@ -1795,6 +1832,12 @@ function restoreFocus() {
     target.setSelectionRange?.(target.value.length, target.value.length);
   }
 }
+
+const ENDED_TITLE = {
+  expired: '设置时间已到',
+  taken_over: '连接已被接管',
+  restarted: 'Passport 可能已重启',
+};
 
 function renderConnection() {
   const transport = app.transport;
@@ -1829,12 +1872,12 @@ function renderConnection() {
   } else if (app.closing) {
     text.textContent = '热点即将关闭';
   } else if (serial) {
-    text.textContent = app.ended ? '设置时间已到' : '未连接';
+    text.textContent = ENDED_TITLE[app.ended] ?? '未连接';
     byId('conn-steps').hidden = false;
     byId('usb-connect').hidden = false;
     byId('usb-connect').textContent = transport.hasPort() ? '重新连接' : '连接 Passport';
   } else {
-    text.textContent = app.ended ? '设置时间已到' : '未连接';
+    text.textContent = ENDED_TITLE[app.ended] ?? '未连接';
     byId('code-form').hidden = false;
   }
   if (app.connected) byId('usb-disconnect').textContent = '断开 USB';
@@ -1846,14 +1889,16 @@ function renderSkeleton() {
     h(
       'li',
       { class: 'row skeleton', 'aria-hidden': 'true' },
-      h('span', { class: 'bar wide-bar' }),
-      h('span', { class: 'bar' }),
+      h('span', { class: 'skeleton-bar wide' }),
+      h('span', { class: 'skeleton-bar' }),
     );
   byId('accounts-title').textContent = '账户';
   byId('wifi-title').textContent = 'Wi‑Fi';
   byId('accounts-hint').hidden = true;
   byId('accounts-empty').hidden = true;
+  byId('accounts-limit').hidden = true;
   byId('wifi-empty').hidden = true;
+  byId('wifi-limit').hidden = true;
   byId('wifi-form').hidden = true;
   byId('account-list').replaceChildren(placeholder(), placeholder());
   byId('wifi-list').replaceChildren(placeholder());
@@ -1874,8 +1919,10 @@ function renderLists() {
   byId('accounts-section').className = `card${noWifi ? ' dim' : ''}`;
   byId('accounts-hint').hidden = !noWifi;
   byId('accounts-empty').hidden = accounts.length > 0 || noWifi;
-  byId('accounts-empty').textContent = accountsFull ? '最多 8 个账户，请先移除一个' : '还没有账户';
+  byId('accounts-empty').textContent = '还没有账户';
+  byId('accounts-limit').hidden = !accountsFull;
   byId('wifi-empty').hidden = networks.length > 0;
+  byId('wifi-limit').hidden = !networksFull;
   byId('add-account').disabled = !interactive() || noWifi || accountsFull;
   byId('add-account').title = accountsFull ? '最多 8 个账户，请先移除一个' : '';
   byId('add-wifi').disabled = !interactive() || networksFull;
@@ -1886,6 +1933,9 @@ function renderLists() {
   byId('wifi-form').hidden = !form;
   if (form) {
     const editing = app.wifiForm !== null && app.wifiForm.index >= 0;
+    byId('wifi-password-label').textContent = editing
+      ? '密码（须重新输入；无密码网络请留空）'
+      : '密码（无密码的网络请留空）';
     byId('wifi-cancel').hidden = noWifi && !editing;
     byId('wifi-save').disabled = !interactive();
     byId('wifi-ssid').disabled = !interactive();
@@ -1919,12 +1969,17 @@ function renderBar() {
   const authorizing = running && app.state?.validation_step === 'chatgpt';
   let text;
   if (running) text = STEP_TEXT[app.state?.validation_step] ?? '正在验证…';
-  else if (pending || failed)
+  else if (pending || failed) {
     text = [pending ? `有 ${pending} 项待验证` : '', failed ? `${failed} 项验证失败` : '']
       .filter(Boolean)
       .join('，');
-  else text = '全部正常';
-  if (!serial && !running) text += '。点“完成设置”后，Passport 会关闭热点并开始验证';
+    if (!serial) text += '。点“完成设置”后，Passport 会关闭热点并开始验证';
+  } else if (!serial) {
+    text =
+      networksOf(app.state).length === 0
+        ? '请先添加 Wi‑Fi。点“完成设置”后，Passport 会关闭热点'
+        : '没有待验证项。点“完成设置”后，Passport 会关闭热点';
+  } else text = '全部正常';
   byId('bar-text').textContent = text;
   const finish = byId('finish');
   finish.textContent = running ? '验证中…' : '完成设置';
@@ -1999,9 +2054,17 @@ function render(force = false) {
 // Device traffic
 // ---------------------------------------------------------------------------------------
 
+function resetWifiPasswordVisibility() {
+  byId('wifi-password').type = 'password';
+  byId('wifi-show').checked = false;
+}
+
 function clearSecrets() {
   clearDrafts();
+  app.showDeepseekKey = false;
+  app.rowErrors.clear();
   for (const id of ['wifi-password', 'deepseek-key']) byId(id).value = '';
+  resetWifiPasswordVisibility();
 }
 
 function block(reason, device = null) {
@@ -2011,6 +2074,7 @@ function block(reason, device = null) {
   app.connected = false;
   app.connecting = false;
   app.state = null;
+  if (app.sheet) closeSheet();
   clearSecrets();
   void app.transport.close();
   if (reason === 'firmware_old')
@@ -2029,14 +2093,15 @@ function block(reason, device = null) {
   render(true);
 }
 
-function endSession(text, { retry = false, sameOpener = false } = {}) {
+function endSession(text, { retry = false, sameOpener = false, reason = 'expired' } = {}) {
   app.silentSince = 0;
   app.waiting = false;
   app.connected = false;
   app.connecting = false;
-  app.ended = true;
+  app.ended = reason;
   app.state = null;
   app.validateJob = '';
+  if (app.sheet) closeSheet();
   clearSecrets();
   app.transport.sessionLost({ sameOpener });
   say(text, 'warn');
@@ -2045,23 +2110,31 @@ function endSession(text, { retry = false, sameOpener = false } = {}) {
 }
 
 // A rejection that ends the session, or the page's use of this Passport.
-function handleFailure(error) {
+function handleFailure(error, { onLocalError = null } = {}) {
   const code = String(error?.code ?? '');
   if (code === 'device_unsupported_version')
     return block(protocolProblem(error.device), error.device);
   if (code === 'device_session_expired') {
     // The USB setting runs out: the port stays open and the page waits for it to be opened again.
     if (app.transport.kind === 'serial')
-      return endSession('设置时间已到。请在 Passport 上重新打开 USB 设置', { retry: true });
-    return endSession('设置时间已到。在 Passport 上重新开启热点设置，再输入新的访问码');
+      return endSession('设置时间已到。请在 Passport 上重新打开 USB 设置', {
+        retry: true,
+        reason: 'expired',
+      });
+    return endSession('设置时间已到。在 Passport 上重新开启热点设置，再输入新的访问码', {
+      reason: 'expired',
+    });
   }
   if (code === 'device_invalid_session')
-    return endSession('另一个页面接管了 Passport 的 USB 设置。要在这里继续，请点“重新连接”');
+    return endSession('另一个页面接管了 Passport 的 USB 设置。要在这里继续，请点“重新连接”', {
+      reason: 'taken_over',
+    });
   if (code === 'device_access_locked' || code === 'device_unauthorized') {
     app.transport.sessionLost();
     app.waiting = false;
     app.connected = app.connecting = false;
     app.state = null;
+    if (app.sheet) closeSheet();
     say(failureText(error), 'error');
     return render(true);
   }
@@ -2069,11 +2142,17 @@ function handleFailure(error) {
     app.waiting = false;
     app.connected = false;
     app.state = null;
+    if (app.sheet) closeSheet();
     void app.transport.close();
     say(failureText(error), 'error');
     return render(true);
   }
-  say(failureText(error), 'error');
+  const message = failureText(error);
+  if (onLocalError) {
+    onLocalError(message);
+    if (app.sheet) return undefined;
+  }
+  say(message, 'error');
   return undefined;
 }
 
@@ -2107,33 +2186,42 @@ function announceResult(job) {
   else say('全部正常，可以断开 USB 了', '');
 }
 
-async function poll() {
-  if (app.polling || !app.transport.hasSession() || app.closing) return false;
-  app.polling = true;
-  app.lastPollAt = Date.now();
-  try {
-    const state = await app.transport.stateGet();
-    if (!app.transport.hasSession()) return false;
-    app.silentSince = 0;
-    const accepted = acceptState(state);
-    if (accepted) render();
-    return accepted;
-  } catch (error) {
-    const silent = ['serial_timeout', 'serial_write_timeout'].includes(error?.code);
-    if (app.connected && app.transport.kind === 'serial' && silent) {
-      // No answer: a busy Passport reads late. Only long silence means it restarted, and then the
-      // same opener asks again: a Passport that did not restart gives the same session back.
-      app.silentSince ||= Date.now();
-      if (Date.now() - app.silentSince >= SILENT_RESTART_MS)
-        endSession('Passport 可能重启了，请在 Passport 上打开 USB 设置', {
-          retry: true,
-          sameOpener: true,
-        });
-    } else if (app.connected) handleFailure(error);
-    return false;
-  } finally {
-    app.polling = false;
+async function poll({ fresh = false } = {}) {
+  if (!app.transport.hasSession() || app.closing) return false;
+  if (app.pollPromise) {
+    if (!fresh) return false;
+    await app.pollPromise;
+    if (!app.transport.hasSession() || app.closing) return false;
   }
+  const run = (async () => {
+    app.lastPollAt = Date.now();
+    try {
+      const state = await app.transport.stateGet();
+      if (!app.transport.hasSession()) return false;
+      app.silentSince = 0;
+      const accepted = acceptState(state);
+      if (accepted) render();
+      return accepted;
+    } catch (error) {
+      const silent = ['serial_timeout', 'serial_write_timeout'].includes(error?.code);
+      if (app.connected && app.transport.kind === 'serial' && silent) {
+        // No answer: a busy Passport reads late. Only long silence means it restarted, and then the
+        // same opener asks again: a Passport that did not restart gives the same session back.
+        app.silentSince ||= Date.now();
+        if (Date.now() - app.silentSince >= SILENT_RESTART_MS)
+          endSession('Passport 可能重启了，请在 Passport 上打开 USB 设置', {
+            retry: true,
+            sameOpener: true,
+            reason: 'restarted',
+          });
+      } else if (app.connected) handleFailure(error);
+      return false;
+    } finally {
+      if (app.pollPromise === run) app.pollPromise = null;
+    }
+  })();
+  app.pollPromise = run;
+  return run;
 }
 
 // Wait for the Passport to finish what a command asked for: errors such as account_limit are job
@@ -2141,7 +2229,7 @@ async function poll() {
 async function waitForJob(id) {
   const until = Date.now() + JOB_WAIT_MS;
   while (Date.now() < until && app.connected) {
-    await poll();
+    await poll({ fresh: true });
     const job = jobOf(id);
     if (job?.status === 'succeeded') return;
     if (job?.status === 'failed') {
@@ -2160,7 +2248,7 @@ async function waitForJob(id) {
   }
 }
 
-async function send(op, fields = {}, { wait = true, target = null } = {}) {
+async function send(op, fields = {}, { wait = true, target = null, onLocalError = null } = {}) {
   if (app.busy || !app.connected || app.closing) return null;
   const body = {
     v: PROTOCOL,
@@ -2178,13 +2266,13 @@ async function send(op, fields = {}, { wait = true, target = null } = {}) {
     } catch (error) {
       // The write was sent but not acknowledged: the Passport's job list says whether it arrived.
       if (error?.code !== 'usb_uncertain_receipt') throw error;
-      await poll();
+      await poll({ fresh: true });
       if (!app.transport.jobProvesAdmission(app.state, body.request_id)) throw error;
     }
     if (wait) await waitForJob(body.request_id);
     return body;
   } catch (error) {
-    handleFailure(error);
+    handleFailure(error, { onLocalError });
     return null;
   } finally {
     app.busy = false;
@@ -2224,6 +2312,7 @@ async function saveWifi(event) {
   if (!sent) return;
   byId('wifi-password').value = '';
   byId('wifi-ssid').value = '';
+  resetWifiPasswordVisibility();
   app.wifiForm = null;
   app.expanded = null;
   say('Wi‑Fi 已保存，待验证', '');
@@ -2234,6 +2323,7 @@ function openWifiForm(network = null) {
   app.wifiForm = { index: network ? network.index : -1 };
   byId('wifi-ssid').value = network?.ssid ?? '';
   byId('wifi-password').value = '';
+  resetWifiPasswordVisibility();
   byId('wifi-error').hidden = true;
   render(true);
   byId('wifi-ssid').focus?.();
@@ -2269,7 +2359,12 @@ async function saveDeepseek(account) {
   const label = (app.drafts.get(`label:${account.id}`) ?? account.label ?? '').trim();
   const key = (app.drafts.get(`key:${account.id}`) ?? '').trim();
   const problem = labelProblem(label, true) || (key ? keyProblem(key) : '');
-  if (problem) return say(problem, 'error');
+  if (problem) {
+    app.rowErrors.set(account.id, problem);
+    render(true);
+    return undefined;
+  }
+  app.rowErrors.delete(account.id);
   const sent = await send(
     'deepseek_save',
     {
@@ -2277,11 +2372,18 @@ async function saveDeepseek(account) {
       label,
       ...(key ? { api_key: key } : {}),
     },
-    { target: { type: 'account', id: account.id } },
+    {
+      target: { type: 'account', id: account.id },
+      onLocalError: (message) => {
+        app.rowErrors.set(account.id, message);
+      },
+    },
   );
   if (sent) {
     clearDrafts(`key:${account.id}`);
     clearDrafts(`label:${account.id}`);
+    app.showDeepseekKey = false;
+    app.rowErrors.delete(account.id);
     say(key ? '新密钥已保存，待验证' : '备注名已保存', '');
     render(true);
   }
@@ -2297,12 +2399,23 @@ async function queueCodex(account) {
   if (sent) say('点“完成设置”后，在 Passport 上完成授权', '');
 }
 
+function setFormError(id, message) {
+  const node = byId(id);
+  node.hidden = !message;
+  node.textContent = message;
+}
+
 async function addCodex(event) {
   event.preventDefault();
   const label = byId('codex-label').value.trim();
   const problem = labelProblem(label, false);
-  if (problem) return say(problem, 'error');
-  const sent = await send('codex_queue', { label });
+  setFormError('codex-error', problem);
+  if (problem) return undefined;
+  const sent = await send(
+    'codex_queue',
+    { label },
+    { onLocalError: (message) => setFormError('codex-error', message) },
+  );
   if (sent) {
     closeSheet();
     say('已添加 ChatGPT。点“完成设置”后，在 Passport 上完成授权', '');
@@ -2315,11 +2428,13 @@ async function addDeepseek(event) {
   const label = byId('deepseek-label').value.trim();
   const key = byId('deepseek-key').value.trim();
   const problem = labelProblem(label, true) || keyProblem(key);
-  const error = byId('deepseek-error');
-  error.hidden = !problem;
-  error.textContent = problem;
+  setFormError('deepseek-error', problem);
   if (problem) return undefined;
-  const sent = await send('deepseek_save', { label, api_key: key });
+  const sent = await send(
+    'deepseek_save',
+    { label, api_key: key },
+    { onLocalError: (message) => setFormError('deepseek-error', message) },
+  );
   if (sent) {
     closeSheet();
     say('密钥已保存，待验证', '');
@@ -2328,18 +2443,34 @@ async function addDeepseek(event) {
 }
 
 function openSheet(kind) {
+  if (!app.sheet) app.sheetTrigger = document.activeElement ?? byId('add-account');
   app.sheet = kind;
-  byId('deepseek-error').hidden = true;
+  setFormError('codex-error', '');
+  setFormError('deepseek-error', '');
   renderSheet();
   (kind === 'codex' ? byId('codex-label') : byId('deepseek-label')).focus?.();
 }
 
 function closeSheet() {
+  const trigger = app.sheetTrigger;
   app.sheet = null;
+  app.sheetTrigger = null;
   for (const id of ['codex-label', 'deepseek-label', 'deepseek-key']) byId(id).value = '';
   byId('deepseek-key').type = 'password';
   byId('deepseek-show').checked = false;
+  setFormError('codex-error', '');
+  setFormError('deepseek-error', '');
   renderSheet();
+  trigger?.focus?.();
+}
+
+function sheetFocusables() {
+  const sheet = byId('sheet');
+  const candidates = sheet?.querySelectorAll?.(
+    'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]',
+  );
+  if (!candidates) return [];
+  return [...candidates].filter((node) => !node.closest?.('[hidden]'));
 }
 
 async function saveSettings() {
@@ -2358,6 +2489,10 @@ async function finish() {
     const sent = await send('setup_close', {}, { wait: false });
     if (!sent) return;
     app.closing = true;
+    app.connected = false;
+    if (app.sheet) closeSheet();
+    clearSecrets();
+    app.transport.sessionLost();
     say('热点即将关闭，请看 Passport 屏幕上的结果。手机会自动断开。', '');
     app.state = null;
     render(true);
@@ -2368,7 +2503,7 @@ async function finish() {
   app.validateJob = sent.request_id;
   say('', '');
   render(true);
-  await poll(); // show the first step at once
+  await poll({ fresh: true }); // show the first step at once
 }
 
 async function cancelAuthorization() {
@@ -2385,7 +2520,7 @@ async function cancelAuthorization() {
 // is opened only afterwards.
 async function connectSerial() {
   if (app.connecting || app.connected || app.waiting) return;
-  app.ended = false;
+  app.ended = '';
   say('', '');
   if (!app.transport.hasPort()) {
     app.connecting = true;
@@ -2436,6 +2571,7 @@ async function waitForWindow() {
     if (!app.waiting) return; // cancelled while the answer was on its way
     app.waiting = false;
     app.connected = true;
+    app.ended = '';
     try {
       if (acceptState(await app.transport.stateGet())) {
         say('', '');
@@ -2456,7 +2592,7 @@ async function connectHttp(event) {
   if (code.length !== 19) return say('访问码是 16 位，格式 XXXX-XXXX-XXXX-XXXX', 'error');
   app.transport.setCode(code);
   app.connecting = true;
-  app.ended = false;
+  app.ended = '';
   say('', '');
   render(true);
   try {
@@ -2478,8 +2614,10 @@ async function connectHttp(event) {
 async function disconnect() {
   app.waiting = false;
   app.connected = false;
+  app.ended = '';
   app.state = null;
   app.validateJob = '';
+  if (app.sheet) closeSheet();
   clearSecrets();
   await app.transport.close();
   say('USB 已断开', '');
@@ -2489,7 +2627,9 @@ async function disconnect() {
 function release() {
   app.waiting = false;
   app.connected = app.connecting = false;
+  app.ended = '';
   app.state = null;
+  if (app.sheet) closeSheet();
   clearSecrets();
   byId('code-input').value = '';
   void app.transport.close();
@@ -2513,6 +2653,7 @@ function bind() {
   byId('wifi-cancel').addEventListener('click', () => {
     app.wifiForm = null;
     byId('wifi-password').value = '';
+    resetWifiPasswordVisibility();
     render(true);
   });
   byId('wifi-show').addEventListener('change', (event) => {
@@ -2530,8 +2671,28 @@ function bind() {
     byId('deepseek-key').type = event.target.checked ? 'text' : 'password';
   });
   byId('sheet-cancel').addEventListener('click', closeSheet);
+  byId('sheet').addEventListener('click', (event) => {
+    if (event.target === byId('sheet')) closeSheet();
+  });
   document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && app.sheet) closeSheet();
+    if (!app.sheet) return;
+    if (event.key === 'Escape') {
+      closeSheet();
+      return;
+    }
+    if (event.key === 'Tab') {
+      const items = sheetFocusables();
+      if (!items.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault?.();
+        last.focus?.();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault?.();
+        first.focus?.();
+      }
+    }
   });
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) void poll();
