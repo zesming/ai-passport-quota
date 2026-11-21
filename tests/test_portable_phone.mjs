@@ -15,6 +15,7 @@ import {
 } from '../tools/build_setup_page.mjs';
 import { createSimDevice, createSimSerial, SCENARIOS } from '../tools/fake_device.mjs';
 import { createHotspotServer, deviceCsp, usbPreviewHtml } from '../tools/preview_portable.mjs';
+import { createHttpTransport } from '../main/setup/transport_http.mjs';
 import {
   UsbDeviceSession,
   openUsbDeviceSession,
@@ -1349,19 +1350,38 @@ for (const transport of ['usb', 'http']) {
   // Draft secrets and access code are cleared once setup_close succeeds.
   await click(page, 'add-wifi');
   await page.node('wifi-password').type_('secret-pass');
+  page.node('wifi-show').checked = true;
+  await page.node('wifi-show').dispatch('change');
   await click(page, 'finish');
   assert.equal(page.node('wifi-password').value, '');
+  assert.equal(page.node('wifi-show').checked, false);
+  assert.equal(page.node('wifi-password').type, 'password');
+  assert.equal(text(page, 'conn-text'), '热点即将关闭');
   assert.equal(page.node('bar').hidden, true);
+  // HTTP transport clears its in-memory access code on sessionLost().
+  const httpTransport = createHttpTransport(async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ protocol: 3 }),
+  }));
+  httpTransport.setCode(CODE);
+  await httpTransport.openSession();
+  assert.equal(httpTransport.hasSession(), true);
+  httpTransport.sessionLost();
+  assert.equal(httpTransport.hasSession(), false);
 }
 
 {
-  // Uncertain receipt recovery waits for an in-flight background poll then fetches fresh state.
+  // Uncertain receipt recovery waits for an in-flight background poll (which returns a stale
+  // pre-command snapshot) and then fetches a fresh state_get that proves admission.
   const device = createSimDevice();
   SCENARIOS.default(device);
   device.openUsb();
-  let releasePoll = null;
-  let stateGets = 0;
+  let staleSnapshot = null;
+  let releaseStalePoll = null;
   let droppedAcks = 0;
+  let freshPollAfterUncertain = 0;
+  let uncertainTriggered = false;
   const rawSerial = createSimSerial(device);
   const wrappedSerial = {
     async requestPort(options) {
@@ -1378,15 +1398,38 @@ for (const transport of ['usb', 'http']) {
               const chunk = await origRead();
               if (chunk.done || !chunk.value) return chunk;
               const textChunk = new TextDecoder().decode(chunk.value);
-              if (textChunk.includes('"op":"state"')) {
-                stateGets += 1;
-                if (stateGets === 2) {
+              const frame = JSON.parse(textChunk.slice(5));
+              if (frame.op === 'state') {
+                if (!staleSnapshot) {
+                  staleSnapshot = JSON.parse(JSON.stringify(frame.state));
+                  return chunk;
+                }
+                if (uncertainTriggered) {
+                  freshPollAfterUncertain += 1;
+                  return chunk;
+                }
+                // Stall this background poll while command is retrying, then return stale state
+                // without the new job so only a subsequent fresh poll can prove admission.
+                if (droppedAcks === 2 && !releaseStalePoll) {
                   await new Promise((resolve) => {
-                    releasePoll = resolve;
+                    releaseStalePoll = resolve;
                   });
+                  const staleFrame = { ...frame, state: staleSnapshot };
+                  return {
+                    done: false,
+                    value: new TextEncoder().encode(`@AIQ:${JSON.stringify(staleFrame)}\n`),
+                  };
+                }
+                // While command is in flight before final timeout, keep app.state stale.
+                if (droppedAcks > 0) {
+                  const staleFrame = { ...frame, state: staleSnapshot };
+                  return {
+                    done: false,
+                    value: new TextEncoder().encode(`@AIQ:${JSON.stringify(staleFrame)}\n`),
+                  };
                 }
               }
-              if (textChunk.includes('"accepted":true') && droppedAcks < 2) {
+              if (frame.op === 'result' && frame.accepted === true && droppedAcks < 2) {
                 droppedAcks += 1;
                 continue;
               }
@@ -1402,21 +1445,24 @@ for (const transport of ['usb', 'http']) {
   const page = loadPage(html, { protocol: 'file:', serial: wrappedSerial });
   await click(page, 'usb-connect');
   await until(page, () => connected(page), 'connected for uncertain receipt race');
-  // Advance 1s so the background interval starts stateGets === 2 and stalls on releasePoll.
-  await page.advance(1000);
-  assert(releasePoll, 'background poll is in flight');
-  // Start a settings mutation whose command ack + single retry ack are dropped (2 x 90s timeout).
+  device.session.deadline += 250000;
   page.node('sleep-select').value = '300';
   const saveRun = page.node('sleep-select').dispatch('change');
   await flush();
-  // Advance virtual time so both the initial send and retry time out -> usb_uncertain_receipt,
-  // while the background poll is still in flight; then release the background poll.
-  device.session.deadline += 200000;
-  const timeoutRun = page.advance(185000, 1000);
+  assert.equal(droppedAcks, 1, 'initial command ack dropped');
+  // Advance past the first 90s timeout (triggers retry -> droppedAcks === 2) and up to 179s so a
+  // background poll is actively in flight (stalled on releaseStalePoll) when 180s hits.
+  await page.advance(179000, 1000);
+  assert.equal(droppedAcks, 2, 'retry command ack dropped');
+  assert(releaseStalePoll, 'stale background poll is actively in flight at uncertain receipt');
+  // Cross the 180s retry timeout: mutation() rejects with usb_uncertain_receipt and calls
+  // poll({ fresh: true }), which must wait for releaseStalePoll then send a new state_get.
+  await page.advance(2000, 1000);
+  uncertainTriggered = true;
+  releaseStalePoll();
   await flush();
-  releasePoll();
-  await timeoutRun;
   await saveRun;
+  assert(freshPollAfterUncertain >= 1, 'a fresh state_get ran after the in-flight poll finished');
   assert.equal(device.settings.screen_timeout_seconds, 300);
   assert.equal(notice(page), '', 'uncertain receipt recovered via fresh post-poll state');
 }

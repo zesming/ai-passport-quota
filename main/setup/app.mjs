@@ -718,6 +718,8 @@ function renderSheet() {
   byId('pick-codex').className = kind === 'codex' ? 'on' : '';
   byId('pick-deepseek').className = kind === 'deepseek' ? 'on' : '';
   const locked = !interactive();
+  byId('pick-codex').disabled = locked;
+  byId('pick-deepseek').disabled = locked;
   byId('codex-add').disabled = locked;
   byId('deepseek-add').disabled = locked;
 }
@@ -854,16 +856,20 @@ function handleFailure(error, { onLocalError = null } = {}) {
     app.transport.sessionLost();
     app.waiting = false;
     app.connected = app.connecting = false;
+    app.ended = '';
     app.state = null;
     if (app.sheet) closeSheet();
+    clearSecrets();
     say(failureText(error), 'error');
     return render(true);
   }
   if (['serial_closed', 'serial_read_error', 'serial_write_timeout'].includes(code)) {
     app.waiting = false;
     app.connected = false;
+    app.ended = '';
     app.state = null;
     if (app.sheet) closeSheet();
+    clearSecrets();
     void app.transport.close();
     say(failureText(error), 'error');
     return render(true);
@@ -909,7 +915,7 @@ function announceResult(job) {
 
 async function poll({ fresh = false } = {}) {
   if (!app.transport.hasSession() || app.closing) return false;
-  if (app.pollPromise) {
+  while (app.pollPromise) {
     if (!fresh) return false;
     await app.pollPromise;
     if (!app.transport.hasSession() || app.closing) return false;
@@ -1164,7 +1170,13 @@ async function addDeepseek(event) {
 }
 
 function openSheet(kind) {
-  if (!app.sheet) app.sheetTrigger = document.activeElement ?? byId('add-account');
+  if (!app.sheet) {
+    const active = document.activeElement;
+    app.sheetTrigger =
+      active && active !== document.body && active !== document.documentElement
+        ? active
+        : byId('add-account');
+  }
   app.sheet = kind;
   setFormError('codex-error', '');
   setFormError('deepseek-error', '');
@@ -1188,7 +1200,8 @@ function closeSheet() {
 function sheetFocusables() {
   const sheet = byId('sheet');
   const candidates = sheet?.querySelectorAll?.(
-    'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]',
+    'button:not([disabled]), input:not([disabled]), select:not([disabled]), ' +
+      '[tabindex]:not([tabindex="-1"])',
   );
   if (!candidates) return [];
   return [...candidates].filter((node) => !node.closest?.('[hidden]'));
@@ -1406,10 +1419,14 @@ function bind() {
       if (!items.length) return;
       const first = items[0];
       const last = items[items.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
+      const active = document.activeElement;
+      if (!items.includes(active)) {
+        event.preventDefault?.();
+        (event.shiftKey ? last : first).focus?.();
+      } else if (event.shiftKey && active === first) {
         event.preventDefault?.();
         last.focus?.();
-      } else if (!event.shiftKey && document.activeElement === last) {
+      } else if (!event.shiftKey && active === last) {
         event.preventDefault?.();
         first.focus?.();
       }

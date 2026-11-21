@@ -40,18 +40,16 @@ async function waitFor(check, { timeoutMs = 10000, stepMs = 100, what = 'conditi
 async function withBrowser(run) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'setup-page-browser-'));
   const port = 9300 + Math.floor(Math.random() * 500);
-  const child = spawn(
-    chrome,
-    [
-      '--headless=new',
-      `--remote-debugging-port=${port}`,
-      `--user-data-dir=${profile}`,
-      '--no-first-run',
-      '--disable-gpu',
-      'about:blank',
-    ],
-    { stdio: 'ignore' },
-  );
+  const args = [
+    '--headless=new',
+    `--remote-debugging-port=${port}`,
+    `--user-data-dir=${profile}`,
+    '--no-first-run',
+    '--disable-gpu',
+    ...(process.env.CI ? ['--no-sandbox'] : []),
+    'about:blank',
+  ];
+  const child = spawn(chrome, args, { stdio: 'ignore' });
   try {
     await waitFor(
       async () => {
@@ -98,7 +96,10 @@ async function openTab(port) {
     async goto(url) {
       await call('Page.navigate', { url });
       await waitFor(
-        async () => (await this.evaluate('document.readyState')) === 'complete',
+        async () =>
+          (await this.evaluate(
+            "location.href !== 'about:blank' && document.readyState === 'complete'",
+          )) === true,
         { timeoutMs: 8000, stepMs: 100, what: `load ${url}` },
       );
     },
@@ -168,6 +169,33 @@ await withBrowser(async (port, profile) => {
   assert.equal(barMetrics.width, barMetrics.innerWidth, '#bar must span the full viewport width');
   assert(barMetrics.height >= 60, `#bar must not collapse (got ${barMetrics.height}px)`);
   assert.equal(barMetrics.animationName, 'none', '#bar must not inherit skeleton pulse animation');
+  // Sheet focus trap and focus restoration in a real browser.
+  const focusCheck = await session.evaluate(`(() => {
+    const trigger = document.getElementById('add-account');
+    trigger.focus();
+    trigger.click();
+    const first = document.getElementById('pick-codex');
+    const last = document.getElementById('sheet-cancel');
+    last.focus();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', cancelable: true }));
+    const wrappedForward = document.activeElement === first;
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, cancelable: true }),
+    );
+    const wrappedBackward = document.activeElement === last;
+    document.body.focus();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', cancelable: true }));
+    const trappedFromBody = document.activeElement === first;
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    const restored = document.activeElement === trigger;
+    return { wrappedForward, wrappedBackward, trappedFromBody, restored };
+  })()`);
+  assert.deepEqual(focusCheck, {
+    wrappedForward: true,
+    wrappedBackward: true,
+    trappedFromBody: true,
+    restored: true,
+  });
   assert.match(
     await session.evaluate("document.getElementById('bar-text').textContent"),
     /2 项待验证/,
