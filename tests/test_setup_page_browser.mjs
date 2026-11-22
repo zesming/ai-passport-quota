@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -37,26 +38,41 @@ async function waitFor(check, { timeoutMs = 10000, stepMs = 100, what = 'conditi
   throw new Error(`Timed out waiting for ${what}${lastError ? `: ${lastError.message}` : ''}`);
 }
 
+async function freePort() {
+  const probe = net.createServer();
+  await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
+  const { port } = probe.address();
+  await new Promise((resolve) => probe.close(resolve));
+  return port;
+}
+
 async function withBrowser(run) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'setup-page-browser-'));
-  const port = 9300 + Math.floor(Math.random() * 500);
+  const port = await freePort();
   const args = [
     '--headless=new',
     `--remote-debugging-port=${port}`,
     `--user-data-dir=${profile}`,
     '--no-first-run',
     '--disable-gpu',
-    ...(process.env.CI ? ['--no-sandbox'] : []),
+    ...(process.env.CI ? ['--no-sandbox', '--disable-dev-shm-usage'] : []),
     'about:blank',
   ];
-  const child = spawn(chrome, args, { stdio: 'ignore' });
+  const child = spawn(chrome, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+  let stderr = '';
+  child.stderr.on('data', (chunk) => {
+    if (stderr.length < 4000) stderr += chunk.toString();
+  });
   try {
     await waitFor(
       async () => {
+        if (child.exitCode !== null) {
+          throw new Error(`Chrome exited (${child.exitCode}): ${stderr.trim()}`);
+        }
         const response = await fetch(`http://127.0.0.1:${port}/json/version`);
         return response.ok;
       },
-      { timeoutMs: 12000, stepMs: 200, what: 'Chrome DevTools port' },
+      { timeoutMs: 25000, stepMs: 200, what: 'Chrome DevTools port' },
     );
     return await run(port, profile);
   } finally {
