@@ -650,13 +650,12 @@ static bool apply_network_runtime_locked(const quota_model_t *old, const quota_m
     }
     return disconnect;
 }
-static quota_model_t *clone_model(const quota_model_t *source)
+static quota_model_t *clone_model(void)
 {
-    quota_model_t *copy_out = calloc(1, sizeof(*copy_out));
+    quota_model_t *copy_out = malloc(sizeof(*copy_out));
     if (!copy_out)
         return NULL;
-    if (source)
-        quota_catalog_canonicalize_model(copy_out, source);
+    quota_catalog_canonicalize_model(copy_out, &s_model);
     return copy_out;
 }
 static void apply_model(quota_model_t *candidate, bool effective, quota_model_t *previous)
@@ -673,6 +672,9 @@ static void apply_model(quota_model_t *candidate, bool effective, quota_model_t 
     lock();
     reconcile_networks_locked(&s_model, candidate, change, changed_index);
     quota_catalog_canonicalize_model(&s_model, candidate);
+    if (s_login_queue.present && !s_login_queue.is_new &&
+        quota_catalog_find(&s_model, s_login_queue.id) < 0)
+        s_login_queue.present = false;
     s_sequence++;
     s_model_ready = true;
     disconnect = apply_network_runtime_locked(previous, candidate, change, changed_index);
@@ -726,7 +728,7 @@ static bool submit_model(quota_model_t *candidate, bool effective, const char *j
 {
     if (s_dirty_model || s_recovery_blocked || s_sequence == UINT64_MAX)
         return false;
-    quota_model_t *previous = clone_model(&s_model);
+    quota_model_t *previous = clone_model();
     if (!previous) {
         storage_failed(QUOTA_STORE_READ_NO_MEMORY);
         return false;
@@ -764,7 +766,7 @@ static void retry_dirty(void)
 {
     if (!s_dirty_model || s_recovery_blocked || millis() < s_storage_retry_at)
         return;
-    quota_model_t *previous = clone_model(&s_model);
+    quota_model_t *previous = clone_model();
     if (!previous) {
         copy(s_storage_error, sizeof(s_storage_error), "no_memory");
         s_storage_retry_at = millis() + 5000;
@@ -830,7 +832,7 @@ static bool finalize_native(const quota_direct_credential_t *credential)
     const quota_model_intent_t *intent = &s_model.intent;
     if (!intent_target(credential->id, credential->generation) || !finalizable(credential))
         return false;
-    quota_model_t *candidate = clone_model(&s_model);
+    quota_model_t *candidate = clone_model();
     if (!candidate) {
         storage_failed(QUOTA_STORE_READ_NO_MEMORY);
         return false;
@@ -1225,7 +1227,7 @@ static void recover_intent(void)
         return;
     }
     quota_store_credential_release(credential);
-    quota_model_t *candidate = clone_model(&s_model);
+    quota_model_t *candidate = clone_model();
     if (!candidate) {
         storage_failed(QUOTA_STORE_READ_NO_MEMORY);
         return;
@@ -2130,7 +2132,7 @@ static bool select_connected_network(unsigned index, network_selection_kind_t ki
         changed();
         return true;
     }
-    quota_model_t *candidate = clone_model(&s_model);
+    quota_model_t *candidate = clone_model();
     if (!candidate) {
         storage_failed(QUOTA_STORE_READ_NO_MEMORY);
         return false;
@@ -2601,7 +2603,7 @@ static void finish_operation(const char *error)
         return;
     operation_kind_t kind = s_operation.kind == OP_SAVE ? s_operation.save_kind : s_operation.kind;
     if (s_model.intent.kind == QUOTA_INTENT_UPSERT_NATIVE) {
-        quota_model_t *candidate = clone_model(&s_model);
+        quota_model_t *candidate = clone_model();
         if (!candidate) {
             storage_failed(QUOTA_STORE_READ_NO_MEMORY);
             return;
@@ -2702,7 +2704,7 @@ static const char *start_account(const quota_portable_command_t *command, operat
     if (kind == OP_KEY && !command->api_key[0]) {
         if (row < 0)
             return "invalid_request";
-        quota_model_t *candidate = clone_model(&s_model);
+        quota_model_t *candidate = clone_model();
         if (!candidate)
             return "no_memory";
         copy(candidate->entries[row].label, sizeof(candidate->entries[row].label), command->label);
@@ -2765,7 +2767,7 @@ static const char *start_account(const quota_portable_command_t *command, operat
         quota_store_credential_release(credential);
         return "generation_exhausted";
     }
-    quota_model_t *candidate = clone_model(&s_model);
+    quota_model_t *candidate = clone_model();
     if (!candidate) {
         quota_store_credential_release(credential);
         return "no_memory";
@@ -2843,7 +2845,7 @@ static const char *start_account(const quota_portable_command_t *command, operat
 }
 static const char *catalog_command(const quota_portable_command_t *command)
 {
-    quota_model_t *candidate = clone_model(&s_model);
+    quota_model_t *candidate = clone_model();
     if (!candidate)
         return "no_memory";
     const char *error = NULL;
@@ -3007,7 +3009,7 @@ static const char *save_network(const quota_portable_command_t *command)
         unlock();
         return NULL;
     }
-    quota_model_t *candidate = clone_model(&s_model);
+    quota_model_t *candidate = clone_model();
     if (!candidate)
         return "no_memory";
     copy(candidate->networks[index].ssid, sizeof(candidate->networks[index].ssid), command->ssid);
@@ -3025,7 +3027,7 @@ static const char *remove_network(const quota_portable_command_t *command)
     unsigned index = command->network_index;
     if (index >= s_model.network_count)
         return "invalid_request";
-    quota_model_t *candidate = clone_model(&s_model);
+    quota_model_t *candidate = clone_model();
     if (!candidate)
         return "no_memory";
     memmove(&candidate->networks[index], &candidate->networks[index + 1],
@@ -3084,7 +3086,7 @@ static void process_command(quota_portable_command_t *command)
             error = "invalid_request";
             break;
         }
-        quota_model_t *candidate = clone_model(&s_model);
+        quota_model_t *candidate = clone_model();
         if (!candidate) {
             error = "no_memory";
             break;
@@ -3137,12 +3139,6 @@ static void process_command(quota_portable_command_t *command)
             if (error && !strcmp(error, "storage_pending")) {
                 error = NULL;
                 pending = true;
-            }
-            if (!error && s_login_queue.present && !strcmp(s_login_queue.id, command->account_id)) {
-                lock();
-                s_login_queue.present = false;
-                sync_public_locked();
-                unlock();
             }
         }
         break;
@@ -3632,7 +3628,7 @@ static void cache_tick(void)
     s_cache_at = millis() + (ok ? CACHE_INTERVAL_MS : 30000);
     if (ok) {
         s_cache_dirty = false;
-        quota_model_t *candidate = clone_model(&s_model);
+        quota_model_t *candidate = clone_model();
         if (candidate) {
             candidate->last_known_time = epoch();
             (void)submit_model(candidate, false, NULL);
@@ -3868,7 +3864,7 @@ void quota_portable_service_tick(bool sleeping, uint32_t generation)
             }
             unlock();
             if (dirty) {
-                quota_model_t *candidate = clone_model(&s_model);
+                quota_model_t *candidate = clone_model();
                 if (candidate) {
                     int row = quota_catalog_find(candidate, pending_id);
                     bool clear_dirty = true;

@@ -379,9 +379,10 @@ static void log_resources(void *arg)
     TaskHandle_t network = quota_service_network_task();
     unsigned app_stack = (unsigned)uxTaskGetStackHighWaterMark(s_application_task);
     unsigned network_stack = network ? (unsigned)uxTaskGetStackHighWaterMark(network) : 0;
-    /* The LVGL pool is read non-blockingly from the esp_timer task so it never stalls other
-     * timers: its peak is the number the 24 KB pool is judged by (docs/development/README.md). */
-    if (bsp_lvgl_lock(0)) {
+    /* The LVGL pool is read with a short bounded timeout from the esp_timer task so it never
+     * stalls other timers (lvgl_port_lock(0) waits forever): its peak is the number the 24 KB pool
+     * is judged by (docs/development/README.md). */
+    if (bsp_lvgl_lock(10)) {
         lv_mem_monitor_t pool = {0};
         lv_mem_monitor(&pool);
         bsp_lvgl_unlock();

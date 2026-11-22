@@ -46,6 +46,7 @@ struct _lv_display_t *bsp_lvgl_init(void);
 
 // LVGL 非线程安全:在【非 LVGL 任务】里操作任何 lv_* 对象前后必须加解锁。
 // LVGL 尚未就绪或超时时 lock 返回 false；只有 lock 成功后才调用 unlock。
+// 注意：底层 esp_lvgl_port 将 timeout_ms == 0 解释为无限等待，调用方须传入正毫秒上限。
 bool bsp_lvgl_lock(int timeout_ms);
 void bsp_lvgl_unlock(void);
 

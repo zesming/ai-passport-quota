@@ -573,11 +573,12 @@ void bsp_display_backlight(uint8_t percent) {
 bool bsp_lvgl_lock(int timeout_ms) {
     assert(!lvgl_locked);
     if (busy_lvgl) {
-        assert(timeout_ms == 0);
+        assert(timeout_ms > 0 && timeout_ms <= 20);
         return false;
     }
     if (boot_backlights > 0)
-        assert(timeout_ms == 0); /* log_resources() uses non-blocking lock(0). */
+        /* lvgl_port_lock(0) waits forever; log_resources() must use a short positive bound. */
+        assert(timeout_ms > 0 && timeout_ms <= 20);
     lvgl_locked = true;
     return true;
 }

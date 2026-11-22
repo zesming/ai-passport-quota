@@ -56,7 +56,8 @@ static bool text_valid(const char *text, size_t capacity, bool empty, bool ascii
     return true;
 }
 
-static bool credential_valid(const quota_portable_credential_t *credential, uint8_t slot)
+static bool credential_valid(const quota_portable_credential_t *credential, uint8_t slot,
+                             bool strict_key)
 {
     if (credential == NULL || slot >= QUOTA_MAX_ACCOUNTS || credential->slot != slot ||
         !text_valid(credential->id, sizeof(credential->id), false, true) ||
@@ -77,6 +78,10 @@ static bool credential_valid(const quota_portable_credential_t *credential, uint
            credential->server_account_id[0] == 0)) ||
          (credential->provider == QUOTA_PROVIDER_DEEPSEEK && credential->api_key[0] == 0)))
         return false;
+    bool api_key_ok =
+        credential->api_key[0] == 0 ||
+        (strict_key ? quota_portable_token_is_safe(credential->api_key, QUOTA_PORTABLE_KEY_BYTES)
+                    : text_valid(credential->api_key, sizeof(credential->api_key), true, false));
     return text_valid(credential->server_account_id, sizeof(credential->server_account_id), true,
                       true) &&
            text_valid(credential->server_user_id, sizeof(credential->server_user_id), true, true) &&
@@ -85,8 +90,7 @@ static bool credential_valid(const quota_portable_credential_t *credential, uint
            text_valid(credential->label, sizeof(credential->label), true, false) &&
            text_valid(credential->access_token, sizeof(credential->access_token), true, true) &&
            text_valid(credential->refresh_token, sizeof(credential->refresh_token), true, true) &&
-           (credential->api_key[0] == 0 ||
-            quota_portable_token_is_safe(credential->api_key, QUOTA_PORTABLE_KEY_BYTES));
+           api_key_ok;
 }
 
 static quota_store_read_result_t nvs_read_error(esp_err_t error)
@@ -264,7 +268,7 @@ quota_store_load_credential_result(uint8_t slot, quota_portable_credential_t *cr
         (record->magic != CREDENTIAL_MAGIC || record->version != STORE_VERSION ||
          record->bytes != sizeof(*record) ||
          record->crc != store_crc(record, offsetof(credential_record_t, crc)) ||
-         !credential_valid(&record->value, slot))) {
+         !credential_valid(&record->value, slot, false))) {
         result = QUOTA_STORE_READ_INVALID;
     }
     if (result == QUOTA_STORE_READ_OK && !workspace)
@@ -278,7 +282,7 @@ quota_store_load_credential_result(uint8_t slot, quota_portable_credential_t *cr
 
 bool quota_store_save_credential(uint8_t slot, const quota_portable_credential_t *credential)
 {
-    if (!credential_valid(credential, slot))
+    if (!credential_valid(credential, slot, true))
         return false;
     bool workspace = s_credential_record && credential == &s_credential_record->value;
     if (!workspace && (s_credential_record || !quota_store_credential_acquire()))
@@ -392,35 +396,37 @@ static quota_store_read_result_t release_slot(uint8_t slot, const char *fallback
     quota_portable_credential_t *credential = quota_store_credential_acquire();
     if (!credential)
         return s_credential_record ? QUOTA_STORE_READ_BUSY : QUOTA_STORE_READ_NO_MEMORY;
-    quota_store_read_result_t result = quota_store_load_credential_result(slot, credential);
+    credential_record_t *record = s_credential_record;
+    quota_portable_clear_secret(record, sizeof(*record));
+    char key[] = "account0";
+    key[7] = (char)('0' + slot);
+    quota_store_read_result_t result = read_record(key, record, sizeof(*record));
     char id[QUOTA_ACCOUNT_ID_BYTES + 1] = {0};
     uint32_t generation = 0;
-    if (result == QUOTA_STORE_READ_OK && !credential->tombstone) {
-        memcpy(id, credential->id, sizeof(id));
-        generation = credential->generation;
-    } else if (result == QUOTA_STORE_READ_INVALID) {
-        /* Check whether the record has a valid envelope/CRC and only failed because its provider
-         * was retired in an upgrade; if so, preserve its id and generation in the tombstone. */
-        credential_record_t *record = s_credential_record;
-        quota_portable_clear_secret(record, sizeof(*record));
-        char key[] = "account0";
-        key[7] = (char)('0' + slot);
-        if (read_record(key, record, sizeof(*record)) == QUOTA_STORE_READ_OK &&
-            record->magic == CREDENTIAL_MAGIC && record->version == STORE_VERSION &&
-            record->bytes == sizeof(*record) &&
-            record->crc == store_crc(record, offsetof(credential_record_t, crc)) &&
-            record->value.slot == slot && record->value.generation != 0 &&
-            record->value.provider != QUOTA_PROVIDER_CODEX &&
-            record->value.provider != QUOTA_PROVIDER_DEEPSEEK &&
-            text_valid(record->value.id, sizeof(record->value.id), false, true) &&
-            quota_id_is_valid(record->value.id)) {
+    if (result == QUOTA_STORE_READ_OK) {
+        bool envelope_ok = record->magic == CREDENTIAL_MAGIC && record->version == STORE_VERSION &&
+                           record->bytes == sizeof(*record) &&
+                           record->crc == store_crc(record, offsetof(credential_record_t, crc));
+        if (envelope_ok && credential_valid(&record->value, slot, false)) {
+            if (!record->value.tombstone) {
+                memcpy(id, record->value.id, sizeof(id));
+                generation = record->value.generation;
+            }
+        } else if (envelope_ok && record->value.slot == slot && record->value.generation != 0 &&
+                   record->value.provider != QUOTA_PROVIDER_CODEX &&
+                   record->value.provider != QUOTA_PROVIDER_DEEPSEEK &&
+                   text_valid(record->value.id, sizeof(record->value.id), false, true) &&
+                   quota_id_is_valid(record->value.id)) {
+            /* Preserve id and generation for a valid-CRC record of a retired provider. */
             memcpy(id, record->value.id, sizeof(id));
             generation = record->value.generation;
         } else if (quota_id_is_valid(fallback_id)) {
             memcpy(id, fallback_id, sizeof(id));
             generation = fallback_generation; /* Unreadable: overwrite. */
         }
-        quota_portable_clear_secret(record, sizeof(*record));
+    } else if (result == QUOTA_STORE_READ_INVALID && quota_id_is_valid(fallback_id)) {
+        memcpy(id, fallback_id, sizeof(id));
+        generation = fallback_generation; /* Wrong size: overwrite. */
     }
     quota_store_credential_release(credential);
     if (result != QUOTA_STORE_READ_OK && result != QUOTA_STORE_READ_MISSING &&

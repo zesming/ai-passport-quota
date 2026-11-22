@@ -557,6 +557,10 @@ static void retired_orphan_padding_and_utf8_credits(void)
     retired->crc = store_crc(retired, offsetof(credential_record_t, crc));
     nvs_stub_put(STORE_PARTITION, STORE_NAMESPACE, "account5", retired, sizeof(*retired));
     free(retired);
+    /* I/O error reading a retired slot must fail closed so cleanup retries later. */
+    nvs_stub.data_error = ESP_FAIL;
+    assert(quota_store_release_orphan_credentials() == QUOTA_STORE_READ_IO_ERROR);
+    nvs_stub.data_error = ESP_OK;
     assert(quota_store_release_orphan_credentials() == QUOTA_STORE_READ_OK);
     static quota_portable_credential_t loaded;
     assert(quota_store_load_credential_result(5, &loaded) == QUOTA_STORE_READ_OK);

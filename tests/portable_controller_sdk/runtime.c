@@ -3454,7 +3454,8 @@ int main(int argc, char **argv)
         assert(public_view.portable.account_validation[0] == QUOTA_VALIDATION_FAILED &&
                !strcmp(public_view.portable.account_errors[0], "login_disabled"));
 
-        /* CD-12: failed ACCOUNT_REMOVE preserves s_login_queue. */
+        /* CD-12: failed or storage_pending ACCOUNT_REMOVE preserves s_login_queue until readback
+         * confirms the removal; apply_model() clears it once deletion is durable. */
         model_fail = true;
         quota_portable_command_t rm = {.op = QUOTA_PORTABLE_OP_ACCOUNT_REMOVE};
         strcpy(rm.request_id, "22222222");
@@ -3463,13 +3464,23 @@ int main(int argc, char **argv)
         model_fail = false;
         assert(job(rm.request_id)->state == 3 && s_login_queue.present &&
                !strcmp(s_login_queue.id, first_id));
+        model_unknown = true;
+        model_apply_unknown = false;
+        strcpy(rm.request_id, "22222225");
+        submit_usb(&rm);
+        assert(s_dirty_model && s_login_queue.present && !strcmp(s_login_queue.id, first_id));
+        now_ms += 1000;
+        tick(false);
+        assert(s_dirty_model && quota_catalog_find(&s_model, first_id) >= 0 &&
+               s_login_queue.present && !strcmp(s_login_queue.id, first_id));
+        model_unknown = false;
+        now_ms += 5000;
+        tick(false);
+        assert(!s_dirty_model && quota_catalog_find(&s_model, first_id) < 0 &&
+               !s_login_queue.present);
 
-        /* Replace queue with a new ChatGPT account and check queued_login_* in public_view. */
-        quota_portable_command_t cancel = {.op = QUOTA_PORTABLE_OP_OPERATION_CANCEL};
-        strcpy(cancel.request_id, "22222223");
-        strcpy(cancel.target_request_id, reauth.request_id);
-        submit_usb(&cancel);
-        assert(!s_login_queue.present);
+        /* Re-seed first_id via boot not needed: queue a new ChatGPT account and check
+         * queued_login_* in public_view, then test PD-03 on the remaining DeepSeek account. */
         quota_portable_command_t new_codex = {.op = QUOTA_PORTABLE_OP_CODEX_QUEUE};
         strcpy(new_codex.request_id, "22222224");
         strcpy(new_codex.label, "TeamGPT");
@@ -3498,7 +3509,7 @@ int main(int argc, char **argv)
         strcpy(s_snapshot.balances[ds_idx].balance_infos[1].total_balance, "8.50");
         cJSON *root = state_of(QUOTA_SETUP_USB);
         cJSON *accounts = cJSON_GetObjectItemCaseSensitive(root, "accounts");
-        cJSON *ds_json = cJSON_GetArrayItem(accounts, 1);
+        cJSON *ds_json = cJSON_GetArrayItem(accounts, ds_idx);
         cJSON *bal = cJSON_GetObjectItemCaseSensitive(ds_json, "balance");
         cJSON *infos = cJSON_GetObjectItemCaseSensitive(bal, "balance_infos");
         assert(cJSON_GetArraySize(infos) == 2);

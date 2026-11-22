@@ -850,7 +850,8 @@ int main(void)
     memset(c->access_token, 'x', sizeof(c->access_token));
     assert(!quota_store_save_credential(0, c) && nvs_stub.commits == before);
     strcpy(c->access_token, "new-access");
-    /* CD-01: DeepSeek api_key with space or non-ASCII is rejected at store level too. */
+    /* CD-01: DeepSeek api_key with space or non-ASCII is rejected on new saves, while legacy
+     * records written by older firmware with ASCII spaces still load so users can replace them. */
     quota_portable_credential_t ds = {0};
     strcpy(ds.id, "22222222222222222222222222222222");
     ds.slot = 2;
@@ -860,6 +861,18 @@ int main(void)
     assert(!quota_store_save_credential(2, &ds) && nvs_stub.commits == before);
     strcpy(ds.api_key, "sk-\xc3\xa9");
     assert(!quota_store_save_credential(2, &ds) && nvs_stub.commits == before);
+    credential_record_t *legacy_ds = calloc(1, sizeof(*legacy_ds));
+    assert(legacy_ds);
+    legacy_ds->magic = CREDENTIAL_MAGIC;
+    legacy_ds->version = STORE_VERSION;
+    legacy_ds->bytes = sizeof(*legacy_ds);
+    legacy_ds->value = ds;
+    strcpy(legacy_ds->value.api_key, "sk-legacy key");
+    legacy_ds->crc = store_crc(legacy_ds, offsetof(credential_record_t, crc));
+    nvs_stub_put(STORE_PARTITION, STORE_NAMESPACE, "account2", legacy_ds, sizeof(*legacy_ds));
+    free(legacy_ds);
+    assert(quota_store_load_credential_result(2, read) == QUOTA_STORE_READ_OK &&
+           !strcmp(read->api_key, "sk-legacy key"));
     strcpy(ds.api_key, "sk-valid-key");
     assert(quota_store_save_credential(2, &ds) && nvs_stub.commits == before + 1);
     assert(store_allocations > allocations &&
