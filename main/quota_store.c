@@ -198,34 +198,23 @@ bool quota_store_erase_retired(bool default_partition_ready)
     return ok;
 }
 
+static bool model_record_intact(void);
+
 quota_factory_reset_result_t quota_store_factory_reset(void)
 {
-    /* Without an initialized store the catalog was not deleted up front; it only becomes deleted
-       once nvs_flash_erase_partition(STORE_PARTITION) actually succeeds. */
-    bool catalog_deleted = false;
     if (s_ready) {
         nvs_handle_t handle;
         if (nvs_open_from_partition(STORE_PARTITION, STORE_NAMESPACE, NVS_READWRITE, &handle) !=
             ESP_OK)
             return QUOTA_FACTORY_RESET_FAILED;
         esp_err_t error = nvs_erase_key(handle, "model_v2");
-        if (error == ESP_OK || error == ESP_ERR_NVS_NOT_FOUND)
-            error = nvs_commit(handle);
+        /* NVS can erase before commit reports an error. The full partition erase below
+         * still needs to run and determines whether the portable store was cleared. */
+        if (error == ESP_OK)
+            (void)nvs_commit(handle);
         nvs_close(handle);
-        if (error != ESP_OK) {
-            /* Real ESP-IDF NVS removes the entry before nvs_commit(). Read back model_v2 so an
-             * already-deleted catalog returns CATALOG_GONE and triggers the reboot path. */
-            if (nvs_open_from_partition(STORE_PARTITION, STORE_NAMESPACE, NVS_READONLY, &handle) ==
-                ESP_OK) {
-                size_t length = 0;
-                esp_err_t probe = nvs_get_blob(handle, "model_v2", NULL, &length);
-                nvs_close(handle);
-                if (probe == ESP_ERR_NVS_NOT_FOUND)
-                    return QUOTA_FACTORY_RESET_CATALOG_GONE;
-            }
+        if (error != ESP_OK && error != ESP_ERR_NVS_NOT_FOUND && model_record_intact())
             return QUOTA_FACTORY_RESET_FAILED;
-        }
-        catalog_deleted = true;
     }
     /* Skip erasing retired keys on STORE_PARTITION since the whole partition is erased below. */
     bool ok = erase_retired_default_namespace(true);
@@ -233,14 +222,12 @@ quota_factory_reset_result_t quota_store_factory_reset(void)
         s_ready = false;
         ok = nvs_flash_deinit_partition(STORE_PARTITION) == ESP_OK && ok;
     }
-    bool erased = nvs_flash_erase_partition(STORE_PARTITION) == ESP_OK;
-    if (erased)
-        catalog_deleted = true;
-    ok = erased && ok;
+    ok = nvs_flash_erase_partition(STORE_PARTITION) == ESP_OK && ok;
     s_ready = nvs_flash_init_partition(STORE_PARTITION) == ESP_OK;
     if (ok && s_ready)
         return QUOTA_FACTORY_RESET_OK;
-    return catalog_deleted ? QUOTA_FACTORY_RESET_CATALOG_GONE : QUOTA_FACTORY_RESET_FAILED;
+    /* A failed partition erase may still have modified some sectors. */
+    return QUOTA_FACTORY_RESET_RESTART_REQUIRED;
 }
 
 quota_portable_credential_t *quota_store_credential_acquire(void)
@@ -420,6 +407,18 @@ static quota_store_read_result_t read_model_record(model_record_t *record,
     if (removed_slot_conflicts_with_kept(&record->value, removed))
         return QUOTA_STORE_READ_INVALID;
     return quota_catalog_valid(&record->value) ? QUOTA_STORE_READ_OK : QUOTA_STORE_READ_INVALID;
+}
+
+static bool model_record_intact(void)
+{
+    /* A blob length query cannot detect a partly erased record. */
+    model_record_t *record = malloc(sizeof(*record));
+    if (!record)
+        return false;
+    bool intact = read_model_record(record, NULL, NULL) == QUOTA_STORE_READ_OK;
+    quota_portable_clear_secret(record, sizeof(*record));
+    free(record);
+    return intact;
 }
 
 /* Replace the slot's credential with a tombstone; a slot that is already free or a tombstone is

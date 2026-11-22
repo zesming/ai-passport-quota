@@ -3687,8 +3687,7 @@ static bool factory_reset(void)
     close_setup();
     quota_factory_reset_result_t result = quota_store_factory_reset();
     if (result != QUOTA_FACTORY_RESET_FAILED) {
-        /* A catalog that is gone makes this a new device even if the rest could not be erased:
-         * restart before anything saves the catalog in memory back. */
+        /* After a partial or uncertain erase, reload from storage before writing anything. */
         esp_restart();
         return true;
     }

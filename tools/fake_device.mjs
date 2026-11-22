@@ -349,18 +349,16 @@ export function createSimDevice(options = {}) {
       if (!COMMON_KEYS.has(key) && !extra.has(key)) return false;
     }
     if (body.op === 'deepseek_save') {
-      const hasId = typeof body.account_id === 'string' && body.account_id.length > 0;
-      const key = body.api_key ?? '';
-      if (typeof key !== 'string') return false;
-      if (key.length === 0 && !hasId) return false;
-      if (key.length > 0 && (key.length > 512 || !/^[\x21-\x7e]+$/.test(key))) return false;
+      if (Object.hasOwn(body, 'api_key')) {
+        const key = body.api_key;
+        if (typeof key !== 'string' || key.length > 512 || !/^[\x21-\x7e]+$/.test(key))
+          return false;
+      } else if (typeof body.account_id !== 'string' || body.account_id.length === 0) return false;
     }
     if (
       body.op === 'settings_save' &&
       (typeof body.auto_refresh !== 'boolean' ||
-        !Number.isInteger(body.refresh_seconds) ||
         !VALID_REFRESH_SECONDS.has(body.refresh_seconds) ||
-        !Number.isInteger(body.screen_timeout_seconds) ||
         !VALID_SCREEN_TIMEOUTS.has(body.screen_timeout_seconds))
     )
       return false;

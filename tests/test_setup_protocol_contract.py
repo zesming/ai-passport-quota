@@ -78,7 +78,7 @@ int main(void)
             return 5;
         }
     }
-    assert(http_count >= 16 && usb_count >= 16 && reject_count >= 2);
+    assert(http_count >= 16 && usb_count >= 16 && reject_count >= 4);
     printf("verified http=%u usb=%u reject=%u\n", http_count, usb_count, reject_count);
     return 0;
 }
@@ -164,6 +164,14 @@ if (mode === 'emit') {
       auto_refresh: true,
       screen_timeout_seconds: 3,
     },
+    ...['', null].map((api_key, index) => ({
+      v: 3,
+      request_id: `f000000${index + 3}`,
+      op: 'deepseek_save',
+      account_id: '0123456789abcdef0123456789abcdef',
+      label: 'Renamed',
+      api_key,
+    })),
   ];
   for (const bad of invalidSamples) {
     const res = rejectedDevice.http(

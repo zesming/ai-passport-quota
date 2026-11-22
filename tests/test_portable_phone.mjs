@@ -1298,12 +1298,24 @@ for (const transport of ['usb', 'http']) {
   await byText(detail, '保存', 'button').click();
   const inlineError = byClass(page.node('account-list'), 'row-error')[0];
   assert(inlineError && inlineError.textContent.includes('ASCII'));
-  await keyInput.type_('k'.repeat(513));
-  await byText(detail, '保存', 'button').click();
+  const saveEditedKey = async (key) => {
+    await editorInput(page, '新密钥').type_(key);
+    await byText(page.node('account-list'), '保存', 'button').click();
+  };
+  let transmittedKeys = 0;
+  const answer = device.frame;
+  device.frame = (frame) => {
+    if (frame.op === 'command' && frame.body?.op === 'deepseek_save') transmittedKeys++;
+    return answer(frame);
+  };
+  await saveEditedKey('k'.repeat(513));
   assert(byClass(page.node('account-list'), 'row-error')[0].textContent.includes('512'));
-  await keyInput.type_('k'.repeat(512));
-  await byText(detail, '保存', 'button').click();
-  await until(page, () => !page.node('account-list').textContent.includes('512'), '512-byte key');
+  assert.equal(transmittedKeys, 0, 'an oversized key does not reach the device');
+  const validKey = 'k'.repeat(512);
+  await saveEditedKey(validKey);
+  await until(page, () => notice(page).includes('新密钥已保存'), '512-byte key save confirmation');
+  assert.equal(transmittedKeys, 1);
+  assert.equal(device.accounts[1].key, validKey, 'the device saved the full 512-byte key');
 
   // Editing an existing Wi-Fi resets password visibility and clarifies re-entry.
   await byClass(page.node('wifi-list'), 'row-main')[0].click();

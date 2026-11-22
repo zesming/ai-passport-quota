@@ -3346,8 +3346,8 @@ int main(int argc, char **argv)
         assert(!public_view.portable.setup_active && !portal_active && !usb_window);
         tick(false); /* one request, one erase */
         assert(factory_resets == 1 && restarts == 1);
-        /* The catalog is deleted but erasing the rest failed: restart, never carry on writing. */
-        factory_reset_result = QUOTA_FACTORY_RESET_CATALOG_GONE;
+        /* The erase was partial or uncertain: restart before writing again. */
+        factory_reset_result = QUOTA_FACTORY_RESET_RESTART_REQUIRED;
         quota_portable_service_factory_reset();
         tick(false);
         assert(factory_resets == 2 && restarts == 2 && !public_view.portable.factory_reset_failed);
