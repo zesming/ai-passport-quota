@@ -5,7 +5,16 @@ from runtime_helpers import ROOT, compile_and_run, vendor_function
 
 
 class ButtonSdk(unittest.TestCase):
-    def vendor_prefix(self):
+    @staticmethod
+    def _stub_button_events():
+        """Parse button_event_t enum values from tests/bsp_stubs/iot_button.h."""
+        stub = (ROOT / "tests/bsp_stubs/iot_button.h").read_text()
+        match = re.search(r"typedef enum \{(.*?)\}\s*button_event_t;", stub, re.S)
+        assert match is not None, "button_event_t enum missing from tests/bsp_stubs/iot_button.h"
+        names = [item.strip().split("=")[0].strip() for item in match[1].split(",") if item.strip()]
+        return {name: idx for idx, name in enumerate(names)}
+
+    def vendor_prefix(self, *, live_adc_and_clock=False):
         """Fake button component and ADC around the vendor state machine."""
         vendor = (ROOT / "managed_components/espressif__button/iot_button.c").read_text()
         header = (ROOT / "managed_components/espressif__button/include/iot_button.h").read_text()
@@ -16,6 +25,10 @@ class ButtonSdk(unittest.TestCase):
             ("BUTTON_LONG_PRESS_HOLD_SERIAL_TIME_MS", 20),
         ):
             self.assertRegex(defaults, rf"(?m)^CONFIG_{setting}={value}$")
+        stub_events = self._stub_button_events()
+        stub_down = stub_events["BUTTON_PRESS_DOWN"]
+        stub_up = stub_events["BUTTON_PRESS_UP"]
+        stub_hold = stub_events["BUTTON_LONG_PRESS_HOLD"]
 
         def block(source, start, end):
             return re.search(re.escape(start) + r".*?" + re.escape(end), source, re.S)[0]
@@ -65,8 +78,16 @@ struct button_driver_t {
         for (size_t j = 0; j < btn->size[ev]; j++)                                                 \
             btn->cb_info[ev][j].cb(btn, btn->cb_info[ev][j].usr_data);                             \
     } while (0)
-/* bsp_button.c is built against tests/bsp_stubs/iot_button.h; these are its event numbers. */
-enum { STUB_PRESS_DOWN = 0, STUB_PRESS_UP = 1, STUB_LONG_PRESS_HOLD = 5 };
+"""
+            + f"""
+/* bsp_button.c is built against tests/bsp_stubs/iot_button.h; parsed from that header. */
+enum {{
+    STUB_PRESS_DOWN = {stub_down},
+    STUB_PRESS_UP = {stub_up},
+    STUB_LONG_PRESS_HOLD = {stub_hold},
+}};
+"""
+            + r"""
 
 static button_dev_t devs[BSP_BTN_COUNT];
 static button_cb_info_t infos[BSP_BTN_COUNT][BUTTON_EVENT_MAX];
@@ -141,6 +162,20 @@ int adc_oneshot_config_channel(void *handle, int channel, const void *config)
     (void)config;
     return 0;
 }
+"""
+            + (
+                """
+static int adc_mv = 3300;
+int adc_oneshot_read(void *handle, int channel, int *raw)
+{
+    (void)handle;
+    (void)channel;
+    *raw = adc_mv;
+    return 0;
+}
+"""
+                if live_adc_and_clock
+                else """
 int adc_oneshot_read(void *handle, int channel, int *raw)
 {
     (void)handle;
@@ -148,6 +183,9 @@ int adc_oneshot_read(void *handle, int channel, int *raw)
     *raw = 0;
     return 0;
 }
+"""
+            )
+            + r"""
 int adc_cali_create_scheme_curve_fitting(const void *config, void **handle)
 {
     (void)config;
@@ -165,10 +203,24 @@ int adc_cali_raw_to_voltage(void *handle, int raw, int *mv)
     *mv = raw;
     return 0;
 }
+"""
+            + (
+                """
+static uint64_t now;
+int64_t esp_timer_get_time(void)
+{
+    return (int64_t)now * 1000;
+}
+"""
+                if live_adc_and_clock
+                else """
 int64_t esp_timer_get_time(void)
 {
     return 0;
 }
+"""
+            )
+            + r"""
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wsign-compare"
@@ -264,19 +316,7 @@ int main(void) {
 
     def test_wake_gesture_with_real_state_machine(self):
         """The waking key press only wakes, however the state machine was left by the stop."""
-        vendor, prefix = self.vendor_prefix()
-        # The BSP's own level function reads this ADC; time moves with the 5 ms ticks.
-        prefix = prefix.replace(
-            "    *raw = 0;\n    return 0;", "    *raw = adc_mv;\n    return 0;"
-        ).replace(
-            "int adc_oneshot_read(", "static int adc_mv = 3300;\nint adc_oneshot_read(", 1
-        ).replace(
-            "int64_t esp_timer_get_time(void)\n{\n    return 0;\n}",
-            "static uint64_t now;\nint64_t esp_timer_get_time(void)\n"
-            "{\n    return (int64_t)now * 1000;\n}",
-        )
-        self.assertIn("now * 1000", prefix)
-        self.assertIn("adc_mv;", prefix)
+        vendor, prefix = self.vendor_prefix(live_adc_and_clock=True)
         harness = (
             prefix
             + vendor_function(vendor, "button_handler")

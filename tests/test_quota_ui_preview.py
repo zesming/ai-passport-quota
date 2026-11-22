@@ -225,6 +225,36 @@ class UiPreview(unittest.TestCase):
                 for literal in found:
                     self.assertNotIn(word, literal, f"{word} in {name}")
 
+    def test_incremental_build_tracks_project_headers(self):
+        self.assertEqual(self.returncode, 0, self.log)
+        dep = OUT / "obj" / "own" / "main" / "quota_ui.d"
+        self.assertTrue(dep.is_file(), "ui_preview build must emit compiler .d dependency files")
+        deps = dep.read_text(encoding="utf-8")
+        for header in ("main/quota_ui.h", "main/quota_portable.h", "main/quota_logic.h"):
+            self.assertIn(header, deps)
+
+    def test_setup_result_counts_match_listed_items(self):
+        for name, fixture in self.fixtures.items():
+            view = fixture.get("view", {})
+            portable = view.get("portable", {})
+            if not portable.get("setup_result"):
+                continue
+            states = [n.get("validation", "ok") for n in portable.get("saved_networks", [])]
+            states += [a.get("validation", "ok") for a in view.get("accounts", [])]
+            queued = portable.get("queued_login")
+            if isinstance(queued, dict):
+                states.append(queued.get("validation", "pending"))
+            self.assertEqual(
+                portable.get("failed", 0),
+                states.count("failed"),
+                f"{name}: failed count mismatch",
+            )
+            self.assertEqual(
+                portable.get("pending", 0),
+                states.count("pending"),
+                f"{name}: pending count mismatch",
+            )
+
     def test_preview_lvgl_options_are_the_firmware_options(self):
         defaults = (ROOT / "sdkconfig.defaults").read_text()
         preview = (PREVIEW / "sdkconfig.h").read_text()

@@ -125,6 +125,7 @@ int main(void)
                 "-Werror",
                 "-Wno-deprecated-declarations",
                 "-fsanitize=address,undefined",
+                "-fno-sanitize-recover=undefined",
                 "-fno-omit-frame-pointer",
                 "-g",
                 "-I" + str(tmp),

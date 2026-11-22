@@ -55,37 +55,47 @@ run_static_checks() {
     "${actionlint_bin}" -color .github/workflows/*.yml
 
     test_dir="$(mktemp -d /tmp/ai-passport-host-tests.XXXXXX)"
-    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -pedantic -Imain \
+    local san_flags=(-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer)
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -pedantic "${san_flags[@]}" -Imain \
         tests/test_quota_logic.c main/quota_logic.c \
         -o "${test_dir}/test_quota_logic"
     "${test_dir}/test_quota_logic"
-    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Icomponents/bsp/src \
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror "${san_flags[@]}" -Icomponents/bsp/src \
         tests/test_bsp_display_rounding.c components/bsp/src/bsp_display_rounding.c \
         -o "${test_dir}/test_bsp_display_rounding"
     "${test_dir}/test_bsp_display_rounding"
-    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror \
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror "${san_flags[@]}" \
         -Itests/bsp_stubs -Icomponents/bsp/include \
         tests/test_bsp_button.c -o "${test_dir}/test_bsp_button"
     "${test_dir}/test_bsp_button"
-    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror \
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror "${san_flags[@]}" \
         -Itests/bsp_stubs -Icomponents/bsp/include \
         tests/test_bsp_lvgl_init.c components/bsp/src/bsp_display_rounding.c \
         -o "${test_dir}/test_bsp_lvgl_init"
     "${test_dir}/test_bsp_lvgl_init"
-    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror \
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror "${san_flags[@]}" \
         -Itests/bsp_stubs -Icomponents/bsp/include -Icomponents/bsp/src \
         tests/test_bsp_display_pins.c -o "${test_dir}/test_bsp_display_pins"
     "${test_dir}/test_bsp_display_pins"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror "${san_flags[@]}" \
+        -Itests/bsp_stubs -Icomponents/bsp/include -Icomponents/bsp/src \
+        tests/test_bsp_battery.c -o "${test_dir}/test_bsp_battery"
+    "${test_dir}/test_bsp_battery"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror "${san_flags[@]}" \
+        -Itests/bsp_stubs -Icomponents/bsp/include -Icomponents/bsp/src \
+        tests/test_bsp_display.c -o "${test_dir}/test_bsp_display"
+    "${test_dir}/test_bsp_display"
     # The screen-off power sequence is built plain and with the profiling hooks enabled.
-    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror \
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror "${san_flags[@]}" \
         -Itests/bsp_stubs -Icomponents/bsp/include -Icomponents/bsp/src \
         tests/test_bsp_power.c -o "${test_dir}/test_bsp_power"
     "${test_dir}/test_bsp_power"
-    "${CC:-cc}" -std=c11 -D_DEFAULT_SOURCE -Wall -Wextra -Werror -DCONFIG_BSP_SLEEP_PROFILE \
+    "${CC:-cc}" -std=c11 -D_DEFAULT_SOURCE -Wall -Wextra -Werror "${san_flags[@]}" \
+        -DCONFIG_BSP_SLEEP_PROFILE \
         -Itests/bsp_stubs -Icomponents/bsp/include -Icomponents/bsp/src \
         tests/test_bsp_power.c -o "${test_dir}/test_bsp_power_profile"
     "${test_dir}/test_bsp_power_profile"
-    for suite in quota_fonts quota_ui_preview quota_refresh_runtime quota_power_runtime pm_profile_delta wifi_icons quota_usb_runtime quota_wifi_runtime quota_storage_runtime quota_catalog_runtime quota_portable_runtime quota_direct_runtime quota_portable_service_runtime check_repo publish_setup_page verify_firmware archive_firmware; do
+    for suite in quota_fonts quota_ui_preview quota_refresh_runtime quota_power_runtime pm_profile_delta wifi_icons quota_usb_runtime quota_wifi_runtime quota_storage_runtime quota_catalog_runtime quota_portable_runtime quota_direct_runtime quota_portable_service_runtime setup_protocol_contract check_repo publish_setup_page verify_firmware archive_firmware; do
         PYTHONDONTWRITEBYTECODE=1 python3 "tests/test_${suite}.py"
     done
     rm -rf "${test_dir}"

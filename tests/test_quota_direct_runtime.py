@@ -502,6 +502,7 @@ int main(void)
                 "-Werror",
                 "-Wno-deprecated-declarations",
                 "-fsanitize=address,undefined",
+                "-fno-sanitize-recover=undefined",
                 "-fno-omit-frame-pointer",
                 "-I",
                 str(root / "main"),
@@ -554,6 +555,7 @@ int main(void)
                 "-DESP_PLATFORM",
                 "-DQUOTA_DIRECT_RESPONSE_CALLOC=quota_test_response_calloc",
                 "-fsanitize=address,undefined",
+                "-fno-sanitize-recover=undefined",
                 "-fno-omit-frame-pointer",
                 "-I",
                 str(temporary),
@@ -588,6 +590,7 @@ int main(void)
                 "-Werror",
                 "-Wno-deprecated-declarations",  # bundled cJSON on current macOS SDK
                 "-fsanitize=address,undefined",
+                "-fno-sanitize-recover=undefined",
                 "-fno-omit-frame-pointer",
                 "-I",
                 str(root / "main"),

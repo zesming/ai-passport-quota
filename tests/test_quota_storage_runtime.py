@@ -644,6 +644,7 @@ class StorageRuntime(unittest.TestCase):
                     "-Wextra",
                     "-Werror",
                     "-fsanitize=address,undefined",
+                    "-fno-sanitize-recover=undefined",
                     "-fno-omit-frame-pointer",
                     "-I" + str(ROOT / "tests/nvs_stub"),
                     "-I" + str(ROOT / "main"),

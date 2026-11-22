@@ -3,8 +3,9 @@
 #include "quota_logic.h"
 #include "quota_store.h"
 #include "quota_portal.h"
-#include "sdk.h"
+#include "host_sdk.h"
 #include <assert.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 static uint64_t now_ms = 100, wall = 1800000000;
@@ -104,11 +105,11 @@ uint32_t esp_random(void)
     n = n * 1664525u + 1013904223u;
     return n >> 8;
 }
-size_t esp_get_free_heap_size(void)
+uint32_t esp_get_free_heap_size(void)
 {
     return 60000;
 }
-size_t esp_get_minimum_free_heap_size(void)
+uint32_t esp_get_minimum_free_heap_size(void)
 {
     return 1000;
 }
@@ -141,7 +142,7 @@ esp_err_t esp_netif_get_ip_info(esp_netif_t *n, esp_netif_ip_info_t *out)
     out->ip.addr = connected ? 1 : 0;
     return ESP_OK;
 }
-esp_err_t esp_wifi_set_mode(int mode)
+esp_err_t esp_wifi_set_mode(wifi_mode_t mode)
 {
     (void)mode;
     unlocked();
@@ -3536,6 +3537,30 @@ int main(int argc, char **argv)
             }
         }
         cJSON_InitHooks(NULL);
+    } else if (!strcmp(argv[1], "dump-contract-state")) {
+        boot();
+        ready();
+        usb_open();
+        int ds_idx = quota_find_account_by_id(&s_snapshot, s_model.entries[1].logical_id);
+        assert(ds_idx >= 0);
+        s_snapshot.balances[ds_idx].present = true;
+        s_snapshot.balances[ds_idx].currency_count = 1;
+        strcpy(s_snapshot.balances[ds_idx].balance_infos[0].currency, "USD");
+        strcpy(s_snapshot.balances[ds_idx].balance_infos[0].total_balance, "12.30");
+        s_network_validation[0] = QUOTA_VALIDATION_FAILED;
+        strcpy(s_network_error[0], "wifi_auth_failed");
+        quota_portable_command_t new_codex = {.op = QUOTA_PORTABLE_OP_CODEX_QUEUE};
+        strcpy(new_codex.request_id, "33333331");
+        strcpy(new_codex.label, "TeamGPT");
+        submit_usb(&new_codex);
+        char json_buf[QUOTA_PORTABLE_STATE_BYTES];
+        size_t json_len = 0;
+        assert(quota_portable_service_state_json(json_buf, sizeof(json_buf), &json_len,
+                                                 QUOTA_SETUP_AP));
+        printf("AP_STATE:%.*s\n", (int)json_len, json_buf);
+        assert(quota_portable_service_state_json(json_buf, sizeof(json_buf), &json_len,
+                                                 QUOTA_SETUP_USB));
+        printf("USB_STATE:%.*s\n", (int)json_len, json_buf);
     } else
         assert(false);
     puts("whole controller runtime passed");

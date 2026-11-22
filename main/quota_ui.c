@@ -958,7 +958,7 @@ static void render_confirm(const quota_navigation_t *navigation,
 
 typedef struct {
     char label[48];
-    char error[32];
+    char error[QUOTA_PORTABLE_ERROR_BYTES + 1];
     quota_validation_t state;
 } result_row_t;
 

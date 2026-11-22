@@ -86,6 +86,8 @@ esp_err_t nvs_flash_erase_partition(const char *partition)
 esp_err_t nvs_open_from_partition(const char *partition, const char *name_space, int mode,
                                   nvs_handle_t *handle)
 {
+    if (nvs_stub.open_error != ESP_OK)
+        return nvs_stub.open_error;
     if (mode == NVS_READONLY && !space_exists(partition, name_space))
         return ESP_ERR_NVS_NOT_FOUND;
     if (mode == NVS_READWRITE)
@@ -122,6 +124,10 @@ static int handle_ok(nvs_handle_t handle)
 esp_err_t nvs_get_blob(nvs_handle_t handle, const char *key, void *value, size_t *length)
 {
     assert(handle_ok(handle));
+    if (!value && nvs_stub.query_error != ESP_OK)
+        return nvs_stub.query_error;
+    if (value && nvs_stub.data_error != ESP_OK)
+        return nvs_stub.data_error;
     nvs_stub_item_t *item =
         find(handles[handle - 1].partition, handles[handle - 1].name_space, key);
     if (!item)
@@ -140,6 +146,9 @@ esp_err_t nvs_set_blob(nvs_handle_t handle, const char *key, const void *value, 
 {
     assert(handle_ok(handle) && handles[handle - 1].mode == NVS_READWRITE &&
            length <= NVS_STUB_BLOB);
+    nvs_stub.writes++;
+    if (nvs_stub.set_blob_error != ESP_OK)
+        return nvs_stub.set_blob_error;
     if (!power_ok())
         return ESP_FAIL;
     const char *partition = handles[handle - 1].partition,
@@ -158,6 +167,10 @@ esp_err_t nvs_set_blob(nvs_handle_t handle, const char *key, const void *value, 
     }
     item->length = length;
     memcpy(item->bytes, value, length);
+    if (nvs_stub.error_after_write) {
+        nvs_stub.query_error = ESP_FAIL;
+        nvs_stub.data_error = ESP_FAIL;
+    }
     return ESP_OK;
 }
 
@@ -190,8 +203,12 @@ esp_err_t nvs_erase_all(nvs_handle_t handle)
 esp_err_t nvs_commit(nvs_handle_t handle)
 {
     assert(handle_ok(handle));
-    return nvs_stub.cut_after >= 0 && (long)nvs_stub.mutations >= nvs_stub.cut_after ? ESP_FAIL
-                                                                                     : ESP_OK;
+    if (nvs_stub.commit_error != ESP_OK)
+        return nvs_stub.commit_error;
+    if (nvs_stub.cut_after >= 0 && (long)nvs_stub.mutations >= nvs_stub.cut_after)
+        return ESP_FAIL;
+    nvs_stub.commits++;
+    return ESP_OK;
 }
 
 void nvs_stub_put(const char *partition, const char *name_space, const char *key, const void *bytes,
@@ -199,14 +216,28 @@ void nvs_stub_put(const char *partition, const char *name_space, const char *key
 {
     nvs_handle_t handle;
     long cut = nvs_stub.cut_after;
+    esp_err_t open_err = nvs_stub.open_error;
+    esp_err_t set_err = nvs_stub.set_blob_error;
+    int after = nvs_stub.error_after_write;
     nvs_stub.cut_after = -1;
+    nvs_stub.open_error = ESP_OK;
+    nvs_stub.set_blob_error = ESP_OK;
+    nvs_stub.error_after_write = 0;
     assert(nvs_open_from_partition(partition, name_space, NVS_READWRITE, &handle) == ESP_OK);
     assert(nvs_set_blob(handle, key, bytes, length) == ESP_OK);
     nvs_close(handle);
     nvs_stub.cut_after = cut;
+    nvs_stub.open_error = open_err;
+    nvs_stub.set_blob_error = set_err;
+    nvs_stub.error_after_write = after;
 }
 
 const nvs_stub_item_t *nvs_stub_find(const char *partition, const char *name_space, const char *key)
+{
+    return find(partition, name_space, key);
+}
+
+nvs_stub_item_t *nvs_stub_find_mut(const char *partition, const char *name_space, const char *key)
 {
     return find(partition, name_space, key);
 }

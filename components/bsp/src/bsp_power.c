@@ -33,7 +33,7 @@ static const char *TAG = "bsp_power";
 static esp_timer_handle_t s_poll_timer;
 static bsp_power_wake_cb_t s_wake_cb;
 static void *s_wake_user;
-static bool s_off;
+static volatile bool s_off;
 static bool
     s_degraded; // Screen is off but no light-sleep steps were taken (buttons never came up).
 static bool s_degraded_logged;
