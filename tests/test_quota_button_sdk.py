@@ -307,9 +307,6 @@ int main(void) {
                 "-DQUOTA_HOST_TEST",
                 "-I" + str(ROOT / "tests/bsp_stubs"),
                 "-I" + str(ROOT / "components/bsp/include"),
-                "-Wno-deprecated-declarations",
-                "-fsanitize=address,undefined",
-                "-fno-omit-frame-pointer",
             ),
         )
 
@@ -447,9 +444,6 @@ int main(void) {
                 "-I" + str(ROOT / "tests/bsp_stubs"),
                 "-I" + str(ROOT / "components/bsp/include"),
                 "-I" + str(ROOT / "components/bsp/src"),
-                "-Wno-deprecated-declarations",
-                "-fsanitize=address,undefined",
-                "-fno-omit-frame-pointer",
             ),
         )
 

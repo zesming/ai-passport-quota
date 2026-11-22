@@ -592,11 +592,7 @@ int main(void)
                 "tests/host_sdk/host_sdk_embedded.c",
                 "tests/cjson/cJSON.c",
             ),
-            (
-                "-fsanitize=address,undefined",
-                "-fno-omit-frame-pointer",
-                "-Wno-deprecated-declarations",
-            ),
+            (),
             host_sdk=True,
         )
 

@@ -70,7 +70,7 @@ int main(void)
             return 5;
         }
     }
-    assert(http_count >= 10 && usb_count >= 12);
+    assert(http_count >= 14 && usb_count >= 14);
     printf("verified http=%u usb=%u\n", http_count, usb_count);
     return 0;
 }

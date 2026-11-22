@@ -12,6 +12,7 @@ import argparse
 import concurrent.futures
 import hashlib
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -53,7 +54,8 @@ def dep_paths(dep_file):
     text = dep_file.read_text(encoding="utf-8")
     text = text.replace("\\\n", " ")
     _, _, deps = text.partition(":")
-    return [Path(item) for item in deps.split() if item]
+    items = re.split(r"(?<!\\)\s+", deps.strip())
+    return [Path(item.replace("\\ ", " ")) for item in items if item]
 
 
 def compile_one(job):

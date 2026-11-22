@@ -90,7 +90,7 @@ python3 tools/archive_firmware.py verify <bundle-directory>
 
 ### 发布
 
-推送 `v*` 标签触发 `.github/workflows/pages.yml`：把 `main/setup_page.html` 复制为 `p<协议版本>/index.html` 和最新的 `index.html`，提交到 `gh-pages` 分支并部署到 GitHub Pages。其他协议版本的 `/pN/` 目录原样保留，同一协议的新版本替换自己的目录。步骤在 `tools/publish_setup_page.sh`，`tests/test_publish_setup_page.py` 演练多次发布。首次使用前需要在仓库设置里把 Pages 的来源设为 GitHub Actions，并在 Settings → Environments → `github-pages` 的 Deployment branches and tags 里加一条允许 `v*` 标签的规则（默认只允许默认分支，标签触发的部署会被拒绝）。第一个 `v*` 标签之前，设备界面（P4）的用词和菜单应已更新，页面和 README 才与设备屏幕一致。
+推送 `v*` 标签触发 `.github/workflows/pages.yml`：把 `main/setup_page.html` 复制为 `p<协议版本>/index.html` 和最新的 `index.html`，提交到 `gh-pages` 分支并部署到 GitHub Pages。其他协议版本的 `/pN/` 目录原样保留，同一协议的新版本替换自己的目录。步骤在 `tools/publish_setup_page.sh`，`tests/test_publish_setup_page.py` 演练多次发布。首次使用前需要在仓库设置里把 Pages 的来源设为 GitHub Actions，并在 Settings → Environments → `github-pages` 的 Deployment branches and tags 里加一条允许 `v*` 标签的规则（默认只允许默认分支，标签触发的部署会被拒绝）。
 
 ## 刷写与 NVS
 
