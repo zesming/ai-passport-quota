@@ -307,17 +307,9 @@ void quota_service_close_phone(void)
 {
     quota_portable_service_close();
 }
-void quota_service_renew_phone(void)
-{
-    quota_portable_service_renew();
-}
 void quota_service_cancel_auth(void)
 {
     quota_portable_service_cancel_auth();
-}
-void quota_service_reconnect(void)
-{
-    quota_portable_service_reconnect();
 }
 void quota_service_factory_reset(void)
 {

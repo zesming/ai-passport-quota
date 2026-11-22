@@ -5843,6 +5843,113 @@
     }
    },
    "battery": -1
+  },
+  {
+   "name": "hotspot-result-queued-and-reasons",
+   "note": "验证结果：展示新排队 ChatGPT 及失败原因",
+   "nav": {
+    "screen": "hotspot"
+   },
+   "view": {
+    "accounts": [
+     {
+      "provider": "deepseek",
+      "label": "Work",
+      "validation": "failed",
+      "error": "deepseek_invalid_key"
+     }
+    ],
+    "portable": {
+     "network_state": "error",
+     "setup_result": true,
+     "failed": 3,
+     "saved_networks": [
+      {
+       "ssid": "OfficeWiFi",
+       "validation": "failed",
+       "error": "wifi_auth_failed"
+      }
+     ],
+     "queued_login": {
+      "label": "TeamGPT",
+      "validation": "failed",
+      "error": "network_unavailable"
+     }
+    }
+   },
+   "expect_visible": [
+    "3 项失败",
+    "OfficeWiFi",
+    "密码错误",
+    "DeepSeek Work",
+    "密钥无效",
+    "ChatGPT TeamGPT",
+    "无网络"
+   ],
+   "expect_not_visible": ["验证失败"],
+   "battery": 76
+  },
+  {
+   "name": "auth-error-login-disabled",
+   "note": "ChatGPT 授权：未开设备码登录提示与精简底栏",
+   "nav": {
+    "screen": "auth"
+   },
+   "view": {
+    "portable": {
+     "network_state": "ready",
+     "login_state": "error",
+     "login_error": "login_disabled"
+    }
+   },
+   "expect_visible": [
+    "请先在 ChatGPT 账户设置中开启设备码登录",
+    "OK 回主页"
+   ],
+   "expect_not_visible": [
+    "操作未完成 · 请重试",
+    "OK 回主页   长按OK 回主页"
+   ],
+   "battery": 76
+  },
+  {
+   "name": "usb-open-footer-close",
+   "note": "USB 设置打开态底栏提示长按关闭",
+   "nav": {
+    "screen": "usb"
+   },
+   "view": {
+    "portable": {
+     "network_state": "ready"
+    },
+    "usb": {
+     "active": true,
+     "seconds_left": 115
+    }
+   },
+   "expect_visible": ["长按OK 关闭"],
+   "expect_not_visible": ["长按OK 返回"],
+   "battery": 80
+  },
+  {
+   "name": "welcome-storage-permanent-error",
+   "note": "欢迎屏永久存储损坏引导恢复出厂且隐藏热点入口",
+   "nav": {
+    "screen": "home"
+   },
+   "view": {
+    "portable": {
+     "network_state": "off",
+     "storage_error": "storage_invalid"
+    }
+   },
+   "expect_visible": [
+    "存储记录损坏",
+    "长按 OK 打开菜单\n在设备信息中恢复出厂",
+    "长按OK 菜单"
+   ],
+   "expect_not_visible": ["OK 热点设置       长按OK 菜单"],
+   "battery": 80
   }
  ]
 }

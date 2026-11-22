@@ -1649,7 +1649,7 @@ int main(int argc, char **argv)
         strcpy(ssid, public_view.portable.setup_ssid);
         unsigned starts = portal_starts;
         quota_portable_service_open();
-        quota_portable_service_renew();
+        quota_portable_service_open();
         assert(!s_open);
         assert(quota_portable_service_next_deadline_ms(false) > now_ms);
         s_open = true; /* a request latched before the session opened must also be consumed, not
@@ -1696,7 +1696,7 @@ int main(int argc, char **argv)
         tick(false);
         assert(portal_starts == 3);
         portal_fail = false;
-        quota_portable_service_renew();
+        quota_portable_service_open();
         tick_until_portal_starts(4);
         assert(portal_starts == 4 && public_view.portable.setup_active && !s_open);
     } else if (!strcmp(argv[1], "open-prepare-wait-deadline")) {

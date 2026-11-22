@@ -6,62 +6,9 @@
 #include <stdio.h>
 #include <limits.h>
 
-void quota_direct_secure_clear(void *memory, size_t size)
-{
-    volatile unsigned char *bytes = memory;
-    while (size--)
-        *bytes++ = 0;
-}
-
 bool quota_direct_token_is_safe(const char *value, size_t maximum)
 {
-    if (!value || !value[0])
-        return false;
-    size_t length = 0;
-    for (; length <= maximum && value[length]; ++length) {
-        if ((unsigned char)value[length] < 0x21 || (unsigned char)value[length] > 0x7e)
-            return false;
-    }
-    return length > 0 && length <= maximum;
-}
-
-static bool valid_utf8(const unsigned char *bytes, size_t length)
-{
-    for (size_t i = 0; i < length;) {
-        unsigned char lead = bytes[i++];
-        if (lead < 0x80) {
-            if (!lead)
-                return false;
-            continue;
-        }
-        unsigned count;
-        uint32_t value, minimum;
-        if (lead >= 0xc2 && lead <= 0xdf) {
-            count = 1;
-            value = lead & 31;
-            minimum = 0x80;
-        } else if (lead >= 0xe0 && lead <= 0xef) {
-            count = 2;
-            value = lead & 15;
-            minimum = 0x800;
-        } else if (lead >= 0xf0 && lead <= 0xf4) {
-            count = 3;
-            value = lead & 7;
-            minimum = 0x10000;
-        } else
-            return false;
-        if (length - i < count)
-            return false;
-        while (count--) {
-            unsigned char next = bytes[i++];
-            if ((next & 0xc0) != 0x80)
-                return false;
-            value = (value << 6) | (next & 63);
-        }
-        if (value < minimum || value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff))
-            return false;
-    }
-    return true;
+    return quota_portable_token_is_safe(value, maximum);
 }
 
 static bool unique_tree(const cJSON *node, unsigned depth, unsigned *nodes)
@@ -91,15 +38,15 @@ static void secure_json_delete(cJSON *json)
         secure_json_delete(item->child);
         item->child = NULL;
         if (cJSON_IsString(item) && item->valuestring)
-            quota_direct_secure_clear(item->valuestring, strlen(item->valuestring));
+            quota_portable_clear_secret(item->valuestring, strlen(item->valuestring));
     }
     cJSON_Delete(json);
 }
 
 static cJSON *parse_json(const char *body, size_t length)
 {
-    if (!body || !length || length > QUOTA_DIRECT_BODY_BYTES ||
-        !valid_utf8((const unsigned char *)body, length))
+    if (!body || !length || length > QUOTA_DIRECT_BODY_BYTES || memchr(body, '\0', length) ||
+        !quota_utf8_is_valid(body, length))
         return NULL;
     bool string = false, escaped = false;
     unsigned depth = 0, complexity = 1;
@@ -234,7 +181,7 @@ static cJSON *jwt_object(const char *jwt)
         valid = false;
     decoded[count] = 0;
     cJSON *root = valid ? parse_json(decoded, count) : NULL;
-    quota_direct_secure_clear(decoded, count);
+    quota_portable_clear_secret(decoded, count);
     free(decoded);
     return root;
 }
@@ -285,7 +232,7 @@ void quota_direct_tokens_destroy(quota_direct_tokens_t *tokens)
     secure_json_delete(tokens->access);
     secure_json_delete(tokens->refresh);
     secure_json_delete(tokens->id);
-    quota_direct_secure_clear(tokens, sizeof(*tokens));
+    quota_portable_clear_secret(tokens, sizeof(*tokens));
     free(tokens);
 }
 
@@ -368,10 +315,10 @@ bool quota_direct_tokens_finish(const quota_direct_tokens_t *tokens,
         }
     }
     if (valid) {
-        quota_direct_secure_clear(access, access_capacity);
+        quota_portable_clear_secret(access, access_capacity);
         memcpy(access, a->valuestring, strlen(a->valuestring) + 1);
         if (r) {
-            quota_direct_secure_clear(refresh, refresh_capacity);
+            quota_portable_clear_secret(refresh, refresh_capacity);
             memcpy(refresh, r->valuestring, strlen(r->valuestring) + 1);
         }
         *identity = parsed;
@@ -434,12 +381,12 @@ bool quota_direct_parse_authorization(const char *body, size_t length,
                  quota_direct_token_is_safe(code->code_verifier, QUOTA_DIRECT_VERIFIER_BYTES);
     const cJSON *auth = field(root, "authorization_code"), *verifier = field(root, "code_verifier");
     if (cJSON_IsString(auth))
-        quota_direct_secure_clear(auth->valuestring, strlen(auth->valuestring));
+        quota_portable_clear_secret(auth->valuestring, strlen(auth->valuestring));
     if (cJSON_IsString(verifier))
-        quota_direct_secure_clear(verifier->valuestring, strlen(verifier->valuestring));
+        quota_portable_clear_secret(verifier->valuestring, strlen(verifier->valuestring));
     secure_json_delete(root);
     if (!valid)
-        quota_direct_secure_clear(code, sizeof(*code));
+        quota_portable_clear_secret(code, sizeof(*code));
     return valid;
 }
 
@@ -656,24 +603,8 @@ bool quota_direct_parse_reset_details(const char *body, size_t length, quota_cod
 
 static bool decimal_string(const cJSON *value, char *output, size_t capacity)
 {
-    if (!copy_string(value, output, capacity, false))
-        return false;
-    const char *p = output;
-    if (*p == '-')
-        ++p;
-    const char *digits = p;
-    while (*p >= '0' && *p <= '9')
-        ++p;
-    if (digits == p)
-        return false;
-    if (*p == '.') {
-        digits = ++p;
-        while (*p >= '0' && *p <= '9')
-            ++p;
-        if (digits == p)
-            return false;
-    }
-    return !*p;
+    return capacity > 0 && copy_string(value, output, capacity, false) &&
+           quota_decimal_is_valid(output, capacity - 1);
 }
 
 bool quota_direct_parse_deepseek(const char *body, size_t length, quota_balance_t *balance)

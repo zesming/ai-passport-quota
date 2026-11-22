@@ -41,7 +41,6 @@ void quota_portable_service_disconnected(uint8_t reason, const uint8_t *ssid, si
 void quota_portable_service_scan_done(bool success);
 void quota_portable_service_open(void);
 void quota_portable_service_close(void);
-void quota_portable_service_renew(void);
 void quota_portable_service_cancel_auth(void);
 void quota_portable_service_refresh(void);
 void quota_portable_service_reconnect(void);

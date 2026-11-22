@@ -299,9 +299,6 @@ void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data
     const wifi_event_sta_disconnected_t *event = data;
     bool sleeping = quota_service_display_sleeping();
     if (event) {
-        size_t length = event->ssid_len;
-        if (length > sizeof(event->ssid))
-            length = sizeof(event->ssid);
         ESP_LOGW(TAG, "Wi-Fi disconnected: reason=%u, sleeping=%u", (unsigned)event->reason,
                  (unsigned)sleeping);
     } else {

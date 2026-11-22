@@ -158,7 +158,8 @@ bool quota_catalog_scrub_removed(quota_model_t *model, quota_catalog_removed_t *
     return changed;
 }
 
-void quota_catalog_canonicalize_model(quota_model_t *dst, const quota_model_t *src)
+void quota_catalog_canonicalize_model(quota_model_t *restrict dst,
+                                      const quota_model_t *restrict src)
 {
     if (!dst || !src)
         return;

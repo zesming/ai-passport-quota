@@ -124,7 +124,7 @@ static void clear_authorization(esp_http_client_handle_t client)
 {
     char *value = NULL;
     if (esp_http_client_get_header(client, "Authorization", &value) == ESP_OK && value)
-        quota_direct_secure_clear(value, strlen(value));
+        quota_portable_clear_secret(value, strlen(value));
     (void)esp_http_client_delete_header(client, "Authorization");
 }
 
@@ -317,7 +317,7 @@ static bool esp_transport(void *context, quota_direct_http_request_t *request,
             snprintf(authorization, bearer_length + sizeof("Bearer "), "Bearer %s",
                      request->bearer);
             error = esp_http_client_set_header(client, "Authorization", authorization);
-            quota_direct_secure_clear(authorization, bearer_length + sizeof("Bearer "));
+            quota_portable_clear_secret(authorization, bearer_length + sizeof("Bearer "));
             free(authorization);
         }
     }
@@ -447,9 +447,9 @@ void quota_direct_login_cancel(quota_direct_t *direct)
 {
     if (!direct)
         return;
-    quota_direct_secure_clear(&direct->device_code, sizeof(direct->device_code));
+    quota_portable_clear_secret(&direct->device_code, sizeof(direct->device_code));
     if (direct->authorization) {
-        quota_direct_secure_clear(direct->authorization, sizeof(*direct->authorization));
+        quota_portable_clear_secret(direct->authorization, sizeof(*direct->authorization));
         free(direct->authorization);
         direct->authorization = NULL;
     }
@@ -463,7 +463,7 @@ void quota_direct_login_cancel(quota_direct_t *direct)
 static void free_response(quota_direct_http_response_t *response)
 {
     if (response->body) {
-        quota_direct_secure_clear(response->body, response->capacity + 1);
+        quota_portable_clear_secret(response->body, response->capacity + 1);
         free(response->body);
     }
     response->body = NULL;
@@ -567,10 +567,10 @@ static char *json_body(const char *first_key, const char *first_value, const cha
     char *body = valid ? cJSON_PrintUnformatted(json) : NULL;
     for (cJSON *item = json->child; item; item = item->next)
         if (cJSON_IsString(item))
-            quota_direct_secure_clear(item->valuestring, strlen(item->valuestring));
+            quota_portable_clear_secret(item->valuestring, strlen(item->valuestring));
     cJSON_Delete(json);
     if (body && strlen(body) > QUOTA_DIRECT_BODY_BYTES) {
-        quota_direct_secure_clear(body, strlen(body));
+        quota_portable_clear_secret(body, strlen(body));
         free(body);
         return NULL;
     }
@@ -580,7 +580,7 @@ static char *json_body(const char *first_key, const char *first_value, const cha
 static void free_body(char *body)
 {
     if (body) {
-        quota_direct_secure_clear(body, strlen(body));
+        quota_portable_clear_secret(body, strlen(body));
         free(body);
     }
 }
@@ -703,7 +703,7 @@ static char *exchange_body(const quota_direct_authorization_t *code)
                  append_form(body, capacity, "redirect_uri", AUTH_CALLBACK_URL) &&
                  append_form(body, capacity, "code_verifier", code->code_verifier);
     if (!valid) {
-        quota_direct_secure_clear(body, capacity);
+        quota_portable_clear_secret(body, capacity);
         free(body);
         return NULL;
     }
@@ -789,7 +789,7 @@ quota_direct_result_t quota_direct_login_step(quota_direct_t *direct,
     quota_direct_http_response_t response;
     bool exchange = direct->exchange_ready;
     if (exchange && direct->authorization) {
-        quota_direct_secure_clear(direct->authorization, sizeof(*direct->authorization));
+        quota_portable_clear_secret(direct->authorization, sizeof(*direct->authorization));
         free(direct->authorization);
         direct->authorization = NULL;
     }

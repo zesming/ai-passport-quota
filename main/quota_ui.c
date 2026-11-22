@@ -649,11 +649,15 @@ static void render_welcome(const quota_service_view_t *service)
     bool storage_error = service->portable.storage_error[0] != '\0';
     put_text(T_TITLE, 0, 56, 240, 22, &quota_font_16, UI_INK, LV_TEXT_ALIGN_CENTER, "AI 额度");
     if (storage_error) {
+        const char *code = service->portable.storage_error;
+        bool permanent =
+            strcmp(code, "storage_invalid") == 0 || strcmp(code, "recovery_conflict") == 0;
         put_text(T_SUB, MARGIN, 90, CONTENT_W, 22, &quota_font_16, UI_AMBER, LV_TEXT_ALIGN_CENTER,
-                 portable_storage_title(service->portable.storage_error));
-        put_text(T_NAME0, MARGIN, 124, CONTENT_W, 40, &quota_font_12, UI_MUTED,
-                 LV_TEXT_ALIGN_CENTER, portable_error_text(service->portable.storage_error));
-        set_footer("OK 热点设置       长按OK 菜单");
+                 portable_storage_title(code));
+        put_text(T_NAME0, MARGIN, 124, CONTENT_W, 48, &quota_font_12, UI_MUTED,
+                 LV_TEXT_ALIGN_CENTER,
+                 permanent ? "长按 OK 打开菜单\n在设备信息中恢复出厂" : portable_error_text(code));
+        set_footer("长按OK 菜单");
         return;
     }
     put_text(T_SUB, MARGIN, 90, CONTENT_W, 22, &quota_font_16, UI_MUTED, LV_TEXT_ALIGN_CENTER,
@@ -888,7 +892,6 @@ static void render_info(const quota_service_view_t *service, int battery_percent
     switch (portable->network_state) {
     case QUOTA_PORTABLE_NETWORK_READY:
     case QUOTA_PORTABLE_NETWORK_CONNECTED:
-    case QUOTA_PORTABLE_NETWORK_TIME_REQUIRED:
         snprintf(wifi, sizeof(wifi), "已连接 %.40s", ssid);
         break;
     case QUOTA_PORTABLE_NETWORK_CONNECTING:
@@ -955,11 +958,12 @@ static void render_confirm(const quota_navigation_t *navigation,
 
 typedef struct {
     char label[48];
+    char error[32];
     quota_validation_t state;
 } result_row_t;
 
 static void add_result(result_row_t rows[LIST_ROWS], size_t *shown, size_t *total,
-                       const char *label, quota_validation_t state)
+                       const char *label, quota_validation_t state, const char *error)
 {
     (*total)++;
     /* Failed first, then waiting, then the rest, so what needs work is always on screen. */
@@ -984,18 +988,46 @@ static void add_result(result_row_t rows[LIST_ROWS], size_t *shown, size_t *tota
     for (size_t i = last; i > at; i--)
         rows[i] = rows[i - 1];
     snprintf(rows[at].label, sizeof(rows[at].label), "%s", label);
+    snprintf(rows[at].error, sizeof(rows[at].error), "%s", error ? error : "");
     rows[at].state = state;
     if (*shown < LIST_ROWS)
         (*shown)++;
 }
 
-static const char *validation_text(quota_validation_t state, bool validating)
+static const char *validation_error_short(const char *code)
+{
+    if (!code || !code[0])
+        return "验证失败";
+    if (strcmp(code, "wifi_auth_failed") == 0)
+        return "密码错误";
+    if (strcmp(code, "wifi_not_found") == 0)
+        return "未找到";
+    if (strcmp(code, "deepseek_invalid_key") == 0)
+        return "密钥无效";
+    if (strcmp(code, "network_unavailable") == 0)
+        return "无网络";
+    if (strcmp(code, "login_disabled") == 0)
+        return "未开授权";
+    if (strcmp(code, "codex_expired") == 0 || strcmp(code, "auth_required") == 0)
+        return "需重授权";
+    if (strcmp(code, "operation_expired") == 0)
+        return "已过期";
+    if (strcmp(code, "rate_limited") == 0)
+        return "请求过多";
+    if (strcmp(code, "time_required") == 0)
+        return "待校时";
+    if (strcmp(code, "tls_error") == 0)
+        return "连接失败";
+    return "验证失败";
+}
+
+static const char *validation_text(quota_validation_t state, bool validating, const char *error)
 {
     switch (state) {
     case QUOTA_VALIDATION_OK:
         return "正常";
     case QUOTA_VALIDATION_FAILED:
-        return "验证失败";
+        return validation_error_short(error);
     case QUOTA_VALIDATION_PENDING:
         return validating ? "验证中" : "待验证";
     default:
@@ -1003,7 +1035,6 @@ static const char *validation_text(quota_validation_t state, bool validating)
     }
 }
 
-/* What the hotspot found when it was closed with 完成设置: every Wi-Fi and account, worst first. */
 /* What the hotspot found when it was closed with 完成设置: every Wi-Fi and account, worst first. */
 static void render_results(const quota_service_view_t *service)
 {
@@ -1015,7 +1046,8 @@ static void render_results(const quota_service_view_t *service)
         display_name(portable->saved_network_ssids[i], "Wi-Fi", (unsigned)i + 1, ssid,
                      sizeof(ssid));
         add_result(rows, &shown, &total, ssid,
-                   (quota_validation_t)portable->saved_network_validation[i]);
+                   (quota_validation_t)portable->saved_network_validation[i],
+                   portable->saved_network_errors[i]);
     }
     for (size_t i = 0; i < service->snapshot.account_count; i++) {
         const quota_account_t *account = &service->snapshot.accounts[i];
@@ -1031,7 +1063,22 @@ static void render_results(const quota_service_view_t *service)
             quota_copy_display_ascii(account->email, detail, sizeof(detail));
             snprintf(name, sizeof(name), "ChatGPT %.36s", detail);
         }
-        add_result(rows, &shown, &total, name, (quota_validation_t)portable->account_validation[i]);
+        add_result(rows, &shown, &total, name, (quota_validation_t)portable->account_validation[i],
+                   portable->account_errors[i]);
+    }
+    if (portable->queued_login_new) {
+        char name[48], detail[QUOTA_PLAN_MAX_BYTES + 1];
+        display_name(portable->queued_login_label, "ChatGPT",
+                     (unsigned)service->snapshot.account_count + 1, detail, sizeof(detail));
+        if (detail[0] == '\0')
+            snprintf(name, sizeof(name), "ChatGPT");
+        else if (strncmp(detail, "ChatGPT ", 8) == 0)
+            snprintf(name, sizeof(name), "%.47s", detail);
+        else
+            snprintf(name, sizeof(name), "ChatGPT %.36s", detail);
+        add_result(rows, &shown, &total, name,
+                   (quota_validation_t)portable->queued_login_validation,
+                   portable->queued_login_error);
     }
     char summary[40];
     if (portable->validating)
@@ -1049,13 +1096,13 @@ static void render_results(const quota_service_view_t *service)
         s_ui.want_row[i] = true;
         if (!lv_color_eq(lv_obj_get_style_bg_color(s_ui.row_bg[i], 0), color(UI_BG)))
             lv_obj_set_style_bg_color(s_ui.row_bg[i], color(UI_BG), 0);
-        put_text(T_ROW_LABEL(i), 22, y + 10, 146, 18, &quota_font_12, UI_INK, LV_TEXT_ALIGN_LEFT,
+        put_text(T_ROW_LABEL(i), 22, y + 10, 140, 18, &quota_font_12, UI_INK, LV_TEXT_ALIGN_LEFT,
                  rows[i].label);
-        put_text(T_ROW_VALUE(i), 168, y + 10, 52, 18, &quota_font_12,
+        put_text(T_ROW_VALUE(i), 162, y + 10, 58, 18, &quota_font_12,
                  state == QUOTA_VALIDATION_FAILED ? UI_RED
                  : state == QUOTA_VALIDATION_OK   ? UI_MINT
                                                   : UI_MUTED,
-                 LV_TEXT_ALIGN_RIGHT, validation_text(state, portable->validating));
+                 LV_TEXT_ALIGN_RIGHT, validation_text(state, portable->validating, rows[i].error));
     }
     if (total > shown) {
         char more[24];
@@ -1149,7 +1196,7 @@ static void render_usb(const quota_service_view_t *service)
     if (portable->storage_error[0]) {
         put_text(T_SUB, MARGIN, 62, CONTENT_W, 40, &quota_font_12, UI_AMBER, LV_TEXT_ALIGN_LEFT,
                  portable_error_text(portable->storage_error));
-        set_footer(open ? "长按OK 返回" : "OK 重新打开  长按OK 返回");
+        set_footer(open ? "长按OK 关闭" : "OK 重新打开  长按OK 返回");
         return;
     }
     /* The page is connected first; USB setup is opened last, and again if the Passport rebooted
@@ -1175,7 +1222,7 @@ static void render_usb(const quota_service_view_t *service)
     snprintf(text, sizeof(text), "状态：%s", state);
     put_text(T_NAME0, MARGIN, 196, CONTENT_W, 22, &quota_font_16, open ? UI_MINT : UI_AMBER,
              LV_TEXT_ALIGN_LEFT, text);
-    set_footer(open ? "长按OK 返回" : "OK 重新打开  长按OK 返回");
+    set_footer(open ? "长按OK 关闭" : "OK 重新打开  长按OK 返回");
 }
 
 /* ---- ChatGPT authorization ------------------------------------------------------------------ */
@@ -1269,7 +1316,7 @@ static void render_auth(const quota_service_view_t *service)
             ? UI_AMBER
             : UI_MUTED,
         LV_TEXT_ALIGN_LEFT, text);
-    set_footer(active ? "OK 取消授权   长按OK 回主页" : "OK 回主页   长按OK 回主页");
+    set_footer(active ? "OK 取消授权   长按OK 回主页" : "OK 回主页");
 }
 
 /* ---- text for errors ------------------------------------------------------------------------ */
@@ -1307,6 +1354,16 @@ static const char *portable_error_text(const char *code)
         return "请求过多 · 稍后重试";
     if (strcmp(code, "codex_expired") == 0 || strcmp(code, "auth_required") == 0)
         return "需要重新授权";
+    if (strcmp(code, "login_disabled") == 0)
+        return "请先在 ChatGPT 账户设置中开启设备码登录";
+    if (strcmp(code, "operation_expired") == 0)
+        return "操作已超时 · 请重试";
+    if (strcmp(code, "account_limit") == 0)
+        return "账户数量已满 · 请先移除一个";
+    if (strcmp(code, "generation_exhausted") == 0)
+        return "账户槽位已耗尽 · 请恢复出厂";
+    if (strcmp(code, "native_credential_limit") == 0)
+        return "凭据槽位已满 · 请先移除账户";
     if (strcmp(code, "deepseek_invalid_key") == 0)
         return "密钥无效 · 请更换密钥";
     if (strcmp(code, "time_required") == 0)

@@ -74,7 +74,6 @@ WEAK void quota_portable_service_scan_done(bool success)
 }
 WEAK void quota_portable_service_open(void) {}
 WEAK void quota_portable_service_close(void) {}
-WEAK void quota_portable_service_renew(void) {}
 WEAK void quota_portable_service_cancel_auth(void) {}
 WEAK void quota_portable_service_refresh(void) {}
 WEAK void quota_portable_service_reconnect(void) {}
@@ -304,9 +303,7 @@ WEAK void quota_service_select_account(const char *account_id)
 }
 WEAK void quota_service_open_phone(void) {}
 WEAK void quota_service_close_phone(void) {}
-WEAK void quota_service_renew_phone(void) {}
 WEAK void quota_service_cancel_auth(void) {}
-WEAK void quota_service_reconnect(void) {}
 WEAK TaskHandle_t quota_service_network_task(void)
 {
     return (void *)1;

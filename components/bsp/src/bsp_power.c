@@ -18,6 +18,8 @@
 
 #ifdef CONFIG_BSP_SLEEP_PROFILE
 #include "esp_pm.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #endif
 
 static const char *TAG = "bsp_power";
@@ -99,8 +101,24 @@ static void gesture_sample(int mv)
 
 static esp_timer_handle_t s_profile_timer;
 static esp_timer_handle_t s_profile_print_timer;
+static StaticSemaphore_t s_profile_lock_storage;
+static SemaphoreHandle_t s_profile_lock;
 static char *s_profile_snap[2];
 static unsigned s_profile_prints;
+
+static void profile_lock(void)
+{
+    if (s_profile_lock == NULL)
+        s_profile_lock = xSemaphoreCreateMutexStatic(&s_profile_lock_storage);
+    if (s_profile_lock != NULL)
+        (void)xSemaphoreTake(s_profile_lock, portMAX_DELAY);
+}
+
+static void profile_unlock(void)
+{
+    if (s_profile_lock != NULL)
+        (void)xSemaphoreGive(s_profile_lock);
+}
 
 static char *profile_capture(void)
 {
@@ -115,30 +133,43 @@ static char *profile_capture(void)
     return text;
 }
 
-static void profile_store(int slot)
+static void profile_store(int slot, bool require_off)
 {
-    free(s_profile_snap[slot]);
-    s_profile_snap[slot] = profile_capture();
+    char *text = profile_capture();
+    profile_lock();
+    if (require_off && !s_off) {
+        profile_unlock();
+        free(text);
+        return;
+    }
+    char *old = s_profile_snap[slot];
+    s_profile_snap[slot] = text;
+    profile_unlock();
+    free(old);
 }
 
 static void profile_capture_60s(void *arg)
 {
     (void)arg;
-    profile_store(1);
+    profile_store(1, true);
 }
 
 static void profile_print(void *arg)
 {
     (void)arg;
+    bool stop = false;
+    profile_lock();
     if (s_profile_snap[0] == NULL || s_profile_snap[1] == NULL || s_off ||
         ++s_profile_prints > PROFILE_PRINT_COUNT) {
-        if (s_profile_print_timer != NULL)
-            (void)esp_timer_stop(s_profile_print_timer);
-        return;
+        stop = true;
+    } else {
+        printf("=== screen-off profile: start ===\n%s\n=== screen-off profile: +60 s ===\n%s\n"
+               "=== end of screen-off profile ===\n",
+               s_profile_snap[0], s_profile_snap[1]);
     }
-    printf("=== screen-off profile: start ===\n%s\n=== screen-off profile: +60 s ===\n%s\n"
-           "=== end of screen-off profile ===\n",
-           s_profile_snap[0], s_profile_snap[1]);
+    profile_unlock();
+    if (stop && s_profile_print_timer != NULL)
+        (void)esp_timer_stop(s_profile_print_timer);
 }
 
 static void profile_enter(void)
@@ -153,10 +184,16 @@ static void profile_enter(void)
         (void)esp_timer_stop(s_profile_print_timer);
     if (s_profile_timer != NULL)
         (void)esp_timer_stop(s_profile_timer); // Left armed when an earlier exit failed midway.
-    free(s_profile_snap[1]);
+    char *text = profile_capture();
+    profile_lock();
+    char *old0 = s_profile_snap[0];
+    char *old1 = s_profile_snap[1];
+    s_profile_snap[0] = text;
     s_profile_snap[1] = NULL;
-    profile_store(0);
     s_profile_prints = 0;
+    profile_unlock();
+    free(old0);
+    free(old1);
     if (s_profile_timer != NULL)
         (void)esp_timer_start_once(s_profile_timer, PROFILE_DELAY_US);
 }
@@ -165,7 +202,10 @@ static void profile_exit(void)
 {
     if (s_profile_timer != NULL)
         (void)esp_timer_stop(s_profile_timer);
-    if (s_profile_snap[1] == NULL)
+    profile_lock();
+    bool ready = s_profile_snap[1] != NULL;
+    profile_unlock();
+    if (!ready)
         return; // Woken before the 60 s mark: nothing comparable to print.
     if (s_profile_print_timer == NULL) {
         const esp_timer_create_args_t args = {.callback = profile_print,
@@ -249,11 +289,11 @@ esp_err_t bsp_power_enter_screen_off(void)
         rollback_enter();
         return e;
     }
+    s_degraded = false;
+    s_off = true;
 #ifdef CONFIG_BSP_SLEEP_PROFILE
     profile_enter();
 #endif
-    s_degraded = false;
-    s_off = true;
     return ESP_OK;
 }
 

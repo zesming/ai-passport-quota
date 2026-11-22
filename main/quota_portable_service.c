@@ -4041,20 +4041,6 @@ void quota_portable_service_close(void)
     unlock();
     wake();
 }
-void quota_portable_service_renew(void)
-{
-    if (!s_initialized)
-        return;
-    lock();
-    if (!s_view.setup_active) {
-        s_setup_result = false;
-        s_open = true;
-        s_open_failures = 0;
-        s_open_retry_at = 0;
-    }
-    unlock();
-    wake();
-}
 void quota_portable_service_cancel_auth(void)
 {
     if (!s_initialized)

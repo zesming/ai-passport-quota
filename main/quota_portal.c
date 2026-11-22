@@ -184,8 +184,8 @@ bool quota_portal_parse_command(const char *json, size_t length, quota_portable_
                        false) &&
              quota_json_is_lower_hex(command->request_id, 8) &&
              copy_text(root, "op", op, sizeof(op), true, false);
-    static const char *const network_keys[] = {"ssid",          "password",     "phone_utc",
-                                               "network_index", "open_network", NULL};
+    static const char *const network_keys[] = {"ssid", "password", "network_index", "open_network",
+                                               NULL};
     static const char *const network_remove_keys[] = {"network_index", NULL};
     static const char *const deepseek_keys[] = {"account_id", "api_key", "label", NULL};
     static const char *const account_keys[] = {"account_id", NULL};

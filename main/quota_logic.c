@@ -154,11 +154,11 @@ quota_frame_result_t quota_frame_decoder_feed(quota_frame_decoder_t *decoder, ch
     decoder->bytes[decoder->length++] = byte;
     return QUOTA_FRAME_PENDING;
 }
-static bool valid_balance_amount(const char *text)
+bool quota_decimal_is_valid(const char *text, size_t max_bytes)
 {
     if (text == NULL)
         return false;
-    const char *end = memchr(text, '\0', QUOTA_BALANCE_AMOUNT_BYTES + 1);
+    const char *end = memchr(text, '\0', max_bytes + 1);
     if (end == NULL || end == text)
         return false;
     const char *p = text;
@@ -176,6 +176,11 @@ static bool valid_balance_amount(const char *text)
             p++;
     }
     return *p == '\0';
+}
+
+static bool valid_balance_amount(const char *text)
+{
+    return quota_decimal_is_valid(text, QUOTA_BALANCE_AMOUNT_BYTES);
 }
 
 bool quota_balance_is_valid(const quota_balance_t *balance)
@@ -493,14 +498,12 @@ bool quota_display_handle_key(quota_display_state_t *display, uint64_t now_ms,
     return event != QUOTA_KEY_PRESS;
 }
 
-void quota_navigation_init(quota_navigation_t *navigation, bool configured,
-                           uint16_t refresh_seconds, bool auto_refresh,
-                           uint16_t screen_timeout_seconds)
+void quota_navigation_init(quota_navigation_t *navigation, uint16_t refresh_seconds,
+                           bool auto_refresh, uint16_t screen_timeout_seconds)
 {
     if (navigation == NULL)
         return;
     memset(navigation, 0, sizeof(*navigation));
-    navigation->configured = configured;
     navigation->refresh_seconds = quota_refresh_seconds_is_valid(refresh_seconds)
                                       ? refresh_seconds
                                       : QUOTA_REFRESH_DEFAULT_SECONDS;
@@ -672,8 +675,9 @@ static quota_action_t handle_ok(quota_navigation_t *navigation, quota_navigation
         if (context.auth_active) {
             navigation->screen = QUOTA_SCREEN_AUTH;
         } else if (context.account_count == 0) {
-            return enter_hotspot(navigation, QUOTA_SCREEN_HOME, context);
-        } else if (navigation->configured) {
+            if (!context.storage_error)
+                return enter_hotspot(navigation, QUOTA_SCREEN_HOME, context);
+        } else if (context.configured) {
             return QUOTA_ACTION_REFRESH;
         }
         break;
@@ -716,7 +720,7 @@ static quota_action_t handle_ok(quota_navigation_t *navigation, quota_navigation
             navigation->hotspot_page = wrap_index(navigation->hotspot_page, 1, QUOTA_HOTSPOT_PAGES);
         } else if (context.hotspot == QUOTA_HOTSPOT_CLOSED) {
             navigation->hotspot_page = 0;
-            return QUOTA_ACTION_RENEW_HOTSPOT;
+            return QUOTA_ACTION_OPEN_HOTSPOT;
         }
         break; /* busy: nothing, so nothing can restart a validation */
     case QUOTA_SCREEN_USB:

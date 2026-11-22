@@ -247,15 +247,15 @@ QUOTA_TESTABLE void handle_serial_frame(const char *frame, size_t length)
                  quota_monotonic_ms() - s_usb_opener_at < QUOTA_USB_OPENER_IDLE_MS)
             send_usb_result(request->request_id, NULL, "session_busy", false);
         else {
-            /* A takeover revokes the previous page's session so only one page keeps control. */
-            if (s_usb_opener[0] && strcmp(s_usb_opener, request->request_id))
-                new_usb_session();
             uint64_t now = quota_monotonic_ms();
             uint64_t deadline = quota_usb_deadline_ms();
             if (!quota_usb_requested() || now >= deadline) {
                 send_usb_result(request->request_id, NULL, "session_expired", false);
                 goto done;
             }
+            /* A takeover revokes the previous page's session so only one page keeps control. */
+            if (s_usb_opener[0] && strcmp(s_usb_opener, request->request_id))
+                new_usb_session();
             quota_service_lock();
             memcpy(s_usb_opener, request->request_id, 9);
             quota_service_unlock();
