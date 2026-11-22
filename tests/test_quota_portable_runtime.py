@@ -672,9 +672,12 @@ int main(int argc, char **argv)
         return 2;
     FILE *file = fopen(argv[1], "rb");
     char *html = malloc(1 << 20);
-    size_t length = file ? fread(html, 1, 1 << 20, file) : 0;
+    size_t length = file && html ? fread(html, 1, 1 << 20, file) : 0;
+    if (file)
+        fclose(file);
     char csp[512];
-    size_t used = portal_csp(html, length, csp, sizeof(csp));
+    size_t used = html ? portal_csp(html, length, csp, sizeof(csp)) : 0;
+    free(html);
     if (!used || used != strlen(csp))
         return 1;
     puts(csp);
