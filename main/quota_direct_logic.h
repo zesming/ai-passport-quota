@@ -1,6 +1,6 @@
 #pragma once
 
-#include "quota_logic.h"
+#include "quota_portable.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -62,4 +62,3 @@ bool quota_direct_form_encode(const char *value, char *output, size_t capacity);
 uint64_t quota_direct_parse_date(const char *date);
 uint32_t quota_direct_retry_after(const char *header, uint64_t now);
 bool quota_direct_token_is_safe(const char *value, size_t maximum);
-void quota_direct_secure_clear(void *memory, size_t size);

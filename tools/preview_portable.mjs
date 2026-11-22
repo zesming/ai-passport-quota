@@ -92,7 +92,10 @@ export function createHotspotServer(options = {}) {
       } catch {
         parsed = null;
       }
-      const headers = { 'X-AIQ-Access': request.headers['x-aiq-access'] };
+      const headers = {
+        'X-AIQ-Access': request.headers['x-aiq-access'],
+        'Content-Type': request.headers['content-type'],
+      };
       const result = device.http(request.method, url.pathname, headers, parsed);
       response.writeHead(result.status, {
         'Content-Type': 'application/json;charset=utf-8',

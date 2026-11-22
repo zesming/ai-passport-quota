@@ -12,6 +12,7 @@ import argparse
 import concurrent.futures
 import hashlib
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -49,21 +50,29 @@ OWN_SOURCES = [
 ]
 
 
+def dep_paths(dep_file):
+    text = dep_file.read_text(encoding="utf-8")
+    text = text.replace("\\\n", " ")
+    _, _, deps = text.partition(":")
+    items = re.split(r"(?<!\\)\s+", deps.strip())
+    return [Path(item.replace("\\ ", " ")) for item in items if item]
+
+
 def compile_one(job):
     source, obj, flags = job
     stamp = obj.with_suffix(".key")
+    dep = obj.with_suffix(".d")
     key = hashlib.sha256(" ".join([CC, *flags, str(source)]).encode()).hexdigest()
-    newest = max(source.stat().st_mtime, *(p.stat().st_mtime for p in HERE.glob("*.h")))
-    if (
-        obj.is_file()
-        and stamp.is_file()
-        and stamp.read_text() == key
-        and obj.stat().st_mtime >= newest
-    ):
-        return None
+    if obj.is_file() and stamp.is_file() and dep.is_file() and stamp.read_text() == key:
+        obj_mtime = obj.stat().st_mtime
+        deps = [source, *HERE.glob("*.h"), *dep_paths(dep)]
+        if all(path.is_file() and obj_mtime >= path.stat().st_mtime for path in deps):
+            return None
     obj.parent.mkdir(parents=True, exist_ok=True)
     result = subprocess.run(
-        [CC, *flags, "-c", str(source), "-o", str(obj)], capture_output=True, text=True
+        [CC, *flags, "-MMD", "-MF", str(dep), "-c", str(source), "-o", str(obj)],
+        capture_output=True,
+        text=True,
     )
     if result.returncode:
         return f"{source}:\n{result.stderr}"

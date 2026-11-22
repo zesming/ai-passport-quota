@@ -89,7 +89,8 @@ static void test_freshness_and_reset_states(void)
 /* Drive the navigation from the home screen as the keys would. */
 static quota_navigation_context_t ctx(uint8_t accounts, bool auth_active)
 {
-    return (quota_navigation_context_t){.account_count = accounts, .auth_active = auth_active};
+    return (quota_navigation_context_t){
+        .account_count = accounts, .configured = true, .auth_active = auth_active};
 }
 
 static quota_action_t press(quota_navigation_t *n, quota_input_t input, uint8_t accounts)
@@ -100,7 +101,7 @@ static quota_action_t press(quota_navigation_t *n, quota_input_t input, uint8_t 
 static void test_home_keys(void)
 {
     quota_navigation_t n;
-    quota_navigation_init(&n, true, 300, true, 120);
+    quota_navigation_init(&n, 300, true, 120);
     assert(n.screen == QUOTA_SCREEN_HOME);
     /* UP/DOWN switch accounts and wrap; OK refreshes; long OK opens the menu. */
     assert(press(&n, QUOTA_INPUT_UP, 3) == QUOTA_ACTION_PERSIST_SELECTION);
@@ -116,12 +117,18 @@ static void test_home_keys(void)
     /* While authorization runs, OK shows it instead of refreshing. */
     assert(quota_navigation_handle(&n, QUOTA_INPUT_OK_SHORT, ctx(3, true)) == QUOTA_ACTION_NONE);
     assert(n.screen == QUOTA_SCREEN_AUTH);
+    /* PD-04: configured is read live from context; storage recovery enables home OK refresh. */
+    n.screen = QUOTA_SCREEN_HOME;
+    quota_navigation_context_t unconfigured = {.account_count = 3, .configured = false};
+    assert(quota_navigation_handle(&n, QUOTA_INPUT_OK_SHORT, unconfigured) == QUOTA_ACTION_NONE);
+    unconfigured.configured = true;
+    assert(quota_navigation_handle(&n, QUOTA_INPUT_OK_SHORT, unconfigured) == QUOTA_ACTION_REFRESH);
 }
 
 static void test_welcome_screen(void)
 {
     quota_navigation_t n;
-    quota_navigation_init(&n, true, 300, true, 120);
+    quota_navigation_init(&n, 300, true, 120);
     /* No account: OK opens the hotspot setup; long OK goes back to the welcome screen. */
     assert(press(&n, QUOTA_INPUT_OK_SHORT, 0) == QUOTA_ACTION_OPEN_HOTSPOT);
     assert(n.screen == QUOTA_SCREEN_HOTSPOT && n.hotspot_page == 0);
@@ -139,12 +146,19 @@ static void test_welcome_screen(void)
         assert(press(&n, QUOTA_INPUT_OK_LONG, 0) == QUOTA_ACTION_NONE);
         assert(n.screen == QUOTA_SCREEN_HOME);
     }
+    /* UI-09: storage error on welcome screen blocks short OK from opening dead-end hotspot,
+     * while long OK still opens the menu to reach device info and factory reset. */
+    quota_navigation_context_t broken = {.account_count = 0, .storage_error = true};
+    assert(quota_navigation_handle(&n, QUOTA_INPUT_OK_SHORT, broken) == QUOTA_ACTION_NONE);
+    assert(n.screen == QUOTA_SCREEN_HOME);
+    assert(quota_navigation_handle(&n, QUOTA_INPUT_OK_LONG, broken) == QUOTA_ACTION_NONE);
+    assert(n.screen == QUOTA_SCREEN_MENU);
 }
 
 static void test_menu_order_wrap_and_memory(void)
 {
     quota_navigation_t n;
-    quota_navigation_init(&n, true, 300, true, 120);
+    quota_navigation_init(&n, 300, true, 120);
     assert(QUOTA_MENU_ITEMS == 5);
     press(&n, QUOTA_INPUT_OK_LONG, 2);
     assert(n.screen == QUOTA_SCREEN_MENU && n.menu_focus == 0);
@@ -191,7 +205,7 @@ static void test_menu_order_wrap_and_memory(void)
 static void test_option_lists(void)
 {
     quota_navigation_t n;
-    quota_navigation_init(&n, true, 300, true, 120);
+    quota_navigation_init(&n, 300, true, 120);
     n.screen = QUOTA_SCREEN_MENU;
     n.menu_focus = 2;
     press(&n, QUOTA_INPUT_OK_SHORT, 1);
@@ -248,7 +262,7 @@ static quota_action_t press_hotspot(quota_navigation_t *n, quota_input_t input,
 static void test_hotspot_pages(void)
 {
     quota_navigation_t n;
-    quota_navigation_init(&n, true, 300, true, 120);
+    quota_navigation_init(&n, 300, true, 120);
     n.screen = QUOTA_SCREEN_MENU;
     n.menu_focus = 0;
     quota_navigation_context_t closed = ctx(2, false);
@@ -273,7 +287,7 @@ static void test_hotspot_pages(void)
     assert(n.hotspot_page == 1 && n.screen == QUOTA_SCREEN_HOTSPOT);
     /* A closed hotspot (with or without a result) is reopened by OK, from page one. */
     assert(press_hotspot(&n, QUOTA_INPUT_OK_SHORT, QUOTA_HOTSPOT_CLOSED) ==
-           QUOTA_ACTION_RENEW_HOTSPOT);
+           QUOTA_ACTION_OPEN_HOTSPOT);
     assert(n.hotspot_page == 0);
     assert(press(&n, QUOTA_INPUT_OK_LONG, 2) == QUOTA_ACTION_CLOSE_HOTSPOT);
     assert(n.screen == QUOTA_SCREEN_MENU);
@@ -331,7 +345,7 @@ static void test_displayable_text(void)
 static void test_usb_screen_and_auth_screen(void)
 {
     quota_navigation_t n;
-    quota_navigation_init(&n, true, 300, true, 120);
+    quota_navigation_init(&n, 300, true, 120);
     n.screen = QUOTA_SCREEN_USB;
     n.return_screen = QUOTA_SCREEN_MENU;
     /* The window is closed or ended: OK opens it again. While it is open or being prepared, OK
@@ -382,7 +396,7 @@ static void test_usb_screen_and_auth_screen(void)
 static void test_factory_reset_confirmation(void)
 {
     quota_navigation_t n;
-    quota_navigation_init(&n, true, 300, true, 120);
+    quota_navigation_init(&n, 300, true, 120);
     n.screen = QUOTA_SCREEN_MENU;
     /* Fresh device, J9: long OK (menu), UP (wraps to device info), OK, OK, DOWN, OK = 6 keys. */
     n.screen = QUOTA_SCREEN_HOME;
@@ -433,7 +447,7 @@ static void test_no_long_press_is_destructive(void)
     for (int screen = QUOTA_SCREEN_HOME; screen <= QUOTA_SCREEN_CONFIRM; screen++) {
         for (int focus = 0; focus < 6; focus++) {
             quota_navigation_t n;
-            quota_navigation_init(&n, true, 300, true, 120);
+            quota_navigation_init(&n, 300, true, 120);
             n.screen = (quota_screen_t)screen;
             n.return_screen = QUOTA_SCREEN_MENU;
             n.menu_focus = n.option_focus = n.confirm_focus = (uint8_t)(focus % 2);
@@ -451,7 +465,7 @@ static void test_no_long_press_is_destructive(void)
 static void test_navigation_after_external_settings_change(void)
 {
     quota_navigation_t navigation;
-    quota_navigation_init(&navigation, true, 300, true, 120);
+    quota_navigation_init(&navigation, 300, true, 120);
     navigation.screen = QUOTA_SCREEN_REFRESH;
     navigation.option_focus = 0;
 
@@ -729,7 +743,7 @@ static void test_long_down_is_refused_during_a_session(void)
     assert(display.sleeping && !display.sleep_blocked);
 
     quota_navigation_t navigation;
-    quota_navigation_init(&navigation, true, 300, true, 120);
+    quota_navigation_init(&navigation, 300, true, 120);
     quota_navigation_notice(&navigation, 1000, true);
     assert(navigation.sleep_notice);
     quota_navigation_notice(&navigation, 1000 + QUOTA_NOTICE_MS - 1, false);

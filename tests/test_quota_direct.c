@@ -187,6 +187,14 @@ static void test_bounded_json_and_tokens(void)
     quota_direct_device_code_t code;
     assert(quota_direct_parse_device_code(bounded, length, &code));
     free(bounded);
+    /* Failed authorization parse must scrub partially extracted authorization_code. */
+    quota_direct_authorization_t auth;
+    memset(&auth, 0xA5, sizeof(auth));
+    const char partial_auth[] =
+        "{\"authorization_code\":\"secret-auth-code\",\"code_verifier\":\"\"}";
+    assert(!quota_direct_parse_authorization(partial_auth, strlen(partial_auth), &auth));
+    unsigned char auth_zero[sizeof(auth)] = {0};
+    assert(memcmp(&auth, auth_zero, sizeof(auth)) == 0);
     char tail[256];
     snprintf(tail, sizeof(tail), "%s \t\r\n", device);
     assert(quota_direct_parse_device_code(tail, strlen(tail), &code));

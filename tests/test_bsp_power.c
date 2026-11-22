@@ -418,7 +418,13 @@ static void check_profile_hook(void)
     /* Woken before 60 s: no comparable pair, so nothing is printed. */
     s_gesture_active = false;
     assert(bsp_power_enter_screen_off() == ESP_OK && s_profile_snap[1] == NULL);
+    assert(s_profile_lock != NULL && !s_profile_lock->locked);
     assert(bsp_power_exit_screen_off() == ESP_OK && !s_profile_print_timer->armed);
+    assert(!s_profile_lock->locked);
+    /* A late 60 s timer callback racing wake must discard its capture instead of mutating slot 1.
+     */
+    profile_capture_60s(NULL);
+    assert(s_profile_snap[1] == NULL && !s_profile_lock->locked);
     s_gesture_active = false;
 }
 #endif

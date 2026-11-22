@@ -211,32 +211,6 @@ fail:
     return e;
 }
 
-esp_err_t bsp_battery_sleep(void)
-{
-    if (!s_dev)
-        return ESP_OK;
-
-    for (unsigned attempt = 1; attempt <= 2; attempt++) {
-        uint8_t actual = 0;
-        esp_err_t write_error = cw_write(CW_REG_CONFIG, CW_CONFIG_SLEEP);
-        vTaskDelay(pdMS_TO_TICKS(5));
-        esp_err_t read_error = cw_read(CW_REG_CONFIG, &actual, 1);
-        if (write_error == ESP_OK && read_error == ESP_OK && actual == CW_CONFIG_SLEEP) {
-            ESP_LOGI(TAG, "CW2017 已进入休眠并通过寄存器校验");
-            return ESP_OK;
-        }
-
-        ESP_LOGW(TAG, "CW2017 休眠失败 attempt=%u write=%s(0x%x) read=%s(0x%x) actual=0x%02X",
-                 attempt, esp_err_to_name(write_error), (unsigned)write_error,
-                 esp_err_to_name(read_error), (unsigned)read_error, actual);
-        if (attempt < 2)
-            vTaskDelay(pdMS_TO_TICKS(5));
-    }
-
-    ESP_LOGE(TAG, "CW2017 连续两次未能进入休眠");
-    return ESP_FAIL;
-}
-
 int bsp_battery_soc(void)
 {
     uint8_t b[2] = {0};

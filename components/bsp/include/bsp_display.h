@@ -24,11 +24,6 @@ esp_lcd_panel_io_handle_t bsp_display_io(void);
 // 背光亮度 0..100(%)。LEDC PWM,0=全灭。
 void bsp_display_backlight(uint8_t percent);
 
-// deep sleep 专用：关闭显示、让 ST7789 进入 Sleep In，停止背光 PWM，
-// 将 CS/SCLK/MOSI/DC/背光设为安全电平并在 deep sleep 中保持。调用时必须
-// 已阻止 LVGL 刷屏，调用后必须立即进入 deep sleep 或重启。
-esp_err_t bsp_display_prepare_deep_sleep(void);
-
 // 息屏浅睡眠专用（自动浅睡眠 + PM_SLP_DISABLE_GPIO 会让引脚在睡眠中浮空）：
 // enter 关背光 PWM（空闲低电平）并配置睡眠态引脚——背光脚下拉、LCD CS 上拉，让 ST7789
 // 保持未选中；exit 恢复默认睡眠配置并重新使能 PWM 输出（占空比 0，亮度由调用方再设）。
@@ -51,6 +46,7 @@ struct _lv_display_t *bsp_lvgl_init(void);
 
 // LVGL 非线程安全:在【非 LVGL 任务】里操作任何 lv_* 对象前后必须加解锁。
 // LVGL 尚未就绪或超时时 lock 返回 false；只有 lock 成功后才调用 unlock。
+// 注意：底层 esp_lvgl_port 将 timeout_ms == 0 解释为无限等待，调用方须传入正毫秒上限。
 bool bsp_lvgl_lock(int timeout_ms);
 void bsp_lvgl_unlock(void);
 

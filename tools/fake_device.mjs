@@ -260,7 +260,11 @@ export function createSimDevice(options = {}) {
       five_hour: item.five_hour ?? { present: false },
       seven_day: item.seven_day ?? { present: false },
       balance: {
-        balance_infos: item.balance ? [{ currency: 'CNY', total_balance: item.balance }] : [],
+        balance_infos: Array.isArray(item.balance_infos)
+          ? item.balance_infos
+          : item.balance
+            ? [{ currency: item.currency ?? 'CNY', total_balance: item.balance }]
+            : [],
       },
     }));
     if (device.queue?.is_new && !accounts.some((item) => item.id === device.queue.id))
@@ -318,6 +322,54 @@ export function createSimDevice(options = {}) {
   }
   device.state = state;
 
+  const COMMON_KEYS = new Set(['v', 'op', 'request_id', 'phone_utc']);
+  const VALID_REFRESH_SECONDS = new Set([60, 300, 900, 1800]);
+  const VALID_SCREEN_TIMEOUTS = new Set([0, 30, 60, 120, 300, 600]);
+  const OP_KEYS = {
+    network_save: new Set(['ssid', 'password', 'network_index', 'open_network']),
+    network_remove: new Set(['network_index']),
+    deepseek_save: new Set(['account_id', 'api_key', 'label']),
+    codex_queue: new Set(['account_id', 'label']),
+    account_remove: new Set(['account_id']),
+    settings_save: new Set(['refresh_seconds', 'auto_refresh', 'screen_timeout_seconds']),
+    operation_cancel: new Set(['target_request_id']),
+    setup_close: new Set(),
+    validate: new Set(),
+    refresh: new Set(),
+    reconnect: new Set(),
+  };
+
+  function commandShapeValid(body) {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
+    if (body.v !== 3 || typeof body.op !== 'string' || !Object.hasOwn(OP_KEYS, body.op))
+      return false;
+    if (typeof body.request_id !== 'string' || !/^[0-9a-f]{8}$/.test(body.request_id)) return false;
+    const extra = OP_KEYS[body.op];
+    for (const key of Object.keys(body)) {
+      if (!COMMON_KEYS.has(key) && !extra.has(key)) return false;
+    }
+    if (body.op === 'deepseek_save') {
+      if (Object.hasOwn(body, 'api_key')) {
+        const key = body.api_key;
+        if (typeof key !== 'string' || key.length > 512 || !/^[\x21-\x7e]+$/.test(key))
+          return false;
+      } else if (typeof body.account_id !== 'string' || body.account_id.length === 0) return false;
+    }
+    if (
+      body.op === 'settings_save' &&
+      (typeof body.auto_refresh !== 'boolean' ||
+        !VALID_REFRESH_SECONDS.has(body.refresh_seconds) ||
+        !VALID_SCREEN_TIMEOUTS.has(body.screen_timeout_seconds))
+    )
+      return false;
+    if (
+      body.op === 'operation_cancel' &&
+      (typeof body.target_request_id !== 'string' || !/^[0-9a-f]{8}$/.test(body.target_request_id))
+    )
+      return false;
+    return true;
+  }
+
   function commandError(body) {
     const op = body.op;
     if (device.validating && !['operation_cancel', 'setup_close'].includes(op)) return 'busy';
@@ -326,6 +378,7 @@ export function createSimDevice(options = {}) {
 
   // Returns { error } when the command is rejected before it becomes a job.
   function command(body, kind) {
+    if (!commandShapeValid(body)) return { error: 'invalid_command' };
     if (device.jobs.some((job) => job.request_id === body.request_id)) return {};
     if (body.op === 'validate' && kind !== 'usb') return { error: 'invalid_command' };
     const early = commandError(body);
@@ -516,16 +569,27 @@ export function createSimDevice(options = {}) {
     const respond = (status, json) => ({ status, json });
     const reject = (status, code) =>
       respond(status, { ok: false, error_code: code, ...(config.protocol >= 3 ? ident() : {}) });
+    const header = (name) => {
+      const lower = name.toLowerCase();
+      for (const [k, v] of Object.entries(headers || {})) {
+        if (k.toLowerCase() === lower) return v;
+      }
+      return undefined;
+    };
     if (!sessionActive() || device.session.kind !== 'hotspot')
       return reject(403, 'session_expired');
     if (device.failures >= 5) return reject(403, 'access_locked');
-    if (headers['X-AIQ-Access'] !== config.code) {
-      if (headers['X-AIQ-Access']) device.failures += 1;
+    const access = header('X-AIQ-Access');
+    if (access !== config.code) {
+      if (access) device.failures += 1;
       return reject(403, device.failures >= 5 ? 'access_locked' : 'unauthorized');
     }
     device.failures = 0; // five wrong codes in a row, not over the whole session
     if (method === 'GET' && path === '/api/state') return respond(200, state('hotspot'));
     if (method === 'POST' && path === '/api/command') {
+      const contentType = header('Content-Type') ?? '';
+      if (contentType !== 'application/json' && contentType !== 'application/json; charset=utf-8')
+        return reject(415, 'invalid_content_type');
       const result = command(body, 'hotspot');
       if (result.error === 'busy') return reject(503, 'busy');
       if (result.error) return reject(400, result.error);

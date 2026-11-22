@@ -13,14 +13,12 @@ typedef enum {
 } quota_store_read_result_t;
 
 bool quota_store_init(void);
-/* Factory reset. The account catalog goes first, in one committed erase: from then on the device
- * is a new device, and credential slots it still holds are released as orphans at the next boot.
- * Then the portable partition and the retired namespace are erased, and an empty portable store is
- * initialized again. The caller restarts the device unless the result is FAILED. */
+/* Factory reset removes the account catalog before clearing the portable partition and retired
+ * namespace. The caller restarts when an erase may have changed the existing store. */
 typedef enum {
     QUOTA_FACTORY_RESET_OK = 0,
-    QUOTA_FACTORY_RESET_CATALOG_GONE, /* the catalog is deleted, but erasing the rest failed */
-    QUOTA_FACTORY_RESET_FAILED,       /* nothing was deleted: the device carries on unchanged */
+    QUOTA_FACTORY_RESET_RESTART_REQUIRED, /* partial or uncertain erase; reload from storage */
+    QUOTA_FACTORY_RESET_FAILED,           /* existing state is safe to keep using */
 } quota_factory_reset_result_t;
 quota_factory_reset_result_t quota_store_factory_reset(void);
 /* Every boot: erase the retired ai_quota namespace of the default partition and the retired

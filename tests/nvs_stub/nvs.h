@@ -39,7 +39,15 @@ typedef struct {
     char spaces[8][2][16]; /* partition, namespace pairs that exist */
     unsigned space_count;
     unsigned mutations; /* applied set/erase operations */
+    unsigned writes;    /* nvs_set_blob calls */
+    unsigned commits;   /* successful nvs_commit calls */
     long cut_after;     /* >= 0: operations beyond this many fail, as after a power cut */
+    esp_err_t open_error;
+    esp_err_t query_error;
+    esp_err_t data_error;
+    esp_err_t set_blob_error;
+    esp_err_t commit_error;
+    int error_after_write;
 } nvs_stub_state_t;
 
 extern nvs_stub_state_t nvs_stub;
@@ -47,4 +55,5 @@ void nvs_stub_put(const char *partition, const char *name_space, const char *key
                   size_t length);
 const nvs_stub_item_t *nvs_stub_find(const char *partition, const char *name_space,
                                      const char *key);
+nvs_stub_item_t *nvs_stub_find_mut(const char *partition, const char *name_space, const char *key);
 unsigned nvs_stub_count(const char *partition, const char *name_space);

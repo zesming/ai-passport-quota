@@ -9,7 +9,7 @@ Passport 拥有一份账户目录、Wi-Fi 列表、选择状态和刷新/息屏�
 | ChatGPT（统计 Codex 用量） | 实验性官方客户端设备码流程，HTTPS 查询额度及可选重置详情 |
 | DeepSeek | 官方 `GET https://api.deepseek.com/user/balance`，保存后验证 |
 
-刷新不发送模型提示。保留来源 `observed_at`；读取缓存、修订号变化不代表新观察。缺失 5h/周窗口隐藏，真实 0% 可见。重置时间已过则等待来源数据，不自动恢复 100%。倒计时为 `🔄 xd xh`，到期时间为 `xd xh 到期`；不足一小时的正数为 `<1h`。
+刷新不发送模型提示。保留来源 `observed_at`；读取缓存、修订号变化不代表新观察。缺失 5h/周窗口隐藏，真实 0% 可见。重置时间已过则等待来源数据，不自动恢复 100%。窗口重置倒计时格式为 `x 天 x 小时后重置`、`x 小时 x 分后重置` 或 `x 分钟后重置`，不足 1 分钟为 `不到 1 分钟后重置`；可用重置到期同理使用 `后过期`。
 
 Codex 设备授权复现[官方客户端实现](https://github.com/openai/codex/blob/7f892275e31002f0422477c6219189284560e689/codex-rs/login/src/device_code_auth.rs)，使用可配置 `QUOTA_DIRECT_CODEX_CLIENT_ID` 及固定 `auth.openai.com`/`chatgpt.com` 来源。额度端点属于客户端实现细节，并非稳定第三方 API；本工程未注册 OAuth 集成。直连只映射恰好 18000/604800 秒的主窗口。剩余额度、可用重置次数来自 usage；可选详情失败只让到期未知，保留新额度。剩余额度保留来源字符串，不推测币种。仅在全部可用详情已知时展示最近到期；正数次数仍以来源为准。
 
@@ -71,9 +71,9 @@ USB 使用物理设置窗口及有界 `@AIQ:` 换行帧，协议版本 v3。`ses
 
 热点 API 只接受 AP 接口/子网、精确 Host 和访问码头 `X-AIQ-Access`。修改须同源 Origin，GET 若带 Origin 也须匹配；无 CORS/跨域预检。设备只路由 `GET /`（设置页）、`GET /api/state`（脱敏账户、Wi-Fi、设置、验证状态、任务）和 `POST /api/command`（扁平 JSON、八位小写十六进制 request ID、可选 UTC；最多 2048 字节，拒绝重复/未知字段、非法类型和内嵌 NUL，相同 ID 去重；202 仅代表入队）。命令体的 `v` 为 3。
 
-**命令。** `network_save`（必须带 `ssid`，可带 `network_index` 修改已有的一个）、`network_remove {network_index}`、`deepseek_save`、`codex_queue`、`account_remove`、`settings_save`、`setup_close`、`refresh`、`reconnect`、`operation_cancel`，以及仅 USB 的 `validate`。`mode_select`、`network_scan`、`network_activate`、`account_activate`、`account_deactivate`、`external_import`、`collector_configure` 已删除；`codex_launch` 不再是线上命令，它是验证启动授权的内部步骤。命令内部捕获配置代数：在配置变化之前接受、之后才执行的命令返回 `configuration_changed`，所以网页等每个修改的任务结束后再发下一个。
+**命令。** `network_save`（必须带 `ssid`，可带 `network_index` 修改已有的一个）、`network_remove {network_index}`、`deepseek_save`、`codex_queue`、`account_remove`、`settings_save`、`setup_close`、`refresh`、`reconnect`、`operation_cancel`，以及仅 USB 的 `validate`。命令内部捕获配置代数：在配置变化之前接受、之后才执行的命令返回 `configuration_changed`，所以网页等每个修改的任务结束后再发下一个。
 
-**状态。** 顶层有 `protocol`、`firmware`、`validating`、`validation_step`（`wifi`/`deepseek`/`chatgpt`）；`network.saved_networks[]` 与 `accounts[]` 各有 `validation`（`pending|ok|failed`）和 `error_code`。`pending_accounts`、`network.pending_network`、`accounts[].source`、`source_changed`、`collector` 已删除。
+**状态。** 顶层有 `protocol`、`firmware`、`validating`、`validation_step`（`wifi`/`deepseek`/`chatgpt`）；`network.saved_networks[]` 的 `validation` 取值为 `saved|pending|ok|failed`，`accounts[]` 的 `validation` 取值为 `pending|ok|failed`，两者各带 `error_code`。
 
 **错误码。** 网页用中文显示：`wifi_auth_failed`、`wifi_not_found`、`deepseek_invalid_key`、`codex_expired`、`auth_required`、`busy`、`session_expired`（设置时间已到，热点和 USB 统一用这一个）、`account_limit`、`network_limit`、`login_pending`、`access_locked`、`unauthorized`、`serial_busy` 等。公开状态、QR、日志不含服务令牌、PKCE 或 Wi-Fi 密码；临时热点密码和访问码只在实体设置屏显示。
 

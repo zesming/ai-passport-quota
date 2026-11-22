@@ -387,27 +387,73 @@ static void factory_reset_erases_everything(void)
     uint64_t sequence = 9;
     assert(quota_store_load_model_result(&model_out, &sequence) == QUOTA_STORE_READ_MISSING);
     /* Nothing deleted: a failure of the catalog erase leaves everything as it was. */
-    nvs_stub_put(STORE_PARTITION, STORE_NAMESPACE, "model_v2", "accounts and wifi", 18);
+    memset(&model, 0, sizeof(model));
+    model.refresh_seconds = 300;
+    put_model(&model);
     nvs_stub_put(STORE_PARTITION, STORE_NAMESPACE, "account3", "credential", 11);
     nvs_stub.cut_after = 0;
     assert(quota_store_factory_reset() == QUOTA_FACTORY_RESET_FAILED && s_ready);
     nvs_stub.cut_after = -1;
     assert(nvs_stub_find(STORE_PARTITION, STORE_NAMESPACE, "model_v2"));
     assert(nvs_stub_find(STORE_PARTITION, STORE_NAMESPACE, "account3"));
+    /* A readable blob index alone cannot establish that the model survived an erase error. */
+    nvs_stub.cut_after = 0;
+    nvs_stub.data_error = ESP_FAIL;
+    assert(quota_store_factory_reset() == QUOTA_FACTORY_RESET_RESTART_REQUIRED);
+    nvs_stub.cut_after = -1;
+    nvs_stub.data_error = ESP_OK;
     /* The catalog is deleted first. If erasing the rest then fails the device is already a new
      * device (the caller restarts; leftover credential slots are orphans released at boot). */
     nvs_stub_fail_partition_erase = 1;
-    assert(quota_store_factory_reset() == QUOTA_FACTORY_RESET_CATALOG_GONE);
+    assert(quota_store_factory_reset() == QUOTA_FACTORY_RESET_RESTART_REQUIRED);
     nvs_stub_fail_partition_erase = 0;
     assert(!nvs_stub_find(STORE_PARTITION, STORE_NAMESPACE, "model_v2"));
     assert(quota_store_load_model_result(&model_out, &sequence) == QUOTA_STORE_READ_MISSING);
     assert(quota_store_factory_reset() == QUOTA_FACTORY_RESET_OK);
     assert(!nvs_stub_find(STORE_PARTITION, STORE_NAMESPACE, "account3"));
-    /* An uninitialized store never deleted the catalog, so a failed erase is a plain failure. */
+    /* A commit error after deleting the catalog does not short-circuit the remaining erases. */
+    nvs_stub_put(STORE_PARTITION, STORE_NAMESPACE, "model_v2", "accounts and wifi", 18);
+    nvs_stub_put(STORE_PARTITION, STORE_NAMESPACE, "quota_obs", "cache", 6);
+    nvs_stub_put("nvs", "ai_quota", "device_cfg", "retired", 8);
+    unsigned erases = nvs_stub_partition_erases;
+    nvs_stub.commit_error = ESP_FAIL;
+    /* The retired namespace commit also fails, so report partial cleanup and restart. */
+    assert(quota_store_factory_reset() == QUOTA_FACTORY_RESET_RESTART_REQUIRED);
+    assert(nvs_stub_partition_erases == erases + 1);
+    assert(nvs_stub_count(STORE_PARTITION, STORE_NAMESPACE) == 0);
+    assert(nvs_stub_count("nvs", "ai_quota") == 0);
+    /* Even with failed readback and partition erase, the caller cannot reuse the old catalog. */
+    nvs_stub_put(STORE_PARTITION, STORE_NAMESPACE, "model_v2", "accounts and wifi", 18);
+    nvs_stub.query_error = ESP_FAIL;
+    nvs_stub_fail_partition_erase = 1;
+    assert(quota_store_factory_reset() == QUOTA_FACTORY_RESET_RESTART_REQUIRED);
+    nvs_stub.commit_error = ESP_OK;
+    nvs_stub.query_error = ESP_OK;
+    nvs_stub_fail_partition_erase = 0;
+    assert(!nvs_stub_find(STORE_PARTITION, STORE_NAMESPACE, "model_v2"));
+    /* Non-NOT_FOUND error opening retired ai_quota namespace is partial failure, not OK. */
+    nvs_stub_put(STORE_PARTITION, STORE_NAMESPACE, "model_v2", "accounts and wifi", 18);
+    nvs_stub_put("nvs", "ai_quota", "device_cfg", "retired", 8);
+    s_ready = false;
+    nvs_stub.open_error = ESP_FAIL;
+    assert(quota_store_factory_reset() == QUOTA_FACTORY_RESET_RESTART_REQUIRED);
+    nvs_stub.open_error = ESP_OK;
+    assert(nvs_stub_count("nvs", "ai_quota") == 1);
+    assert(quota_store_factory_reset() == QUOTA_FACTORY_RESET_OK);
+    assert(nvs_stub_count("nvs", "ai_quota") == 0);
+    /* Even with no initialized store, an attempted partition erase may have changed it. */
     s_ready = false;
     nvs_stub_fail_partition_erase = 1;
-    assert(quota_store_factory_reset() == QUOTA_FACTORY_RESET_FAILED);
+    assert(quota_store_factory_reset() == QUOTA_FACTORY_RESET_RESTART_REQUIRED);
     nvs_stub_fail_partition_erase = 0;
+    /* When s_ready is false and partition erase succeeds but re-init fails, the catalog is gone. */
+    s_ready = false;
+    nvs_stub_put(STORE_PARTITION, STORE_NAMESPACE, "model_v2", "accounts and wifi", 18);
+    nvs_stub_fail_partition_init = 1;
+    assert(quota_store_factory_reset() == QUOTA_FACTORY_RESET_RESTART_REQUIRED && !s_ready);
+    nvs_stub_fail_partition_init = 0;
+    assert(!nvs_stub_find(STORE_PARTITION, STORE_NAMESPACE, "model_v2"));
+    assert(quota_store_init());
 }
 
 static void unusable_rows_fail_closed(void)
@@ -429,6 +475,27 @@ static void unusable_rows_fail_closed(void)
     assert(quota_store_load_model_result(&out, &sequence) == QUOTA_STORE_READ_OK &&
            sequence == SEQUENCE + 1);
     assert(out.entry_count == 2); /* An unreadable slot is overwritten, not an obstacle. */
+    /* Slot collision between a retired intent and a kept account fails closed without erasing
+     * the kept account's credential. */
+    build_old_device(false);
+    memset(&model, 0, sizeof(model));
+    model.refresh_seconds = 300;
+    model.screen_timeout_seconds = 120;
+    set_entry(0, ID_CODEX, QUOTA_PROVIDER_CODEX, 0, 0, 0, CRED_CODEX);
+    model.entry_count = 1;
+    model.intent.kind = QUOTA_INTENT_UPSERT_NATIVE;
+    model.intent.new_row = true;
+    model.intent.provider = (quota_provider_t)OLD_PROVIDER_OTHER;
+    model.intent.slot = 0;
+    strcpy(model.intent.target_credential_id, "0000000000000000000000000000c002");
+    model.intent.target_credential_generation = 2;
+    put_model(&model);
+    nvs_stub.mutations = 0;
+    assert(quota_store_load_model_result(&out, &sequence) == QUOTA_STORE_READ_INVALID &&
+           nvs_stub.mutations == 0);
+    static quota_portable_credential_t kept_cred;
+    assert(quota_store_load_credential_result(0, &kept_cred) == QUOTA_STORE_READ_OK &&
+           !kept_cred.tombstone && !strcmp(kept_cred.id, CRED_CODEX));
 }
 
 static void orphan_credentials_are_freed(void)
@@ -529,6 +596,89 @@ static void stale_cache_rows_do_not_discard_the_rest(void)
            QUOTA_STORE_READ_INVALID);
 }
 
+static void retired_orphan_padding_and_utf8_credits(void)
+{
+    /* CD-05: valid-CRC retired-provider orphan slot is tombstoned preserving id and generation. */
+    memset(&nvs_stub, 0, sizeof(nvs_stub));
+    nvs_stub.cut_after = -1;
+    s_ready = false;
+    assert(quota_store_init());
+    credential_record_t *retired = calloc(1, sizeof(*retired));
+    assert(retired);
+    retired->magic = CREDENTIAL_MAGIC;
+    retired->version = STORE_VERSION;
+    retired->bytes = sizeof(*retired);
+    retired->value.slot = 5;
+    retired->value.provider = (quota_provider_t)OLD_PROVIDER_OTHER;
+    retired->value.generation = 9;
+    static const char retired_id[] = "0000000000000000000000000000d009";
+    strcpy(retired->value.id, retired_id);
+    strcpy(retired->value.api_key, "retired-secret");
+    retired->crc = store_crc(retired, offsetof(credential_record_t, crc));
+    nvs_stub_put(STORE_PARTITION, STORE_NAMESPACE, "account5", retired, sizeof(*retired));
+    free(retired);
+    /* I/O error reading a retired slot must fail closed so cleanup retries later. */
+    nvs_stub.data_error = ESP_FAIL;
+    assert(quota_store_release_orphan_credentials() == QUOTA_STORE_READ_IO_ERROR);
+    nvs_stub.data_error = ESP_OK;
+    assert(quota_store_release_orphan_credentials() == QUOTA_STORE_READ_OK);
+    static quota_portable_credential_t loaded;
+    assert(quota_store_load_credential_result(5, &loaded) == QUOTA_STORE_READ_OK);
+    assert(loaded.tombstone && loaded.generation == 9 && !strcmp(loaded.id, retired_id));
+    assert(
+        !contains(nvs_stub_find(STORE_PARTITION, STORE_NAMESPACE, "account5"), "retired-secret"));
+
+    /* CD-07: dirty struct padding in quota_model_t is canonicalized to zero before CRC/memcmp. */
+    quota_model_t dirty;
+    memset(&dirty, 0xAA, sizeof(dirty));
+    dirty.network_count = 0;
+    dirty.selected_network = 0;
+    memset(dirty.networks, 0, sizeof(dirty.networks));
+    memset(dirty.reserved_pending_network, 0, sizeof(dirty.reserved_pending_network));
+    dirty.refresh_seconds = 300;
+    dirty.screen_timeout_seconds = 120;
+    dirty.auto_refresh = true;
+    memset(dirty.selected_account_id, 0, sizeof(dirty.selected_account_id));
+    dirty.last_known_time = 1790000000;
+    memset(dirty.reserved_legacy_endpoint, 0, sizeof(dirty.reserved_legacy_endpoint));
+    dirty.entry_count = 1;
+    memset(dirty.entries, 0, sizeof(dirty.entries));
+    strcpy(dirty.entries[0].logical_id, ID_CODEX);
+    dirty.entries[0].provider = QUOTA_PROVIDER_CODEX;
+    dirty.entries[0].source = QUOTA_ACCOUNT_DEVICE;
+    dirty.entries[0].activity = QUOTA_ACCOUNT_ACTIVE;
+    dirty.entries[0].row_generation = 1;
+    dirty.entries[0].binding.native.slot = 0;
+    strcpy(dirty.entries[0].binding.native.credential_id, CRED_CODEX);
+    dirty.entries[0].binding.native.credential_generation = 1;
+    memset(&dirty.intent, 0, sizeof(dirty.intent));
+    assert(quota_store_save_model_verified(0, &dirty, 1) == QUOTA_MODEL_APPLIED);
+    quota_model_t clean_expected, reloaded;
+    quota_catalog_canonicalize_model(&clean_expected, &dirty);
+    memset(&reloaded, 0x55, sizeof(reloaded));
+    uint64_t seq = 0;
+    assert(quota_store_load_model_result(&reloaded, &seq) == QUOTA_STORE_READ_OK && seq == 1);
+    assert(memcmp(&reloaded, &clean_expected, sizeof(reloaded)) == 0);
+
+    /* CD-13: observations_v2 preserves valid non-ASCII UTF-8 credits_balance strings. */
+    quota_snapshot_t snap = {0};
+    snap.account_count = 1;
+    strcpy(snap.accounts[0].id, ID_CODEX);
+    snap.accounts[0].provider = QUOTA_PROVIDER_CODEX;
+    snap.accounts[0].status = QUOTA_STATUS_OK;
+    snap.accounts[0].has_observed_at = true;
+    snap.accounts[0].observed_at = 1790000000;
+    snap.codex_extras[0].has_credits = true;
+    strcpy(snap.codex_extras[0].credits_balance, "\xe2\x82\xac" "12.50");
+    assert(quota_store_save_observations(&reloaded, &snap, 1790000000));
+    quota_snapshot_t restored = {0};
+    restored.account_count = 1;
+    strcpy(restored.accounts[0].id, ID_CODEX);
+    assert(quota_store_load_observations(&reloaded, 1790000001, &restored) == QUOTA_STORE_READ_OK);
+    assert(restored.codex_extras[0].has_credits &&
+           !strcmp(restored.codex_extras[0].credits_balance, "\xe2\x82\xac" "12.50"));
+}
+
 int main(void)
 {
     upgrade_and_power_cut(false);
@@ -538,6 +688,7 @@ int main(void)
     unusable_rows_fail_closed();
     orphan_credentials_are_freed();
     stale_cache_rows_do_not_discard_the_rest();
+    retired_orphan_padding_and_utf8_credits();
     puts("upgrade cleanup passed");
 }
 '''
@@ -557,6 +708,7 @@ class StorageRuntime(unittest.TestCase):
                     "-Wextra",
                     "-Werror",
                     "-fsanitize=address,undefined",
+                    "-fno-sanitize-recover=undefined",
                     "-fno-omit-frame-pointer",
                     "-I" + str(ROOT / "tests/nvs_stub"),
                     "-I" + str(ROOT / "main"),

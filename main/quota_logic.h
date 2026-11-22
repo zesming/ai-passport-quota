@@ -146,7 +146,6 @@ typedef enum {
     QUOTA_ACTION_APPLY_SETTINGS,
     QUOTA_ACTION_PERSIST_SELECTION,
     QUOTA_ACTION_OPEN_HOTSPOT,
-    QUOTA_ACTION_RENEW_HOTSPOT, /* OK on a closed hotspot screen: open it again */
     QUOTA_ACTION_CLOSE_HOTSPOT,
     QUOTA_ACTION_OPEN_USB,
     QUOTA_ACTION_CLOSE_USB,
@@ -170,7 +169,6 @@ typedef struct {
     uint16_t refresh_seconds;
     bool auto_refresh;
     uint16_t screen_timeout_seconds;
-    bool configured;
 } quota_navigation_t;
 
 /* What the hotspot screen is doing, and so what OK does there. */
@@ -183,7 +181,9 @@ typedef enum {
 /* What the service knows that changes what a key does. The zero value is a plain idle device. */
 typedef struct {
     uint8_t account_count;
-    bool auth_active; /* ChatGPT authorization is running: OK on the home screen shows it */
+    bool configured;    /* live catalog readiness: home OK refreshes once storage is ready */
+    bool storage_error; /* active storage error: blocks welcome OK from opening dead-end hotspot */
+    bool auth_active;   /* ChatGPT authorization is running: OK on the home screen shows it */
     quota_hotspot_state_t hotspot;
     bool usb_window_open; /* the USB window is open or being prepared */
 } quota_navigation_context_t;
@@ -247,6 +247,7 @@ typedef enum {
 } quota_frame_result_t;
 
 bool quota_utf8_is_valid(const char *text, size_t length);
+bool quota_decimal_is_valid(const char *text, size_t max_bytes);
 bool quota_id_is_valid(const char *id);
 void quota_copy_display_ascii(const char *source, char *destination, size_t capacity);
 void quota_copy_display_plan(const char *source, char *destination, size_t capacity);
@@ -332,9 +333,8 @@ bool quota_display_handle_key(quota_display_state_t *display, uint64_t now_ms,
 quota_metric_state_t quota_metric_state(const quota_window_t *window, uint64_t now);
 quota_action_t quota_navigation_handle(quota_navigation_t *navigation, quota_input_t input,
                                        quota_navigation_context_t context);
-void quota_navigation_init(quota_navigation_t *navigation, bool configured,
-                           uint16_t refresh_seconds, bool auto_refresh,
-                           uint16_t screen_timeout_seconds);
+void quota_navigation_init(quota_navigation_t *navigation, uint16_t refresh_seconds,
+                           bool auto_refresh, uint16_t screen_timeout_seconds);
 quota_status_line_t quota_status_line_select(const quota_status_input_t *input);
 quota_hotspot_state_t quota_hotspot_state(bool storage_error, bool validating, bool active,
                                           bool ready, bool opening);

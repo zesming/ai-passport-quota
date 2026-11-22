@@ -284,8 +284,8 @@ static void load_account(const cJSON *json, size_t index, quota_service_view_t *
 
 static void load_view(const cJSON *json, quota_service_view_t *view)
 {
-    static const char *const network_states[] = {
-        "off", "ap", "connecting", "connected", "time_required", "ready", "error"};
+    static const char *const network_states[] = {"off",       "ap",    "connecting",
+                                                 "connected", "ready", "error"};
     static const char *const login_states[] = {"idle",     "queued",     "connecting", "requesting",
                                                "waiting",  "exchanging", "success",    "error",
                                                "canceled", "expired"};
@@ -309,14 +309,13 @@ static void load_view(const cJSON *json, quota_service_view_t *view)
     quota_portable_view_t *portable = &view->portable;
     const cJSON *source = member(json, "portable");
     portable->network_state =
-        (quota_portable_network_state_t)choice(source, "network_state", network_states, 7, 0);
+        (quota_portable_network_state_t)choice(source, "network_state", network_states, 6, 0);
     view->connected = portable->network_state == QUOTA_PORTABLE_NETWORK_READY ||
                       portable->network_state == QUOTA_PORTABLE_NETWORK_CONNECTED;
     view->wifi_rssi = view->connected ? (int8_t)number_field(source, "rssi", 0) : 0;
     text_field(source, "ssid", portable->network_ssid, sizeof(portable->network_ssid));
     text_field(source, "ip", portable->network_ip, sizeof(portable->network_ip));
-    text_field(source, "network_error", portable->network_error,
-               sizeof(portable->network_error));
+    text_field(source, "network_error", portable->network_error, sizeof(portable->network_error));
     text_field(source, "storage_error", portable->storage_error, sizeof(portable->storage_error));
     text_field(source, "firmware", portable->firmware, sizeof(portable->firmware));
     portable->validating = bool_field(source, "validating", false);
@@ -353,6 +352,18 @@ static void load_view(const cJSON *json, quota_service_view_t *view)
                    sizeof(portable->saved_network_ssids[i]));
         portable->saved_network_validation[i] =
             (uint8_t)choice(item, "validation", validations, 4, QUOTA_VALIDATION_OK);
+        text_field(item, "error", portable->saved_network_errors[i],
+                   sizeof(portable->saved_network_errors[i]));
+    }
+    const cJSON *queued = member(source, "queued_login");
+    if (cJSON_IsObject(queued)) {
+        portable->queued_login_new = true;
+        text_field(queued, "label", portable->queued_login_label,
+                   sizeof(portable->queued_login_label));
+        portable->queued_login_validation =
+            (uint8_t)choice(queued, "validation", validations, 4, QUOTA_VALIDATION_PENDING);
+        text_field(queued, "error", portable->queued_login_error,
+                   sizeof(portable->queued_login_error));
     }
     const cJSON *usb = member(json, "usb");
     view->usb_window_active = bool_field(usb, "active", false);
@@ -366,7 +377,7 @@ static void load_navigation(const cJSON *json, quota_navigation_t *navigation)
     static const char *const screens[] = {"home",  "menu", "hotspot", "usb",    "refresh",
                                           "sleep", "info", "auth",    "confirm"};
     static const char *const kinds[] = {"factory_reset", "cancel_auth"};
-    quota_navigation_init(navigation, true, 300, true, 120);
+    quota_navigation_init(navigation, 300, true, 120);
     navigation->screen = (quota_screen_t)choice(json, "screen", screens, 9, 0);
     navigation->selected_account = (uint8_t)number_field(json, "selected_account", 0);
     navigation->menu_focus = (uint8_t)number_field(json, "menu_focus", 0);
@@ -406,14 +417,12 @@ static bool check_expected_labels(const cJSON *fixture, const char *fixture_name
         cJSON_ArrayForEach(item, expected)
         {
             if (!cJSON_IsString(item)) {
-                fprintf(stderr, "%s: %s entries must be strings\n", fixture_name,
-                        checks[i].field);
+                fprintf(stderr, "%s: %s entries must be strings\n", fixture_name, checks[i].field);
                 return false;
             }
             bool visible = has_visible_label(lv_screen_active(), item->valuestring);
             if (visible != checks[i].should_be_visible) {
-                fprintf(stderr, "%s: expected label %s to be %s\n", fixture_name,
-                        item->valuestring,
+                fprintf(stderr, "%s: expected label %s to be %s\n", fixture_name, item->valuestring,
                         checks[i].should_be_visible ? "visible" : "hidden");
                 return false;
             }

@@ -6,3 +6,4 @@ esp_err_t nvs_flash_deinit_partition(const char *partition);
 esp_err_t nvs_flash_erase_partition(const char *partition);
 extern unsigned nvs_stub_partition_erases;
 extern int nvs_stub_fail_partition_erase; /* the partition erase fails, other writes do not */
+extern int nvs_stub_fail_partition_init;  /* partition init fails (e.g. post-erase re-init) */

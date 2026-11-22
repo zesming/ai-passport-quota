@@ -100,7 +100,7 @@ extern bool s_scan_active, s_scan_complete;
 extern int s_retire_stage;
 static esp_netif_t netif;
 static bool sleeping, associated, netif_up, fail_fence_posts;
-static bool complete_scan_inline, sdk_started;
+static bool complete_scan_inline, sdk_started, defer_stop_event;
 static int32_t drop_fence_id;
 static uint32_t netif_ip;
 static esp_netif_dhcp_status_t dhcp_status = ESP_NETIF_DHCP_STARTED;
@@ -148,7 +148,8 @@ esp_err_t esp_wifi_start(void) { starts++; sdk_started = true; return ESP_OK; }
 esp_err_t esp_wifi_stop(void) {
     stops++;
     sdk_started = false;
-    stop_event_handler(NULL, WIFI_EVENT, WIFI_EVENT_STA_STOP, NULL);
+    if (!defer_stop_event)
+        stop_event_handler(NULL, WIFI_EVENT, WIFI_EVENT_STA_STOP, NULL);
     return ESP_OK;
 }
 esp_err_t esp_wifi_sta_get_ap_info(wifi_ap_record_t *record) {
@@ -273,6 +274,18 @@ int main(void) {
     retire_to_completion();
     assert(quota_wifi_prepare(14, WIFI_MODE_APSTA) == QUOTA_WIFI_READY && inits == 4 &&
            mode_sets == 4);
+    assert(quota_wifi_start());
+    unsigned deinits_before = deinits;
+    defer_stop_event = true;
+    quota_wifi_retire_begin();
+    assert(quota_wifi_retire_poll() == QUOTA_WIFI_WAIT);
+    assert(s_retire_stage == 2 && deinits == deinits_before); /* RETIRE_STOP_EVENT waits. */
+    assert(quota_wifi_retire_poll() == QUOTA_WIFI_WAIT && s_retire_stage == 2 &&
+           deinits == deinits_before);
+    stop_event_handler(NULL, WIFI_EVENT, WIFI_EVENT_STA_STOP, NULL);
+    defer_stop_event = false;
+    retire_to_completion();
+    assert(deinits == deinits_before + 1 && !s_wifi_initialized);
     puts("Wi-Fi scan admission and retirement tests passed");
 }
 '''

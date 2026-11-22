@@ -49,6 +49,7 @@
       </div>
       <p id="accounts-hint" class="muted" hidden>先添加 Wi‑Fi</p>
       <p id="accounts-empty" class="muted">还没有账户</p>
+      <p id="accounts-limit" class="muted" hidden>已达 8 个账户上限，新增前请先移除一个</p>
       <ul id="account-list" class="rows"></ul>
     </section>
     <section id="wifi-section" class="card" aria-labelledby="wifi-title">
@@ -57,12 +58,13 @@
         <button id="add-wifi" class="small" type="button">+ 添加</button>
       </div>
       <p id="wifi-empty" class="muted">Passport 联网用的网络，最多 3 个，普通 2.4 GHz</p>
+      <p id="wifi-limit" class="muted" hidden>已达 3 个 Wi‑Fi 上限，新增前请先移除一个</p>
       <ul id="wifi-list" class="rows"></ul>
       <form id="wifi-form" autocomplete="off" hidden>
         <label class="field"><span>名称</span>
           <input id="wifi-ssid" autocomplete="off" autocapitalize="none" spellcheck="false">
         </label>
-        <label class="field"><span>密码（无密码的网络请留空）</span>
+        <label class="field"><span id="wifi-password-label">密码（无密码的网络请留空）</span>
           <input id="wifi-password" type="password" autocomplete="new-password"
             autocapitalize="none" spellcheck="false">
         </label>
@@ -121,6 +123,7 @@
       <label class="field"><span>备注名（可不填）</span>
         <input id="codex-label" autocomplete="off" maxlength="32">
       </label>
+      <p id="codex-error" class="row-error" hidden></p>
       <button id="codex-add" class="primary wide" type="submit">添加</button>
     </form>
     <form id="deepseek-form" autocomplete="off" hidden>

@@ -21,8 +21,10 @@ class PortableServiceRuntime(unittest.TestCase):
                 "-Werror",
                 "-Wno-deprecated-declarations",
                 "-fsanitize=address,undefined",
+                "-fno-sanitize-recover=undefined",
                 "-fno-omit-frame-pointer",
-                "-I" + str(ROOT / "tests/portable_controller_sdk"),
+                "-I" + str(ROOT / "tests/host_sdk"),
+                "-I" + str(ROOT / "tests/bsp_stubs"),
                 "-I" + str(ROOT / "main"),
                 "-I" + str(ROOT / "components/bsp/include"),
                 "-I" + str(ROOT / "tests/cjson"),
@@ -123,6 +125,7 @@ class PortableServiceRuntime(unittest.TestCase):
                 "staged-stale",
                 "factory-reset",
                 "view-results",
+                "batch2-hardening",
             ):
                 with self.subTest(case=case):
                     result = subprocess.run([str(executable), case], capture_output=True, text=True)

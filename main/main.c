@@ -265,6 +265,8 @@ QUOTA_TESTABLE void process_button(const quota_app_event_t *event, quota_service
                                    view->screen_timeout_seconds);
     quota_navigation_context_t context = {
         .account_count = view->snapshot.account_count,
+        .configured = view->configured,
+        .storage_error = view->portable.storage_error[0] != '\0',
         .auth_active = login_is_active(view->portable.login_state),
         .hotspot = quota_hotspot_state(view->portable.storage_error[0] != '\0',
                                        view->portable.validating, view->portable.setup_active,
@@ -277,9 +279,6 @@ QUOTA_TESTABLE void process_button(const quota_app_event_t *event, quota_service
     switch (action) {
     case QUOTA_ACTION_OPEN_HOTSPOT:
         quota_service_open_phone();
-        break;
-    case QUOTA_ACTION_RENEW_HOTSPOT:
-        quota_service_renew_phone();
         break;
     case QUOTA_ACTION_CLOSE_HOTSPOT:
         quota_service_close_phone();
@@ -339,11 +338,6 @@ QUOTA_TESTABLE void process_event(const quota_app_event_t *event)
     case QUOTA_APP_EVENT_SNAPSHOT:
         reconcile_account_selection(&s_view_work);
         break;
-    case QUOTA_APP_EVENT_SETTINGS_RESULT:
-        s_navigation.refresh_seconds = event->refresh_seconds;
-        s_navigation.auto_refresh = event->auto_refresh;
-        s_navigation.screen_timeout_seconds = event->screen_timeout_seconds;
-        break;
     case QUOTA_APP_EVENT_WAKE:
         wake_from_screen_off();
         break;
@@ -385,16 +379,17 @@ static void log_resources(void *arg)
     TaskHandle_t network = quota_service_network_task();
     unsigned app_stack = (unsigned)uxTaskGetStackHighWaterMark(s_application_task);
     unsigned network_stack = network ? (unsigned)uxTaskGetStackHighWaterMark(network) : 0;
-    /* The LVGL pool is read under the LVGL lock: its peak is the number the 24 KB pool is judged
-     * by (docs/development/README.md). */
-    lv_mem_monitor_t pool = {0};
-    if (bsp_lvgl_lock(100)) {
+    /* The LVGL pool is read with a short bounded timeout from the esp_timer task so it never
+     * stalls other timers (lvgl_port_lock(0) waits forever): its peak is the number the 24 KB pool
+     * is judged by (docs/development/README.md). */
+    if (bsp_lvgl_lock(10)) {
+        lv_mem_monitor_t pool = {0};
         lv_mem_monitor(&pool);
         bsp_lvgl_unlock();
+        ESP_LOGI(TAG, "lvgl_pool: total=%u used=%u max_used=%u free_biggest=%u",
+                 (unsigned)pool.total_size, (unsigned)(pool.total_size - pool.free_size),
+                 (unsigned)pool.max_used, (unsigned)pool.free_biggest_size);
     }
-    ESP_LOGI(TAG, "lvgl_pool: total=%u used=%u max_used=%u free_biggest=%u",
-             (unsigned)pool.total_size, (unsigned)(pool.total_size - pool.free_size),
-             (unsigned)pool.max_used, (unsigned)pool.free_biggest_size);
     ESP_LOGI(TAG,
              "resources: quota_app_stack_free_min=%u quota_network_stack_free_min=%u "
              "heap_free=%u heap_free_min=%u",
@@ -447,7 +442,6 @@ void app_main(void)
         ESP_LOGE(TAG, "display initialization failed");
         return;
     }
-    bsp_display_backlight(100);
     s_display.last_input_ms = (uint64_t)(esp_timer_get_time() / 1000);
     (void)bsp_battery_init();
     s_battery_percent = bsp_battery_soc();
@@ -458,8 +452,8 @@ void app_main(void)
         return;
     }
     quota_service_get_view(&s_view_work);
-    quota_navigation_init(&s_navigation, s_view_work.configured, s_view_work.refresh_seconds,
-                          s_view_work.auto_refresh, s_view_work.screen_timeout_seconds);
+    quota_navigation_init(&s_navigation, s_view_work.refresh_seconds, s_view_work.auto_refresh,
+                          s_view_work.screen_timeout_seconds);
     reconcile_account_selection(&s_view_work);
     observe_login_navigation(s_view_work.portable.login_state, false);
 
@@ -471,6 +465,12 @@ void app_main(void)
     s_usb_powered = usb_serial_jtag_is_connected();
     quota_ui_render(&s_navigation, &s_view_work, s_battery_percent, s_usb_powered);
     bsp_lvgl_unlock();
+    if (bsp_lvgl_refresh()) {
+        bsp_display_backlight(100);
+        s_backlight_percent = 100;
+    } else {
+        s_backlight_percent = 0;
+    }
 
     bsp_power_set_wake_callback(on_screen_wake, NULL);
     esp_err_t button_result = bsp_button_init(on_button, NULL);

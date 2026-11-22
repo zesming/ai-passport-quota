@@ -58,6 +58,7 @@ static bool s_scan_list_owned;
 static bool s_stop_event_seen;
 static bool s_fence_ack;
 static bool s_retiring;
+static bool s_retire_needs_sta_stop;
 static bool s_quarantined;
 static retire_stage_t s_quarantine_resume;
 static uint32_t s_fence_token, s_expected_fence_token;
@@ -234,6 +235,7 @@ static void finish_retirement(void)
     s_scan_complete = false;
     s_scan_list_owned = false;
     s_retiring = false;
+    s_retire_needs_sta_stop = false;
     s_quarantined = false;
     s_retire_stage = RETIRE_IDLE;
     s_fence_ack = false;
@@ -297,9 +299,6 @@ void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data
     const wifi_event_sta_disconnected_t *event = data;
     bool sleeping = quota_service_display_sleeping();
     if (event) {
-        size_t length = event->ssid_len;
-        if (length > sizeof(event->ssid))
-            length = sizeof(event->ssid);
         ESP_LOGW(TAG, "Wi-Fi disconnected: reason=%u, sleeping=%u", (unsigned)event->reason,
                  (unsigned)sleeping);
     } else {
@@ -453,6 +452,7 @@ void quota_wifi_retire_begin(void)
     bool already_retiring = s_retire_stage != RETIRE_IDLE || s_retiring;
     if (!already_retiring) {
         s_retiring = true;
+        s_retire_needs_sta_stop = mode_has_sta(s_driver_mode);
         s_quarantined = false;
     }
     portEXIT_CRITICAL(&s_event_mux);
@@ -517,7 +517,7 @@ quota_wifi_result_t quota_wifi_retire_poll(void)
         }
         portENTER_CRITICAL(&s_event_mux);
         bool wifi_started = s_wifi_started;
-        bool needs_sta_stop = mode_has_sta(s_driver_mode);
+        bool needs_sta_stop = s_retire_needs_sta_stop;
         portEXIT_CRITICAL(&s_event_mux);
         if (wifi_started) {
             if (needs_sta_stop)

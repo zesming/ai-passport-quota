@@ -98,6 +98,11 @@ int main(void)
     assert(parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"deepseek_save\",\"label\":\"My "
                  "API\",\"api_key\":\"sk-fake\"}"));
     assert(strcmp(command.api_key, "sk-fake") == 0);
+    /* CD-01: DeepSeek api_key must be printable non-whitespace ASCII (0x21..0x7e). */
+    assert(!parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"deepseek_save\",\"label\":\"My "
+                  "API\",\"api_key\":\"sk-bad key\"}"));
+    assert(!parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"deepseek_save\",\"label\":\"My "
+                  "API\",\"api_key\":\"sk-中文\"}"));
     assert(
         parse("{\"v\":3,\"request_id\":\"abcdef01\",\"op\":\"codex_queue\",\"label\":\"Work\"}"));
     assert(parse(
@@ -183,9 +188,18 @@ int main(void)
 #include <string.h>
 #include "esp_http_server.h"
 typedef struct {
-    const char *host, *origin, *secret;
+    const char *host, *origin, *secret, *content_type;
 } fixture_t;
-static bool active;
+static bool active, state_ok, expire_during_state, expire_during_recv;
+static const char *state_payload;
+static size_t state_payload_len;
+static quota_portable_submit_result_t next_submit = QUOTA_PORTABLE_SUBMIT_ACCEPTED;
+static unsigned submit_calls;
+static char last_submitted_id[9];
+static const char *recv_body;
+static size_t recv_len, recv_pos, recv_chunk;
+static bool recv_fail;
+static int64_t recv_step_us;
 static uint32_t peer_ip, local_ip;
 static unsigned peer_form, local_form;
 static bool peer_failure, local_failure;
@@ -198,6 +212,8 @@ static const char *get(httpd_req_t *r, const char *name)
         return f->origin;
     if (!strcmp(name, "X-AIQ-Access"))
         return f->secret;
+    if (!strcmp(name, "Content-Type"))
+        return f->content_type;
     return NULL;
 }
 size_t httpd_req_get_hdr_value_len(httpd_req_t *r, const char *name)
@@ -258,13 +274,28 @@ static int fake_local(int fd, struct sockaddr *addr, socklen_t *len)
     return fake_address(addr, len, local_ip, local_form, local_failure);
 }
 /* What the handlers send, so the tests can read headers and bodies. */
-static char sent_headers[8][2][512], sent_body[512], sent_status[64];
+static char sent_headers[8][2][512], sent_body[512], sent_status[64], sent_type[64];
+static ssize_t sent_length;
 static unsigned sent_header_count;
+static void reset_sent(void)
+{
+    sent_header_count = 0;
+    sent_body[0] = 0;
+    sent_status[0] = 0;
+    sent_type[0] = 0;
+    sent_length = -1;
+}
 esp_err_t httpd_resp_set_hdr(httpd_req_t *r, const char *field, const char *value)
 {
     (void)r;
     snprintf(sent_headers[sent_header_count][0], 512, "%s", field);
     snprintf(sent_headers[sent_header_count++][1], 512, "%s", value);
+    return ESP_OK;
+}
+esp_err_t httpd_resp_set_type(httpd_req_t *r, const char *type)
+{
+    (void)r;
+    snprintf(sent_type, sizeof(sent_type), "%s", type);
     return ESP_OK;
 }
 esp_err_t httpd_resp_set_status(httpd_req_t *r, const char *status)
@@ -276,8 +307,31 @@ esp_err_t httpd_resp_set_status(httpd_req_t *r, const char *status)
 esp_err_t httpd_resp_send(httpd_req_t *r, const char *body, ssize_t length)
 {
     (void)r;
-    snprintf(sent_body, sizeof(sent_body), "%.*s", length < 0 ? 400 : (int)length, body);
+    sent_length = length;
+    size_t copy_len = length < 0 ? strlen(body) : (size_t)length;
+    if (copy_len >= sizeof(sent_body))
+        copy_len = sizeof(sent_body) - 1;
+    memcpy(sent_body, body, copy_len);
+    sent_body[copy_len] = 0;
     return ESP_OK;
+}
+int httpd_req_recv(httpd_req_t *r, char *buf, size_t buf_len)
+{
+    (void)r;
+    host_time_us += recv_step_us;
+    if (expire_during_recv) {
+        active = false;
+        expire_during_recv = false;
+    }
+    if (recv_fail || recv_pos >= recv_len)
+        return -1;
+    size_t left = recv_len - recv_pos;
+    size_t take = buf_len < left ? buf_len : left;
+    if (recv_chunk && take > recv_chunk)
+        take = recv_chunk;
+    memcpy(buf, recv_body + recv_pos, take);
+    recv_pos += take;
+    return (int)take;
 }
 static const char *sent_header(const char *field)
 {
@@ -296,17 +350,26 @@ static bool session(void *ctx)
 }
 static quota_portable_submit_result_t submit_stub(const quota_portable_command_t *c, void *x)
 {
-    (void)c;
     (void)x;
-    return QUOTA_PORTABLE_SUBMIT_ACCEPTED;
+    submit_calls++;
+    memcpy(last_submitted_id, c->request_id, sizeof(last_submitted_id));
+    return next_submit;
 }
 static bool state_stub(char *b, size_t c, size_t *l, void *x)
 {
-    (void)b;
-    (void)c;
-    (void)l;
     (void)x;
-    return false;
+    if (expire_during_state) {
+        active = false;
+        expire_during_state = false;
+    }
+    if (!state_ok)
+        return false;
+    *l = state_payload_len;
+    if (state_payload && state_payload_len < c) {
+        memcpy(b, state_payload, state_payload_len);
+        b[state_payload_len] = 0;
+    }
+    return true;
 }
 static bool allowed(httpd_req_t *r, bool secret, bool mutation)
 {
@@ -324,7 +387,7 @@ int main(void)
     active = true;
     peer_ip = 0xc0a80402;
     local_ip = 0xc0a80401;
-    fixture_t f = {"192.168.4.1", "http://192.168.4.1", s_secret};
+    fixture_t f = {"192.168.4.1", "http://192.168.4.1", s_secret, "application/json"};
     httpd_req_t r = {.user_ctx = &f};
     assert(allowed(&r, true, true));
     f.origin = "http://evil.test";
@@ -425,13 +488,144 @@ int main(void)
     /* The page is served with its own CSP plus frame-ancestors; errors name protocol and
      * firmware. */
     assert(quota_portal_start("K7QM-2X9D-PA4T-Z8RW", &callbacks));
-    sent_header_count = 0;
+    reset_sent();
     assert(page_handler(&r) == ESP_OK);
+    size_t expected_html_len = 0;
+    const char *expected_html = quota_portal_setup_html(&expected_html_len);
+    assert(sent_length == (ssize_t)expected_html_len &&
+           sent_length == (ssize_t)strlen(expected_html));
     assert(!strcmp(sent_header("Content-Security-Policy"),
                    "default-src 'none'; script-src 'sha256-test'; frame-ancestors 'none'"));
     assert(!strcmp(sent_header("X-Frame-Options"), "DENY"));
-    assert(strstr(sent_body, "http-equiv"));
-    sent_header_count = 0;
+    assert(!strcmp(sent_body, expected_html));
+
+    /* TS-01: exercise state_handler (403, 503 unavailable/zero/overflow, re-auth 403, 200). */
+    reset_sent();
+    f.secret = NULL;
+    assert(state_handler(&r) == ESP_OK && !strcmp(sent_status, "403 Forbidden"));
+    f.secret = s_secret;
+    state_ok = false;
+    reset_sent();
+    assert(state_handler(&r) == ESP_OK && !strcmp(sent_status, "503 Service Unavailable") &&
+           strstr(sent_body, "\"state_unavailable\""));
+    state_ok = true;
+    state_payload = "{}";
+    state_payload_len = 0;
+    reset_sent();
+    assert(state_handler(&r) == ESP_OK && !strcmp(sent_status, "503 Service Unavailable"));
+    state_payload_len = QUOTA_PORTABLE_STATE_BYTES + 1;
+    reset_sent();
+    assert(state_handler(&r) == ESP_OK && !strcmp(sent_status, "503 Service Unavailable"));
+    state_payload = "{\"protocol\":3}";
+    state_payload_len = strlen(state_payload);
+    expire_during_state = true;
+    reset_sent();
+    assert(state_handler(&r) == ESP_OK && !strcmp(sent_status, "403 Forbidden") &&
+           strstr(sent_body, "\"session_expired\""));
+    active = true;
+    reset_sent();
+    assert(state_handler(&r) == ESP_OK && !strcmp(sent_type, "application/json") &&
+           !strcmp(sent_header("Cache-Control"), "no-store") &&
+           sent_length == (ssize_t)state_payload_len && !strcmp(sent_body, state_payload));
+
+    /* TS-01: exercise command_handler (403, 415, 413, 408, 400 recv/parse, chunked recv,
+     * post-parse re-auth 403, 503/409/400/403 submit outcomes, and 202 Accepted). */
+    const char *good_cmd = "{\"v\":3,\"request_id\":\"a1b2c3d4\",\"op\":\"refresh\"}";
+    r.content_len = strlen(good_cmd);
+    recv_body = good_cmd;
+    recv_len = strlen(good_cmd);
+    recv_pos = 0;
+    recv_chunk = 0;
+    recv_fail = false;
+    recv_step_us = 0;
+
+    f.secret = NULL;
+    reset_sent();
+    assert(command_handler(&r) == ESP_OK && !strcmp(sent_status, "403 Forbidden"));
+    f.secret = s_secret;
+
+    f.content_type = "text/plain";
+    reset_sent();
+    assert(command_handler(&r) == ESP_OK && !strcmp(sent_status, "415 Unsupported Media Type") &&
+           strstr(sent_body, "\"invalid_content_type\""));
+    f.content_type = "application/json; charset=utf-8";
+
+    r.content_len = 0;
+    reset_sent();
+    assert(command_handler(&r) == ESP_OK && !strcmp(sent_status, "413 Payload Too Large") &&
+           strstr(sent_body, "\"invalid_size\""));
+    r.content_len = QUOTA_PORTABLE_COMMAND_BYTES + 1;
+    reset_sent();
+    assert(command_handler(&r) == ESP_OK && !strcmp(sent_status, "413 Payload Too Large"));
+
+    /* Chunked recv exceeding the 3 s deadline returns 408 Request Timeout. */
+    r.content_len = strlen(good_cmd);
+    recv_pos = 0;
+    recv_chunk = 8;
+    recv_step_us = 3500000;
+    reset_sent();
+    assert(command_handler(&r) == ESP_OK && !strcmp(sent_status, "408 Request Timeout") &&
+           strstr(sent_body, "\"incomplete_request\""));
+    recv_step_us = 0;
+
+    /* Recv error returns 400 incomplete_request. */
+    recv_pos = 0;
+    recv_fail = true;
+    reset_sent();
+    assert(command_handler(&r) == ESP_OK && !strcmp(sent_status, "400 Bad Request") &&
+           strstr(sent_body, "\"incomplete_request\""));
+    recv_fail = false;
+
+    /* Invalid JSON command body returns 400 invalid_command without calling submit. */
+    const char *bad_cmd = "{\"v\":3,\"request_id\":\"a1b2c3d4\",\"op\":\"refresh\",\"x\":1}";
+    r.content_len = strlen(bad_cmd);
+    recv_body = bad_cmd;
+    recv_len = strlen(bad_cmd);
+    recv_pos = 0;
+    recv_chunk = 0;
+    submit_calls = 0;
+    reset_sent();
+    assert(command_handler(&r) == ESP_OK && !strcmp(sent_status, "400 Bad Request") &&
+           strstr(sent_body, "\"invalid_command\"") && submit_calls == 0);
+
+    /* Session expiring mid-recv triggers post-parse re-auth 403 without calling submit. */
+    r.content_len = strlen(good_cmd);
+    recv_body = good_cmd;
+    recv_len = strlen(good_cmd);
+    recv_pos = 0;
+    recv_chunk = 11;
+    expire_during_recv = true;
+    reset_sent();
+    assert(command_handler(&r) == ESP_OK && !strcmp(sent_status, "403 Forbidden") &&
+           strstr(sent_body, "\"session_expired\"") && submit_calls == 0);
+    active = true;
+
+    /* Submit result mappings: BUSY -> 503, CONFLICT -> 409, INVALID -> 400, CLOSED -> 403,
+     * ACCEPTED -> 202 (with chunked body assembly). */
+    const struct {
+        quota_portable_submit_result_t result;
+        const char *status;
+        const char *needle;
+    } outcomes[] = {
+        {QUOTA_PORTABLE_SUBMIT_BUSY, "503 Service Unavailable", "\"busy\""},
+        {QUOTA_PORTABLE_SUBMIT_CONFLICT, "409 Conflict", "\"request_conflict\""},
+        {QUOTA_PORTABLE_SUBMIT_INVALID, "400 Bad Request", "\"invalid_command\""},
+        {QUOTA_PORTABLE_SUBMIT_CLOSED, "403 Forbidden", "\"session_expired\""},
+        {QUOTA_PORTABLE_SUBMIT_ACCEPTED, "202 Accepted",
+         "{\"request_id\":\"a1b2c3d4\",\"accepted\":true}"},
+    };
+    for (size_t i = 0; i < sizeof(outcomes) / sizeof(outcomes[0]); i++) {
+        next_submit = outcomes[i].result;
+        recv_pos = 0;
+        recv_chunk = 7;
+        reset_sent();
+        assert(command_handler(&r) == ESP_OK);
+        assert(!strcmp(sent_status, outcomes[i].status));
+        assert(strstr(sent_body, outcomes[i].needle));
+    }
+    assert(submit_calls == 5 && !strcmp(last_submitted_id, "a1b2c3d4"));
+
+    reset_sent();
     assert(reply_error(&r, "403 Forbidden", "access_locked") == ESP_OK);
     assert(!strcmp(sent_status, "403 Forbidden"));
     assert(!strcmp(sent_body, "{\"ok\":false,\"error_code\":\"access_locked\",\"protocol\":3,"
@@ -478,9 +672,12 @@ int main(int argc, char **argv)
         return 2;
     FILE *file = fopen(argv[1], "rb");
     char *html = malloc(1 << 20);
-    size_t length = file ? fread(html, 1, 1 << 20, file) : 0;
+    size_t length = file && html ? fread(html, 1, 1 << 20, file) : 0;
+    if (file)
+        fclose(file);
     char csp[512];
-    size_t used = portal_csp(html, length, csp, sizeof(csp));
+    size_t used = html ? portal_csp(html, length, csp, sizeof(csp)) : 0;
+    free(html);
     if (!used || used != strlen(csp))
         return 1;
     puts(csp);
@@ -500,12 +697,29 @@ int main(int argc, char **argv)
                 "tests/host_sdk/module_defaults.c",
             )
             subprocess.run(
-                [os.environ.get("CC", "cc"), "-std=c11", "-D_DEFAULT_SOURCE", "-Wall", "-Wextra",
-                 "-Werror", "-DQUOTA_HOST_TEST", "-I" + str(ROOT / "tests/host_sdk"),
-                 "-I" + str(ROOT / "tests/bsp_stubs"), "-I" + str(ROOT / "components/bsp/include"),
-                 "-I" + str(ROOT / "main"), "-I" + str(ROOT / "tests/cjson"),
-                 str(path / "test.c"), *(str(ROOT / name) for name in sources), "-lm",
-                 "-o", str(path / "test")],
+                [
+                    os.environ.get("CC", "cc"),
+                    "-std=c11",
+                    "-D_DEFAULT_SOURCE",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-Wno-deprecated-declarations",
+                    "-fsanitize=address,undefined",
+                    "-fno-sanitize-recover=undefined",
+                    "-fno-omit-frame-pointer",
+                    "-DQUOTA_HOST_TEST",
+                    "-I" + str(ROOT / "tests/host_sdk"),
+                    "-I" + str(ROOT / "tests/bsp_stubs"),
+                    "-I" + str(ROOT / "components/bsp/include"),
+                    "-I" + str(ROOT / "main"),
+                    "-I" + str(ROOT / "tests/cjson"),
+                    str(path / "test.c"),
+                    *(str(ROOT / name) for name in sources),
+                    "-lm",
+                    "-o",
+                    str(path / "test"),
+                ],
                 check=True,
             )
             page = ROOT / "main/setup_page.html"
@@ -551,111 +765,9 @@ _Static_assert(offsetof(legacy_credential_record_t, value) == offsetof(credentia
                "v1 value moved");
 _Static_assert(offsetof(legacy_credential_record_t, crc) == offsetof(credential_record_t, crc),
                "v1 CRC moved");
-typedef struct {
-    char key[16];
-    size_t length;
-    unsigned char data[16384];
-} item_t;
-static item_t items[10], pending;
-static size_t item_count;
-static bool fail_commit;
-static int commits;
-static esp_err_t open_error, query_error, data_error;
-esp_err_t nvs_flash_init_partition(const char *part)
+static nvs_stub_item_t *find(const char *key)
 {
-    assert(!strcmp(part, "portable"));
-    return ESP_OK;
-}
-esp_err_t nvs_flash_deinit_partition(const char *part)
-{
-    (void)part;
-    return ESP_OK;
-}
-esp_err_t nvs_flash_erase_partition(const char *part)
-{
-    (void)part;
-    return ESP_OK;
-}
-esp_err_t nvs_open_from_partition(const char *part, const char *space, int mode, nvs_handle_t *out)
-{
-    assert(!strcmp(part, "portable") && !strcmp(space, "quota_port"));
-    assert(mode == NVS_READONLY || mode == NVS_READWRITE);
-    if (open_error != ESP_OK)
-        return open_error;
-    *out = 1;
-    return ESP_OK;
-}
-void nvs_close(nvs_handle_t h)
-{
-    assert(h == 1);
-    memset(&pending, 0, sizeof(pending));
-}
-static item_t *find(const char *key)
-{
-    for (size_t i = 0; i < item_count; i++)
-        if (!strcmp(items[i].key, key))
-            return &items[i];
-    return NULL;
-}
-esp_err_t nvs_get_blob(nvs_handle_t h, const char *key, void *out, size_t *bytes)
-{
-    assert(h == 1);
-    item_t *item = find(key);
-    if (!item)
-        return ESP_ERR_NVS_NOT_FOUND;
-    if (!out) {
-        if (query_error != ESP_OK)
-            return query_error;
-        *bytes = item->length;
-        return ESP_OK;
-    }
-    if (data_error != ESP_OK)
-        return data_error;
-    if (*bytes < item->length)
-        return ESP_FAIL;
-    memcpy(out, item->data, item->length);
-    *bytes = item->length;
-    return ESP_OK;
-}
-esp_err_t nvs_set_blob(nvs_handle_t h, const char *key, const void *value, size_t bytes)
-{
-    assert(h == 1 && bytes <= sizeof(pending.data));
-    strcpy(pending.key, key);
-    memcpy(pending.data, value, bytes);
-    pending.length = bytes;
-    return ESP_OK;
-}
-esp_err_t nvs_open(const char *space, int mode, nvs_handle_t *out)
-{
-    (void)space;
-    (void)mode;
-    (void)out;
-    return ESP_ERR_NVS_NOT_FOUND;
-}
-esp_err_t nvs_erase_all(nvs_handle_t h)
-{
-    (void)h;
-    return ESP_OK;
-}
-esp_err_t nvs_erase_key(nvs_handle_t h, const char *key)
-{
-    (void)h;
-    (void)key;
-    return ESP_ERR_NVS_NOT_FOUND;
-}
-esp_err_t nvs_commit(nvs_handle_t h)
-{
-    assert(h == 1);
-    commits++;
-    if (fail_commit)
-        return 1;
-    item_t *item = find(pending.key);
-    if (!item) {
-        assert(item_count < 10);
-        item = &items[item_count++];
-    }
-    *item = pending;
-    return ESP_OK;
+    return nvs_stub_find_mut("portable", "quota_port", key);
 }
 static void assert_workspace_clear(void)
 {
@@ -684,9 +796,6 @@ int main(void)
     assert(!quota_store_save_credential(0, c));
     assert(!s_credential_record);
     reject_store_allocation = false;
-    open_error = ESP_OK;
-    query_error = ESP_OK;
-    data_error = ESP_OK;
     memset(read, 0xa5, sizeof(*read));
     assert(quota_store_load_credential_result(3, read) == QUOTA_STORE_READ_MISSING);
     assert(read->id[0] == 0 && read->refresh_token[0] == 0);
@@ -697,23 +806,23 @@ int main(void)
     reject_store_allocation = false;
     assert(quota_store_save_credential(0, c));
     assert(quota_store_load_credential_result(0, read) == QUOTA_STORE_READ_OK);
-    item_t *stored_credential = find("account0");
+    nvs_stub_item_t *stored_credential = find("account0");
     assert(stored_credential);
     size_t saved_credential_length = stored_credential->length;
     stored_credential->length--;
     assert(quota_store_load_credential_result(0, read) == QUOTA_STORE_READ_INVALID);
     assert(!LOAD_OK(0, read));
     stored_credential->length = saved_credential_length;
-    open_error = ESP_FAIL;
+    nvs_stub.open_error = ESP_FAIL;
     assert(quota_store_load_credential_result(0, read) == QUOTA_STORE_READ_IO_ERROR);
     assert(read->id[0] == 0 && read->refresh_token[0] == 0);
-    open_error = ESP_OK;
-    query_error = ESP_FAIL;
+    nvs_stub.open_error = ESP_OK;
+    nvs_stub.query_error = ESP_FAIL;
     assert(quota_store_load_credential_result(0, read) == QUOTA_STORE_READ_IO_ERROR);
-    query_error = ESP_OK;
-    data_error = ESP_FAIL;
+    nvs_stub.query_error = ESP_OK;
+    nvs_stub.data_error = ESP_FAIL;
     assert(quota_store_load_credential_result(0, read) == QUOTA_STORE_READ_IO_ERROR);
-    data_error = ESP_OK;
+    nvs_stub.data_error = ESP_OK;
     assert(LOAD_OK(0, read));
     assert_workspace_clear();
     assert(!read->refresh_inflight);
@@ -723,18 +832,49 @@ int main(void)
     strcpy(c->access_token, "new-access");
     strcpy(c->refresh_token, "new-refresh");
     c->refresh_inflight = false;
-    fail_commit = true;
+    /* TS-02: real ESP-IDF NVS persists on nvs_set_blob. Test set_blob failure separately from
+     * commit failure so both the surviving inflight marker and idempotent commit retry are
+     * verified accurately. */
+    nvs_stub.set_blob_error = ESP_FAIL;
     assert(!quota_store_save_credential(0, c));
-    fail_commit = false;
+    nvs_stub.set_blob_error = ESP_OK;
     assert(LOAD_OK(0, read) && read->refresh_inflight);
-    assert(!strcmp(read->refresh_token, "old-refresh")); /* Marker survives lost final write. */
-    assert(quota_store_save_credential(0, c));
+    assert(!strcmp(read->refresh_token, "old-refresh")); /* Marker survives lost set_blob. */
+    nvs_stub.commit_error = ESP_FAIL;
+    assert(!quota_store_save_credential(0, c));
+    nvs_stub.commit_error = ESP_OK;
+    assert(quota_store_save_credential(0, c)); /* Retry after failed commit is idempotent. */
     assert(LOAD_OK(0, read));
     assert(!read->refresh_inflight && !strcmp(read->refresh_token, "new-refresh"));
-    int before = commits;
+    unsigned before = nvs_stub.commits;
     memset(c->access_token, 'x', sizeof(c->access_token));
-    assert(!quota_store_save_credential(0, c) && commits == before);
+    assert(!quota_store_save_credential(0, c) && nvs_stub.commits == before);
     strcpy(c->access_token, "new-access");
+    /* CD-01: DeepSeek api_key with space or non-ASCII is rejected on new saves, while legacy
+     * records written by older firmware with ASCII spaces still load so users can replace them. */
+    quota_portable_credential_t ds = {0};
+    strcpy(ds.id, "22222222222222222222222222222222");
+    ds.slot = 2;
+    ds.provider = QUOTA_PROVIDER_DEEPSEEK;
+    ds.generation = 1;
+    strcpy(ds.api_key, "sk-bad key");
+    assert(!quota_store_save_credential(2, &ds) && nvs_stub.commits == before);
+    strcpy(ds.api_key, "sk-\xc3\xa9");
+    assert(!quota_store_save_credential(2, &ds) && nvs_stub.commits == before);
+    credential_record_t *legacy_ds = calloc(1, sizeof(*legacy_ds));
+    assert(legacy_ds);
+    legacy_ds->magic = CREDENTIAL_MAGIC;
+    legacy_ds->version = STORE_VERSION;
+    legacy_ds->bytes = sizeof(*legacy_ds);
+    legacy_ds->value = ds;
+    strcpy(legacy_ds->value.api_key, "sk-legacy key");
+    legacy_ds->crc = store_crc(legacy_ds, offsetof(credential_record_t, crc));
+    nvs_stub_put(STORE_PARTITION, STORE_NAMESPACE, "account2", legacy_ds, sizeof(*legacy_ds));
+    free(legacy_ds);
+    assert(quota_store_load_credential_result(2, read) == QUOTA_STORE_READ_OK &&
+           !strcmp(read->api_key, "sk-legacy key"));
+    strcpy(ds.api_key, "sk-valid-key");
+    assert(quota_store_save_credential(2, &ds) && nvs_stub.commits == before + 1);
     assert(store_allocations > allocations &&
            !s_credential_record); /* External records are temporary. */
     reject_store_allocation = false;
@@ -762,9 +902,7 @@ int main(void)
     legacy.value.generation = 7;
     strcpy(legacy.value.id, "11111111111111111111111111111111");
     legacy.crc = store_crc(&legacy, offsetof(legacy_credential_record_t, crc));
-    assert(nvs_set_blob(1, "account1", &legacy, sizeof(legacy)) == ESP_OK &&
-           nvs_commit(1) == ESP_OK);
-    nvs_close(1);
+    nvs_stub_put("portable", "quota_port", "account1", &legacy, sizeof(legacy));
     allocations = store_allocations;
     reject_store_allocation = true;
     assert(LOAD_OK(1, workspace));
@@ -777,15 +915,20 @@ int main(void)
     strcpy(workspace->refresh_token, "received-refresh");
     workspace->refresh_inflight = false;
     legacy.value = *workspace;
-    fail_commit = true;
+    /* set_blob failure leaves the old inflight record on disk and keeps workspace intact. */
+    nvs_stub.set_blob_error = ESP_FAIL;
     assert(!quota_store_save_credential(1, workspace));
-    fail_commit = false;
-    assert(!memcmp(workspace, &legacy.value,
-                   sizeof(*workspace))); /* Failed commit retains received rotation for retry. */
+    nvs_stub.set_blob_error = ESP_OK;
+    assert(!memcmp(workspace, &legacy.value, sizeof(*workspace)));
     legacy_credential_record_t committed;
-    memcpy(&committed, find("account1")->data, sizeof(committed));
+    memcpy(&committed, find("account1")->bytes, sizeof(committed));
     assert(committed.value.refresh_inflight &&
            !strcmp(committed.value.refresh_token, "new-refresh"));
+    /* commit failure returns false, keeps workspace intact, and retry is idempotent. */
+    nvs_stub.commit_error = ESP_FAIL;
+    assert(!quota_store_save_credential(1, workspace));
+    nvs_stub.commit_error = ESP_OK;
+    assert(!memcmp(workspace, &legacy.value, sizeof(*workspace)));
     assert(quota_store_save_credential(1, workspace));
     assert(!memcmp(workspace, &legacy.value, sizeof(*workspace)));
     assert(store_allocations ==
@@ -804,18 +947,18 @@ int main(void)
            !strcmp(workspace->id, legacy.value.id));
     assert(!LOAD_OK(QUOTA_MAX_ACCOUNTS, workspace));
     assert_workspace_clear();
-    item_t *bad = find("account1");
+    nvs_stub_item_t *bad = find("account1");
     assert(bad);
     credential_record_t valid_credential;
-    memcpy(&valid_credential, bad->data, sizeof(valid_credential));
+    memcpy(&valid_credential, bad->bytes, sizeof(valid_credential));
     credential_record_t malformed_credential = valid_credential;
     malformed_credential.value.provider = (quota_provider_t)99;
     malformed_credential.crc = store_crc(&malformed_credential, offsetof(credential_record_t, crc));
-    memcpy(bad->data, &malformed_credential, sizeof(malformed_credential));
+    memcpy(bad->bytes, &malformed_credential, sizeof(malformed_credential));
     assert(quota_store_load_credential_result(1, workspace) == QUOTA_STORE_READ_INVALID);
     assert_workspace_clear();
-    memcpy(bad->data, &valid_credential, sizeof(valid_credential));
-    bad->data[20] ^= 1;
+    memcpy(bad->bytes, &valid_credential, sizeof(valid_credential));
+    bad->bytes[20] ^= 1;
     assert(quota_store_load_credential_result(1, workspace) == QUOTA_STORE_READ_INVALID);
     assert_workspace_clear();
     assert(store_allocations == allocations);
@@ -826,9 +969,9 @@ int main(void)
     assert(quota_store_load_credential_result(0, read) == QUOTA_STORE_READ_OK);
     assert(read->tombstone && read->generation == 2 && read->access_token[0] == 0 &&
            read->refresh_token[0] == 0);
-    item_t *record = find("account0");
+    nvs_stub_item_t *record = find("account0");
     assert(record);
-    record->data[20] ^= 1;
+    record->bytes[20] ^= 1;
     assert(!LOAD_OK(0, read));
     assert(read->id[0] == 0 && read->refresh_token[0] == 0);
     assert_workspace_clear();
@@ -837,30 +980,8 @@ int main(void)
     puts("portable storage runtime checks passed");
 }
 '''
-        nvs_header = '''#pragma once
-#include <stddef.h>
-typedef int nvs_handle_t;
-typedef int esp_err_t;
-enum { ESP_OK=0, NVS_READONLY=1, NVS_READWRITE=2, ESP_FAIL=3, ESP_ERR_NO_MEM=4,
-       ESP_ERR_NVS_NOT_FOUND=5, ESP_ERR_NVS_PART_NOT_FOUND=6,
-       ESP_ERR_NVS_TYPE_MISMATCH=7 };
-esp_err_t nvs_open_from_partition(const char*,const char*,int,nvs_handle_t*);
-void nvs_close(nvs_handle_t);
-esp_err_t nvs_get_blob(nvs_handle_t,const char*,void*,size_t*);
-esp_err_t nvs_set_blob(nvs_handle_t,const char*,const void*,size_t);
-esp_err_t nvs_commit(nvs_handle_t);
-esp_err_t nvs_open(const char*,int,nvs_handle_t*);
-esp_err_t nvs_erase_all(nvs_handle_t);
-esp_err_t nvs_erase_key(nvs_handle_t,const char*);
-'''
         with tempfile.TemporaryDirectory(prefix="quota-portable-store-") as directory:
             path = Path(directory)
-            (path / "nvs.h").write_text(nvs_header)
-            (path / "nvs_flash.h").write_text(
-                '#pragma once\n#include "nvs.h"\nesp_err_t nvs_flash_init_partition(const char*);\n'
-                "esp_err_t nvs_flash_deinit_partition(const char*);\n"
-                "esp_err_t nvs_flash_erase_partition(const char*);\n"
-            )
             (path / "test.c").write_text(harness)
             subprocess.run(
                 [
@@ -871,13 +992,15 @@ esp_err_t nvs_erase_key(nvs_handle_t,const char*);
                     "-Werror",
                     "-Wno-deprecated-declarations",
                     "-fsanitize=address,undefined",
+                    "-fno-sanitize-recover=undefined",
                     "-fno-omit-frame-pointer",
-                    "-I" + str(path),
+                    "-I" + str(ROOT / "tests/nvs_stub"),
                     "-I" + str(ROOT / "main"),
                     "-I" + str(ROOT / "tests/cjson"),
                     str(path / "test.c"),
                     str(ROOT / "main/quota_logic.c"),
                     str(ROOT / "main/quota_catalog.c"),
+                    str(ROOT / "tests/nvs_stub/nvs_stub.c"),
                     str(ROOT / "tests/cjson/cJSON.c"),
                     "-lm",
                     "-o",

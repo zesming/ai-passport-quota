@@ -247,13 +247,21 @@ QUOTA_TESTABLE void handle_serial_frame(const char *frame, size_t length)
                  quota_monotonic_ms() - s_usb_opener_at < QUOTA_USB_OPENER_IDLE_MS)
             send_usb_result(request->request_id, NULL, "session_busy", false);
         else {
+            uint64_t now = quota_monotonic_ms();
+            uint64_t deadline = quota_usb_deadline_ms();
+            if (!quota_usb_requested() || now >= deadline) {
+                send_usb_result(request->request_id, NULL, "session_expired", false);
+                goto done;
+            }
             /* A takeover revokes the previous page's session so only one page keeps control. */
             if (s_usb_opener[0] && strcmp(s_usb_opener, request->request_id))
                 new_usb_session();
+            quota_service_lock();
             memcpy(s_usb_opener, request->request_id, 9);
-            s_usb_opener_at = quota_monotonic_ms();
+            quota_service_unlock();
+            s_usb_opener_at = now;
             char response[384];
-            uint64_t left = (quota_usb_deadline_ms() - quota_monotonic_ms() + 999) / 1000;
+            uint64_t left = quota_remaining_seconds(deadline, now);
             int bytes =
                 snprintf(response, sizeof(response),
                          "@AIQ:{\"v\":%d,\"op\":\"result\",\"request_id\":\"%.8s\",\"ok\":true,"
@@ -264,6 +272,8 @@ QUOTA_TESTABLE void handle_serial_frame(const char *frame, size_t length)
                          QUOTA_PROTOCOL_VERSION, quota_portable_service_firmware());
             if (quota_usb_active() && bytes > 0 && (size_t)bytes < sizeof(response))
                 (void)fwrite(response, 1, (size_t)bytes, stdout);
+            else if (!quota_usb_active())
+                send_usb_result(request->request_id, NULL, "session_expired", false);
             (void)fflush(stdout);
         }
     } else if (!usb_authorized(request->session_id))
@@ -340,7 +350,9 @@ void quota_usb_poll(bool sleeping)
         atomic_store(&s_usb_io_busy, false);
         atomic_store(&s_usb_deadline, 0);
         quota_portable_clear_secret(s_usb_session, sizeof(s_usb_session));
+        quota_service_lock();
         s_usb_opener[0] = 0;
+        quota_service_unlock();
         return;
     }
     if (!quota_usb_deadline_ms()) {
@@ -357,8 +369,8 @@ void quota_usb_poll(bool sleeping)
             drained += (unsigned)count;
         }
         new_usb_session();
-        s_usb_opener[0] = 0;
         quota_service_lock();
+        s_usb_opener[0] = 0;
         quota_service_view_t *view = quota_service_view();
         s_usb_window_open = true;
         s_usb_opened_at_ms = (int64_t)quota_monotonic_ms();

@@ -5,6 +5,7 @@
 #include "esp_err.h"
 #include <stdbool.h>
 #include <stddef.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <stdint.h>
 
@@ -77,6 +78,8 @@ typedef struct {
 #define ESP_NETIF_DEFAULT_WIFI_STA() {0}
 esp_err_t esp_netif_init(void);
 esp_netif_t *esp_netif_new(const esp_netif_config_t *config);
+esp_netif_t *esp_netif_create_default_wifi_ap(void);
+esp_netif_t *esp_netif_get_handle_from_ifkey(const char *if_key);
 esp_err_t esp_netif_attach_wifi_station(esp_netif_t *netif);
 void esp_netif_destroy_default_wifi(void *netif);
 void esp_netif_action_stop(void *netif, esp_event_base_t base, int32_t id, void *data);
@@ -84,10 +87,46 @@ bool esp_netif_is_netif_up(esp_netif_t *netif);
 esp_err_t esp_netif_get_ip_info(esp_netif_t *netif, esp_netif_ip_info_t *info);
 typedef enum { ESP_NETIF_DHCP_STOPPED, ESP_NETIF_DHCP_STARTED } esp_netif_dhcp_status_t;
 esp_err_t esp_netif_dhcpc_get_status(esp_netif_t *netif, esp_netif_dhcp_status_t *status);
+#define IPSTR "%u.%u.%u.%u"
+#define IP2STR(ip)                                                                                 \
+    (unsigned)((ip)->addr & 0xffu), (unsigned)(((ip)->addr >> 8) & 0xffu),                         \
+        (unsigned)(((ip)->addr >> 16) & 0xffu), (unsigned)(((ip)->addr >> 24) & 0xffu)
+#define CONFIG_LWIP_SNTP_MAX_SERVERS 3
+typedef struct {
+    bool start;
+    size_t num_of_servers;
+    const char *servers[CONFIG_LWIP_SNTP_MAX_SERVERS];
+} esp_sntp_config_t;
+#define ESP_SNTP_SERVER_LIST(...) {__VA_ARGS__}
+#define ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(count, list)                                        \
+    ((esp_sntp_config_t){.start = true, .num_of_servers = (count), .servers = list})
+esp_err_t esp_netif_sntp_init(const esp_sntp_config_t *config);
+esp_err_t esp_netif_sntp_sync_wait(unsigned timeout);
+void esp_netif_sntp_deinit(void);
 typedef struct {
     int unused;
 } wifi_init_config_t;
 typedef enum { WIFI_MODE_NULL, WIFI_MODE_STA = 1, WIFI_MODE_AP, WIFI_MODE_APSTA } wifi_mode_t;
+typedef struct {
+    unsigned char ssid[32], password[64];
+    struct {
+        bool capable, required;
+    } pmf_cfg;
+    struct {
+        int authmode;
+    } threshold;
+    bool bssid_set;
+    uint8_t channel, scan_method, sort_method, failure_retry_cnt;
+} wifi_sta_config_t;
+typedef struct {
+    unsigned char ssid[32], password[64];
+    unsigned ssid_len, channel, max_connection;
+    int authmode;
+} wifi_ap_config_t;
+typedef union {
+    wifi_sta_config_t sta;
+    wifi_ap_config_t ap;
+} wifi_config_t;
 typedef struct {
     struct {
         uint32_t min, max;
@@ -128,15 +167,21 @@ enum {
     WIFI_IF_STA = 0,
     WIFI_IF_AP = 1,
     WIFI_AUTH_OPEN = 0,
-    WIFI_AUTH_WPA2_PSK = 3
+    WIFI_AUTH_WPA2_PSK = 3,
+    WIFI_REASON_AUTH_FAIL = 202,
+    WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT = 15,
+    MALLOC_CAP_8BIT = 1
 };
 esp_err_t esp_wifi_set_default_wifi_sta_handlers(void);
 esp_err_t esp_wifi_init(const wifi_init_config_t *config);
 esp_err_t esp_wifi_deinit(void);
 esp_err_t esp_wifi_set_storage(int storage);
 esp_err_t esp_wifi_set_mode(wifi_mode_t mode);
+esp_err_t esp_wifi_set_config(int iface, const wifi_config_t *config);
 esp_err_t esp_wifi_start(void);
 esp_err_t esp_wifi_stop(void);
+esp_err_t esp_wifi_connect(void);
+esp_err_t esp_wifi_disconnect(void);
 esp_err_t esp_wifi_sta_get_ap_info(wifi_ap_record_t *record);
 esp_err_t esp_wifi_scan_start(const wifi_scan_config_t *config, bool block);
 esp_err_t esp_wifi_scan_stop(void);
@@ -180,3 +225,8 @@ esp_err_t esp_timer_create(const esp_timer_create_args_t *args, esp_timer_handle
 esp_err_t esp_timer_start_periodic(esp_timer_handle_t timer, uint64_t period_us);
 uint32_t esp_get_free_heap_size(void);
 uint32_t esp_get_minimum_free_heap_size(void);
+size_t heap_caps_get_largest_free_block(int caps);
+typedef struct {
+    char version[32];
+} esp_app_desc_t;
+const esp_app_desc_t *esp_app_get_description(void);

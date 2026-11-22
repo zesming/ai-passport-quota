@@ -24,107 +24,9 @@ static void *test_calloc(size_t count, size_t bytes)
 #define calloc test_calloc
 #include "quota_store.c"
 #undef calloc
-typedef struct {
-    char key[16];
-    size_t length;
-    unsigned char bytes[8192];
-} item_t;
-static item_t items[3];
-static unsigned count, writes;
-static bool write_fails, commit_fails, error_after_write;
-static esp_err_t read_error;
-static item_t *find(const char *key)
+static nvs_stub_item_t *find(const char *key)
 {
-    for (unsigned i = 0; i < count; i++)
-        if (!strcmp(key, items[i].key))
-            return &items[i];
-    return NULL;
-}
-esp_err_t nvs_flash_init_partition(const char *p)
-{
-    (void)p;
-    return ESP_OK;
-}
-esp_err_t nvs_flash_deinit_partition(const char *part)
-{
-    (void)part;
-    return ESP_OK;
-}
-esp_err_t nvs_flash_erase_partition(const char *part)
-{
-    (void)part;
-    return ESP_OK;
-}
-esp_err_t nvs_open_from_partition(const char *p, const char *s, int mode, nvs_handle_t *h)
-{
-    (void)p;
-    (void)s;
-    (void)mode;
-    *h = 1;
-    return ESP_OK;
-}
-void nvs_close(nvs_handle_t h)
-{
-    (void)h;
-}
-esp_err_t nvs_get_blob(nvs_handle_t h, const char *key, void *out, size_t *bytes)
-{
-    (void)h;
-    if (read_error)
-        return read_error;
-    item_t *item = find(key);
-    if (!item)
-        return ESP_ERR_NVS_NOT_FOUND;
-    if (!out) {
-        *bytes = item->length;
-        return ESP_OK;
-    }
-    assert(*bytes >= item->length);
-    memcpy(out, item->bytes, item->length);
-    *bytes = item->length;
-    return ESP_OK;
-}
-esp_err_t nvs_set_blob(nvs_handle_t h, const char *key, const void *data, size_t bytes)
-{
-    (void)h;
-    writes++;
-    if (write_fails)
-        return ESP_FAIL;
-    item_t *item = find(key);
-    if (!item) {
-        assert(count < 3);
-        item = &items[count++];
-        strcpy(item->key, key);
-    }
-    assert(bytes <= sizeof(item->bytes));
-    item->length = bytes;
-    memcpy(item->bytes, data, bytes);
-    if (error_after_write)
-        read_error = ESP_FAIL;
-    return ESP_OK; /* SDK persists set_blob before commit. */
-}
-esp_err_t nvs_commit(nvs_handle_t h)
-{
-    (void)h;
-    return commit_fails ? ESP_FAIL : ESP_OK;
-}
-esp_err_t nvs_open(const char *s, int mode, nvs_handle_t *h)
-{
-    (void)s;
-    (void)mode;
-    (void)h;
-    return ESP_ERR_NVS_NOT_FOUND;
-}
-esp_err_t nvs_erase_all(nvs_handle_t h)
-{
-    (void)h;
-    return ESP_OK;
-}
-esp_err_t nvs_erase_key(nvs_handle_t h, const char *key)
-{
-    (void)h;
-    (void)key;
-    return ESP_ERR_NVS_NOT_FOUND;
+    return nvs_stub_find_mut("portable", "quota_port", key);
 }
 static quota_model_t model, candidate, restored;
 static quota_snapshot_t snapshot;
@@ -170,39 +72,40 @@ int main(void)
         assert(quota_catalog_valid(&model));
     }
     assert(quota_store_load_model_result(&restored, &seq) == QUOTA_STORE_READ_MISSING && seq == 0);
-    write_fails = true;
+    nvs_stub.set_blob_error = ESP_FAIL;
     assert(quota_store_save_model_verified(0, &model, 1) == QUOTA_MODEL_NOT_APPLIED);
-    write_fails = false;
-    commit_fails = true;
+    nvs_stub.set_blob_error = ESP_OK;
+    nvs_stub.commit_error = ESP_FAIL;
     assert(quota_store_save_model_verified(0, &model, 1) == QUOTA_MODEL_APPLIED);
     assert(quota_store_load_model_result(&restored, &seq) == QUOTA_STORE_READ_OK && seq == 1);
     candidate = model;
     candidate.refresh_seconds = 900;
-    commit_fails = false;
-    write_fails = true;
+    nvs_stub.commit_error = ESP_OK;
+    nvs_stub.set_blob_error = ESP_FAIL;
     assert(quota_store_save_model_verified(1, &candidate, 2) == QUOTA_MODEL_NOT_APPLIED);
-    write_fails = false;
-    error_after_write = true;
+    nvs_stub.set_blob_error = ESP_OK;
+    nvs_stub.error_after_write = 1;
     assert(quota_store_save_model_verified(1, &candidate, 2) == QUOTA_MODEL_WRITE_UNKNOWN);
-    unsigned before = writes;
+    unsigned before = nvs_stub.writes;
     assert(quota_store_save_model_verified(1, &candidate, 2) == QUOTA_MODEL_WRITE_UNKNOWN &&
-           writes == before);
-    read_error = ESP_OK;
-    error_after_write = false;
+           nvs_stub.writes == before);
+    nvs_stub.query_error = ESP_OK;
+    nvs_stub.data_error = ESP_OK;
+    nvs_stub.error_after_write = 0;
     reject_alloc = true;
     assert(quota_store_save_model_verified(1, &candidate, 2) == QUOTA_MODEL_WRITE_UNKNOWN &&
-           writes == before);
+           nvs_stub.writes == before);
     reject_alloc = false;
     assert(quota_store_save_model_verified(1, &candidate, 2) == QUOTA_MODEL_APPLIED &&
-           writes == before);
+           nvs_stub.writes == before);
     assert(quota_store_save_model_verified(1, &model, 2) == QUOTA_MODEL_WRITE_UNKNOWN &&
-           writes == before);
+           nvs_stub.writes == before);
     assert(quota_store_load_model_result(&restored, &seq) == QUOTA_STORE_READ_OK && seq == 2);
-    item_t *item = find("model_v2");
+    nvs_stub_item_t *item = find("model_v2");
     item->bytes[offsetof(model_record_t, crc)] ^= 1;
     assert(quota_store_load_model_result(&restored, &seq) == QUOTA_STORE_READ_INVALID);
     assert(quota_store_save_model_verified(2, &candidate, 3) == QUOTA_MODEL_WRITE_UNKNOWN &&
-           writes == before);
+           nvs_stub.writes == before);
     item->bytes[offsetof(model_record_t, crc)] ^= 1;
     snapshot.account_count = 1;
     strcpy(snapshot.accounts[0].id, model.entries[0].logical_id);
@@ -322,31 +225,54 @@ int main(void)
     model.entries[8] = model.entries[7];
     model.entry_count = 9;
     assert(!quota_catalog_valid(&model)); /* Cannot silently exceed capacity or duplicate slots. */
+
+    /* Upgrade scrub cleans interrupted new_row and DELETE_NATIVE intents of retired providers,
+     * while leaving corrupt intent kinds untouched so quota_catalog_valid() rejects them. */
+    memset(&model, 0, sizeof(model));
+    model.refresh_seconds = 300;
+    model.screen_timeout_seconds = 120;
+    add_native(0);
+    quota_catalog_removed_t removed;
+    memset(intent, 0, sizeof(*intent));
+    intent->kind = QUOTA_INTENT_UPSERT_NATIVE;
+    intent->provider = (quota_provider_t)1;
+    intent->slot = 2;
+    intent->new_row = true;
+    intent->previous_missing = true;
+    strcpy(intent->logical_id, "00000000000000000000000000000042");
+    strcpy(intent->target_credential_id, intent->logical_id);
+    intent->target_credential_generation = 1;
+    assert(quota_catalog_scrub_removed(&model, &removed));
+    assert(model.intent.kind == QUOTA_INTENT_NONE && quota_catalog_valid(&model));
+    assert(removed.count == 1 && removed.rows[0].owns_slot && removed.rows[0].slot == 2 &&
+           removed.rows[0].credential_generation == 1 &&
+           !strcmp(removed.rows[0].credential_id, "00000000000000000000000000000042"));
+
+    memset(intent, 0, sizeof(*intent));
+    intent->kind = QUOTA_INTENT_DELETE_NATIVE;
+    intent->provider = (quota_provider_t)1;
+    intent->slot = 3;
+    strcpy(intent->logical_id, "00000000000000000000000000000043");
+    strcpy(intent->previous_credential_id, intent->logical_id);
+    strcpy(intent->target_credential_id, intent->logical_id);
+    intent->previous_credential_generation = 4;
+    intent->target_credential_generation = 5;
+    assert(quota_catalog_scrub_removed(&model, &removed));
+    assert(model.intent.kind == QUOTA_INTENT_NONE && quota_catalog_valid(&model));
+    assert(removed.count == 1 && removed.rows[0].owns_slot && removed.rows[0].slot == 3 &&
+           !strcmp(removed.rows[0].logical_id, "00000000000000000000000000000043"));
+
+    memset(intent, 0, sizeof(*intent));
+    intent->kind = (quota_intent_kind_t)99;
+    intent->provider = (quota_provider_t)1;
+    intent->slot = 4;
+    assert(!quota_catalog_scrub_removed(&model, &removed));
+    assert(!quota_catalog_valid(&model));
     puts("catalog durability/cache checks passed");
 }
 '''
-        nvs = '''#pragma once
-#include <stddef.h>
-typedef int nvs_handle_t; typedef int esp_err_t;
-enum {ESP_OK=0, ESP_FAIL=1, ESP_ERR_NVS_NOT_FOUND=2, ESP_ERR_NO_MEM=3,
-ESP_ERR_NVS_TYPE_MISMATCH=4, ESP_ERR_NVS_PART_NOT_FOUND=5, NVS_READONLY=0, NVS_READWRITE=1};
-esp_err_t nvs_open_from_partition(const char*,const char*,int,nvs_handle_t*);
-void nvs_close(nvs_handle_t);
-esp_err_t nvs_get_blob(nvs_handle_t,const char*,void*,size_t*);
-esp_err_t nvs_set_blob(nvs_handle_t,const char*,const void*,size_t);
-esp_err_t nvs_commit(nvs_handle_t);
-esp_err_t nvs_open(const char*,int,nvs_handle_t*);
-esp_err_t nvs_erase_all(nvs_handle_t);
-esp_err_t nvs_erase_key(nvs_handle_t,const char*);
-'''
         with tempfile.TemporaryDirectory(prefix="quota-catalog-") as directory:
             path = Path(directory)
-            (path / "nvs.h").write_text(nvs)
-            (path / "nvs_flash.h").write_text(
-                '#pragma once\n#include "nvs.h"\nesp_err_t nvs_flash_init_partition(const char*);\n'
-                "esp_err_t nvs_flash_deinit_partition(const char*);\n"
-                "esp_err_t nvs_flash_erase_partition(const char*);\n"
-            )
             (path / "test.c").write_text(harness)
             executable = path / "test"
             command = [
@@ -357,13 +283,15 @@ esp_err_t nvs_erase_key(nvs_handle_t,const char*);
                 "-Werror",
                 "-Wno-deprecated-declarations",
                 "-fsanitize=address,undefined",
+                "-fno-sanitize-recover=undefined",
                 "-fno-omit-frame-pointer",
-                "-I" + str(path),
+                "-I" + str(ROOT / "tests/nvs_stub"),
                 "-I" + str(ROOT / "main"),
                 "-I" + str(ROOT / "tests/cjson"),
                 str(path / "test.c"),
                 str(ROOT / "main/quota_catalog.c"),
                 str(ROOT / "main/quota_logic.c"),
+                str(ROOT / "tests/nvs_stub/nvs_stub.c"),
                 str(ROOT / "tests/cjson/cJSON.c"),
                 "-lm",
                 "-o",
