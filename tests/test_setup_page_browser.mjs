@@ -162,11 +162,11 @@ await withBrowser(async (port, profile) => {
     return {
       width: rect.width,
       height: rect.height,
-      innerWidth: window.innerWidth,
+      clientWidth: document.documentElement.clientWidth,
       animationName: style.animationName,
     };
   })()`);
-  assert.equal(barMetrics.width, barMetrics.innerWidth, '#bar must span the full viewport width');
+  assert.equal(barMetrics.width, barMetrics.clientWidth, '#bar must span the full viewport width');
   assert(barMetrics.height >= 60, `#bar must not collapse (got ${barMetrics.height}px)`);
   assert.equal(barMetrics.animationName, 'none', '#bar must not inherit skeleton pulse animation');
   // Sheet focus trap and focus restoration in a real browser.
@@ -236,9 +236,13 @@ await withBrowser(async (port, profile) => {
     );
     const hotspotBar = await httpTab.evaluate(`(() => {
       const rect = document.getElementById('bar').getBoundingClientRect();
-      return { width: rect.width, height: rect.height, innerWidth: window.innerWidth };
+      return {
+        width: rect.width,
+        height: rect.height,
+        clientWidth: document.documentElement.clientWidth,
+      };
     })()`);
-    assert.equal(hotspotBar.width, hotspotBar.innerWidth);
+    assert.equal(hotspotBar.width, hotspotBar.clientWidth);
     assert(hotspotBar.height >= 60);
     await httpTab.evaluate("document.getElementById('finish').click()");
     await waitFor(
