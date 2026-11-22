@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="referrer" content="no-referrer">
 <meta name="color-scheme" content="light dark">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-E/HNQh4CjoZ2ce9oTrNmqbLS0tkT5F2b0xUMoMEG7X4='; style-src 'sha256-HTHpQDj203Jz1oyaGkCZ6rD5pOLmkM+wc6LQWImWRUU='; img-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-R+ipa9s4JvuZVF91ljeuNQQo6dfDUIK9h7E3CmnVgps='; style-src 'sha256-HTHpQDj203Jz1oyaGkCZ6rD5pOLmkM+wc6LQWImWRUU='; img-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
 <title>Passport 设置</title>
 <style>
 :root {
@@ -1006,14 +1006,15 @@ class UsbDeviceSession {
       timeoutMs = 15000,
       retryOnce = false,
       maxFrameBytes = 4096,
+      encoded = null,
       onWritten,
       fatalWriteTimeout = true,
     } = {},
   ) {
-    const encoded = encoder.encode(`@AIQ:${JSON.stringify(frame)}\n`);
-    if (encoded.byteLength > maxFrameBytes) throw new DeviceSerialError('frame_too_long');
+    const bytes = encoded ?? encoder.encode(`@AIQ:${JSON.stringify(frame)}\n`);
+    if (bytes.byteLength > maxFrameBytes) throw new DeviceSerialError('frame_too_long');
     const send = () =>
-      this.serial.send(encoded, frame.request_id, { timeoutMs, onWritten, fatalWriteTimeout });
+      this.serial.send(bytes, frame.request_id, { timeoutMs, onWritten, fatalWriteTimeout });
     try {
       return await send();
     } catch (error) {
@@ -1150,8 +1151,9 @@ class UsbDeviceSession {
       session_id: this.sessionId,
       body: frame.body,
     };
-    const encodedBytes = encoder.encode(`@AIQ:${JSON.stringify(packet)}\n`).byteLength;
-    if (encodedBytes > this.limits.max_frame_bytes) throw new DeviceSerialError('frame_too_long');
+    const encoded = encoder.encode(`@AIQ:${JSON.stringify(packet)}\n`);
+    if (encoded.byteLength > this.limits.max_frame_bytes)
+      throw new DeviceSerialError('frame_too_long');
     const pending = { requestId: frame.request_id, sessionId: this.sessionId };
     this.pendingMutation = pending;
     const remainingMs = () => Math.max(0, this.sessionExpiresAt - this.now());
@@ -1162,6 +1164,7 @@ class UsbDeviceSession {
       this.exchange(packet, {
         timeoutMs,
         maxFrameBytes: this.limits.max_frame_bytes,
+        encoded,
         onWritten: () => {
           transmitted = true;
           frame.onTransmit?.();
@@ -1483,7 +1486,7 @@ const labelProblem = (label, required) =>
   textProblem(label, { min: required ? 1 : 0, max: 32, what: '备注名' });
 const ssidProblem = (ssid) => textProblem(ssid, { min: 1, max: 32, what: 'Wi‑Fi 名称' });
 function keyProblem(key) {
-  const base = textProblem(key, { min: 1, max: 511, what: '密钥' });
+  const base = textProblem(key, { min: 1, max: 512, what: '密钥' });
   if (base) return base;
   if (!/^[\x21-\x7e]+$/.test(key)) return '密钥只能包含可见 ASCII 字符，不能包含空格或中文';
   return '';
@@ -2066,6 +2069,14 @@ function clearSecrets() {
   app.showDeepseekKey = false;
   app.rowErrors.clear();
   for (const id of ['wifi-password', 'deepseek-key']) byId(id).value = '';
+  byId('deepseek-key').type = 'password';
+  byId('deepseek-show').checked = false;
+  for (const [key, input] of app.inputs) {
+    if (key.startsWith('key:')) {
+      input.value = '';
+      input.type = 'password';
+    }
+  }
   resetWifiPasswordVisibility();
 }
 

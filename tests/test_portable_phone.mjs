@@ -1298,6 +1298,12 @@ for (const transport of ['usb', 'http']) {
   await byText(detail, '保存', 'button').click();
   const inlineError = byClass(page.node('account-list'), 'row-error')[0];
   assert(inlineError && inlineError.textContent.includes('ASCII'));
+  await keyInput.type_('k'.repeat(513));
+  await byText(detail, '保存', 'button').click();
+  assert(byClass(page.node('account-list'), 'row-error')[0].textContent.includes('512'));
+  await keyInput.type_('k'.repeat(512));
+  await byText(detail, '保存', 'button').click();
+  await until(page, () => !page.node('account-list').textContent.includes('512'), '512-byte key');
 
   // Editing an existing Wi-Fi resets password visibility and clarifies re-entry.
   await byClass(page.node('wifi-list'), 'row-main')[0].click();
@@ -1310,12 +1316,25 @@ for (const transport of ['usb', 'http']) {
   assert.equal(page.node('wifi-show').checked, false);
   assert.equal(page.node('wifi-password').type, 'password');
 
-  // Takeover updates connection title accurately; disconnect clears ended title.
+  // Re-open DeepSeek editor with revealed secret right before disconnect so clearSecrets wipes it.
+  await byClass(page.node('account-list'), 'row-main')[1].click();
+  const detail3 = byClass(page.node('account-list'), 'detail')[0];
+  const inputs3 = all(detail3).filter((node) => node.tagName === 'INPUT');
+  const keyInput3 = inputs3.find((node) => node.type === 'password');
+  const toggleBox3 = inputs3.find((node) => node.type === 'checkbox');
+  toggleBox3.checked = true;
+  await toggleBox3.dispatch('change');
+  await keyInput3.type_('sk-disconnect-secret');
+  assert.equal(keyInput3.type, 'text');
+
+  // Takeover updates connection title accurately; disconnect clears ended state and secrets.
   device.session.id = 'e'.repeat(32);
   await elapse(page, device, 3000);
   assert.equal(text(page, 'conn-text'), '连接已被接管');
   await click(page, 'usb-disconnect');
   assert.equal(text(page, 'conn-text'), '未连接');
+  assert.equal(keyInput3.value, '');
+  assert.equal(keyInput3.type, 'password');
 }
 
 {

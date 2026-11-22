@@ -156,16 +156,19 @@ bool quota_store_init(void)
 
 static bool erase_retired_default_namespace(bool default_partition_ready)
 {
-    bool ok = true;
+    if (!default_partition_ready)
+        return true;
     nvs_handle_t handle;
-    if (default_partition_ready && nvs_open(RETIRED_NAMESPACE, NVS_READONLY, &handle) == ESP_OK) {
-        nvs_close(handle);
-        ok = nvs_open(RETIRED_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK;
-        if (ok) {
-            ok = nvs_erase_all(handle) == ESP_OK && nvs_commit(handle) == ESP_OK;
-            nvs_close(handle);
-        }
-    }
+    esp_err_t error = nvs_open(RETIRED_NAMESPACE, NVS_READONLY, &handle);
+    if (error == ESP_ERR_NVS_NOT_FOUND)
+        return true;
+    if (error != ESP_OK)
+        return false;
+    nvs_close(handle);
+    if (nvs_open(RETIRED_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK)
+        return false;
+    bool ok = nvs_erase_all(handle) == ESP_OK && nvs_commit(handle) == ESP_OK;
+    nvs_close(handle);
     return ok;
 }
 
@@ -173,21 +176,25 @@ static bool erase_retired_default_namespace(bool default_partition_ready)
 bool quota_store_erase_retired(bool default_partition_ready)
 {
     bool ok = erase_retired_default_namespace(default_partition_ready);
+    if (!s_ready)
+        return ok;
     nvs_handle_t handle;
-    if (s_ready && nvs_open_from_partition(STORE_PARTITION, STORE_NAMESPACE, NVS_READONLY,
-                                           &handle) == ESP_OK) {
-        nvs_close(handle);
-        if (nvs_open_from_partition(STORE_PARTITION, STORE_NAMESPACE, NVS_READWRITE, &handle) !=
-            ESP_OK)
-            return false;
-        static const char *const keys[] = {"config", "snapshot"};
-        for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
-            esp_err_t error = nvs_erase_key(handle, keys[i]);
-            ok = ok && (error == ESP_OK || error == ESP_ERR_NVS_NOT_FOUND);
-        }
-        ok = nvs_commit(handle) == ESP_OK && ok;
-        nvs_close(handle);
+    esp_err_t open_err =
+        nvs_open_from_partition(STORE_PARTITION, STORE_NAMESPACE, NVS_READONLY, &handle);
+    if (open_err == ESP_ERR_NVS_NOT_FOUND)
+        return ok;
+    if (open_err != ESP_OK)
+        return false;
+    nvs_close(handle);
+    if (nvs_open_from_partition(STORE_PARTITION, STORE_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK)
+        return false;
+    static const char *const keys[] = {"config", "snapshot"};
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+        esp_err_t error = nvs_erase_key(handle, keys[i]);
+        ok = ok && (error == ESP_OK || error == ESP_ERR_NVS_NOT_FOUND);
     }
+    ok = nvs_commit(handle) == ESP_OK && ok;
+    nvs_close(handle);
     return ok;
 }
 
@@ -205,8 +212,19 @@ quota_factory_reset_result_t quota_store_factory_reset(void)
         if (error == ESP_OK || error == ESP_ERR_NVS_NOT_FOUND)
             error = nvs_commit(handle);
         nvs_close(handle);
-        if (error != ESP_OK)
+        if (error != ESP_OK) {
+            /* Real ESP-IDF NVS removes the entry before nvs_commit(). Read back model_v2 so an
+             * already-deleted catalog returns CATALOG_GONE and triggers the reboot path. */
+            if (nvs_open_from_partition(STORE_PARTITION, STORE_NAMESPACE, NVS_READONLY, &handle) ==
+                ESP_OK) {
+                size_t length = 0;
+                esp_err_t probe = nvs_get_blob(handle, "model_v2", NULL, &length);
+                nvs_close(handle);
+                if (probe == ESP_ERR_NVS_NOT_FOUND)
+                    return QUOTA_FACTORY_RESET_CATALOG_GONE;
+            }
             return QUOTA_FACTORY_RESET_FAILED;
+        }
         catalog_deleted = true;
     }
     /* Skip erasing retired keys on STORE_PARTITION since the whole partition is erased below. */
@@ -365,6 +383,23 @@ _Static_assert(offsetof(observation_t, binding) == 48, "observation layout chang
 _Static_assert(sizeof(observation_record_t) == 3104, "observation record layout changed");
 _Static_assert(offsetof(observation_record_t, rows) == 24, "observation record layout changed");
 
+static bool removed_slot_conflicts_with_kept(const quota_model_t *model,
+                                             const quota_catalog_removed_t *removed)
+{
+    if (!model || !removed)
+        return false;
+    for (unsigned i = 0; i < removed->count; i++) {
+        if (!removed->rows[i].owns_slot)
+            continue;
+        for (unsigned k = 0; k < model->entry_count; k++) {
+            if (model->entries[k].source == QUOTA_ACCOUNT_DEVICE &&
+                model->entries[k].binding.native.slot == removed->rows[i].slot)
+                return true;
+        }
+    }
+    return false;
+}
+
 /* The checksum covers the stored bytes, so the retired content is removed only after it. Cleanup
  * must precede quota_catalog_valid: one dropped row must not invalidate the whole catalog. */
 static quota_store_read_result_t read_model_record(model_record_t *record,
@@ -382,6 +417,8 @@ static quota_store_read_result_t read_model_record(model_record_t *record,
     bool changed = quota_catalog_scrub_removed(&record->value, removed);
     if (scrubbed)
         *scrubbed = changed;
+    if (removed_slot_conflicts_with_kept(&record->value, removed))
+        return QUOTA_STORE_READ_INVALID;
     return quota_catalog_valid(&record->value) ? QUOTA_STORE_READ_OK : QUOTA_STORE_READ_INVALID;
 }
 

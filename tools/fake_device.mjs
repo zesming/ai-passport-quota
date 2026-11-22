@@ -323,6 +323,8 @@ export function createSimDevice(options = {}) {
   device.state = state;
 
   const COMMON_KEYS = new Set(['v', 'op', 'request_id', 'phone_utc']);
+  const VALID_REFRESH_SECONDS = new Set([60, 300, 900, 1800]);
+  const VALID_SCREEN_TIMEOUTS = new Set([0, 30, 60, 120, 300, 600]);
   const OP_KEYS = {
     network_save: new Set(['ssid', 'password', 'network_index', 'open_network']),
     network_remove: new Set(['network_index']),
@@ -346,6 +348,22 @@ export function createSimDevice(options = {}) {
     for (const key of Object.keys(body)) {
       if (!COMMON_KEYS.has(key) && !extra.has(key)) return false;
     }
+    if (body.op === 'deepseek_save') {
+      const hasId = typeof body.account_id === 'string' && body.account_id.length > 0;
+      const key = body.api_key ?? '';
+      if (typeof key !== 'string') return false;
+      if (key.length === 0 && !hasId) return false;
+      if (key.length > 0 && (key.length > 512 || !/^[\x21-\x7e]+$/.test(key))) return false;
+    }
+    if (
+      body.op === 'settings_save' &&
+      (typeof body.auto_refresh !== 'boolean' ||
+        !Number.isInteger(body.refresh_seconds) ||
+        !VALID_REFRESH_SECONDS.has(body.refresh_seconds) ||
+        !Number.isInteger(body.screen_timeout_seconds) ||
+        !VALID_SCREEN_TIMEOUTS.has(body.screen_timeout_seconds))
+    )
+      return false;
     if (
       body.op === 'operation_cancel' &&
       (typeof body.target_request_id !== 'string' || !/^[0-9a-f]{8}$/.test(body.target_request_id))

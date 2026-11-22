@@ -403,6 +403,22 @@ static void factory_reset_erases_everything(void)
     assert(quota_store_load_model_result(&model_out, &sequence) == QUOTA_STORE_READ_MISSING);
     assert(quota_store_factory_reset() == QUOTA_FACTORY_RESET_OK);
     assert(!nvs_stub_find(STORE_PARTITION, STORE_NAMESPACE, "account3"));
+    /* Commit error after nvs_erase_key("model_v2"): catalog is already gone, must reboot. */
+    nvs_stub_put(STORE_PARTITION, STORE_NAMESPACE, "model_v2", "accounts and wifi", 18);
+    nvs_stub.commit_error = ESP_FAIL;
+    assert(quota_store_factory_reset() == QUOTA_FACTORY_RESET_CATALOG_GONE);
+    nvs_stub.commit_error = ESP_OK;
+    assert(!nvs_stub_find(STORE_PARTITION, STORE_NAMESPACE, "model_v2"));
+    /* Non-NOT_FOUND error opening retired ai_quota namespace is partial failure, not OK. */
+    nvs_stub_put(STORE_PARTITION, STORE_NAMESPACE, "model_v2", "accounts and wifi", 18);
+    nvs_stub_put("nvs", "ai_quota", "device_cfg", "retired", 8);
+    s_ready = false;
+    nvs_stub.open_error = ESP_FAIL;
+    assert(quota_store_factory_reset() == QUOTA_FACTORY_RESET_CATALOG_GONE);
+    nvs_stub.open_error = ESP_OK;
+    assert(nvs_stub_count("nvs", "ai_quota") == 1);
+    assert(quota_store_factory_reset() == QUOTA_FACTORY_RESET_OK);
+    assert(nvs_stub_count("nvs", "ai_quota") == 0);
     /* An uninitialized store never deleted the catalog, so a failed erase is a plain failure. */
     s_ready = false;
     nvs_stub_fail_partition_erase = 1;
@@ -436,6 +452,27 @@ static void unusable_rows_fail_closed(void)
     assert(quota_store_load_model_result(&out, &sequence) == QUOTA_STORE_READ_OK &&
            sequence == SEQUENCE + 1);
     assert(out.entry_count == 2); /* An unreadable slot is overwritten, not an obstacle. */
+    /* Slot collision between a retired intent and a kept account fails closed without erasing
+     * the kept account's credential. */
+    build_old_device(false);
+    memset(&model, 0, sizeof(model));
+    model.refresh_seconds = 300;
+    model.screen_timeout_seconds = 120;
+    set_entry(0, ID_CODEX, QUOTA_PROVIDER_CODEX, 0, 0, 0, CRED_CODEX);
+    model.entry_count = 1;
+    model.intent.kind = QUOTA_INTENT_UPSERT_NATIVE;
+    model.intent.new_row = true;
+    model.intent.provider = (quota_provider_t)OLD_PROVIDER_OTHER;
+    model.intent.slot = 0;
+    strcpy(model.intent.target_credential_id, "0000000000000000000000000000c002");
+    model.intent.target_credential_generation = 2;
+    put_model(&model);
+    nvs_stub.mutations = 0;
+    assert(quota_store_load_model_result(&out, &sequence) == QUOTA_STORE_READ_INVALID &&
+           nvs_stub.mutations == 0);
+    static quota_portable_credential_t kept_cred;
+    assert(quota_store_load_credential_result(0, &kept_cred) == QUOTA_STORE_READ_OK &&
+           !kept_cred.tombstone && !strcmp(kept_cred.id, CRED_CODEX));
 }
 
 static void orphan_credentials_are_freed(void)

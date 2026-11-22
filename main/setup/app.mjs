@@ -204,7 +204,7 @@ const labelProblem = (label, required) =>
   textProblem(label, { min: required ? 1 : 0, max: 32, what: '备注名' });
 const ssidProblem = (ssid) => textProblem(ssid, { min: 1, max: 32, what: 'Wi‑Fi 名称' });
 function keyProblem(key) {
-  const base = textProblem(key, { min: 1, max: 511, what: '密钥' });
+  const base = textProblem(key, { min: 1, max: 512, what: '密钥' });
   if (base) return base;
   if (!/^[\x21-\x7e]+$/.test(key)) return '密钥只能包含可见 ASCII 字符，不能包含空格或中文';
   return '';
@@ -787,6 +787,14 @@ function clearSecrets() {
   app.showDeepseekKey = false;
   app.rowErrors.clear();
   for (const id of ['wifi-password', 'deepseek-key']) byId(id).value = '';
+  byId('deepseek-key').type = 'password';
+  byId('deepseek-show').checked = false;
+  for (const [key, input] of app.inputs) {
+    if (key.startsWith('key:')) {
+      input.value = '';
+      input.type = 'password';
+    }
+  }
   resetWifiPasswordVisibility();
 }
 

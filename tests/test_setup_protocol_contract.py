@@ -32,7 +32,7 @@ static bool content_type_ok(const char *ct)
 int main(void)
 {
     char line[QUOTA_MAX_PROVISION_FRAME_BYTES + 256];
-    unsigned http_count = 0, usb_count = 0;
+    unsigned http_count = 0, usb_count = 0, reject_count = 0;
     while (fgets(line, sizeof(line), stdin)) {
         size_t len = strlen(line);
         while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
@@ -55,6 +55,14 @@ int main(void)
                 return 3;
             }
             http_count++;
+        } else if (!strncmp(line, "REJECT_HTTP\t", 12)) {
+            const char *body = line + 12;
+            quota_portable_command_t cmd;
+            if (quota_portal_parse_command(body, strlen(body), &cmd)) {
+                fprintf(stderr, "Invalid HTTP command accepted by firmware: %s\n", body);
+                return 6;
+            }
+            reject_count++;
         } else if (!strncmp(line, "USB\t", 4)) {
             const char *frame = line + 4;
             quota_usb_request_t req;
@@ -70,8 +78,8 @@ int main(void)
             return 5;
         }
     }
-    assert(http_count >= 14 && usb_count >= 14);
-    printf("verified http=%u usb=%u\n", http_count, usb_count);
+    assert(http_count >= 16 && usb_count >= 16 && reject_count >= 2);
+    printf("verified http=%u usb=%u reject=%u\n", http_count, usb_count, reject_count);
     return 0;
 }
 """
@@ -115,6 +123,8 @@ if (mode === 'emit') {
       label: 'Renamed',
       account_id: '0123456789abcdef0123456789abcdef',
     },
+    { op: 'deepseek_save', label: 'Key511', api_key: 'a'.repeat(511) },
+    { op: 'deepseek_save', label: 'Key512', api_key: 'b'.repeat(512) },
     { op: 'codex_queue', label: 'TeamGPT' },
     { op: 'codex_queue', account_id: '0123456789abcdef0123456789abcdef' },
     { op: 'account_remove', account_id: '0123456789abcdef0123456789abcdef' },
@@ -133,6 +143,37 @@ if (mode === 'emit') {
     const request_id = seq.toString(16).padStart(8, '0');
     seq += 1;
     await http.command({ v: 3, request_id, ...cmd });
+  }
+
+  // Shared invalid samples: both fake_device.mjs and real firmware C must reject them.
+  const rejectedDevice = createSimDevice({ accounts: [], networks: [] });
+  rejectedDevice.openHotspot(CODE);
+  const invalidSamples = [
+    {
+      v: 3,
+      request_id: 'f0000001',
+      op: 'deepseek_save',
+      label: 'Key513',
+      api_key: 'c'.repeat(513),
+    },
+    {
+      v: 3,
+      request_id: 'f0000002',
+      op: 'settings_save',
+      refresh_seconds: 7,
+      auto_refresh: true,
+      screen_timeout_seconds: 3,
+    },
+  ];
+  for (const bad of invalidSamples) {
+    const res = rejectedDevice.http(
+      'POST',
+      '/api/command',
+      { 'X-AIQ-Access': CODE, 'Content-Type': 'application/json' },
+      bad,
+    );
+    assert.equal(res.status, 400, `fake_device must reject invalid ${bad.op}`);
+    records.push(`REJECT_HTTP\t${JSON.stringify(bad)}`);
   }
 
   // Also drive the real setup_page.html UI over HTTP so app.mjs-built payloads (including

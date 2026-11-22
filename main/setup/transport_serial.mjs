@@ -275,14 +275,15 @@ export class UsbDeviceSession {
       timeoutMs = 15000,
       retryOnce = false,
       maxFrameBytes = 4096,
+      encoded = null,
       onWritten,
       fatalWriteTimeout = true,
     } = {},
   ) {
-    const encoded = encoder.encode(`@AIQ:${JSON.stringify(frame)}\n`);
-    if (encoded.byteLength > maxFrameBytes) throw new DeviceSerialError('frame_too_long');
+    const bytes = encoded ?? encoder.encode(`@AIQ:${JSON.stringify(frame)}\n`);
+    if (bytes.byteLength > maxFrameBytes) throw new DeviceSerialError('frame_too_long');
     const send = () =>
-      this.serial.send(encoded, frame.request_id, { timeoutMs, onWritten, fatalWriteTimeout });
+      this.serial.send(bytes, frame.request_id, { timeoutMs, onWritten, fatalWriteTimeout });
     try {
       return await send();
     } catch (error) {
@@ -419,8 +420,9 @@ export class UsbDeviceSession {
       session_id: this.sessionId,
       body: frame.body,
     };
-    const encodedBytes = encoder.encode(`@AIQ:${JSON.stringify(packet)}\n`).byteLength;
-    if (encodedBytes > this.limits.max_frame_bytes) throw new DeviceSerialError('frame_too_long');
+    const encoded = encoder.encode(`@AIQ:${JSON.stringify(packet)}\n`);
+    if (encoded.byteLength > this.limits.max_frame_bytes)
+      throw new DeviceSerialError('frame_too_long');
     const pending = { requestId: frame.request_id, sessionId: this.sessionId };
     this.pendingMutation = pending;
     const remainingMs = () => Math.max(0, this.sessionExpiresAt - this.now());
@@ -431,6 +433,7 @@ export class UsbDeviceSession {
       this.exchange(packet, {
         timeoutMs,
         maxFrameBytes: this.limits.max_frame_bytes,
+        encoded,
         onWritten: () => {
           transmitted = true;
           frame.onTransmit?.();

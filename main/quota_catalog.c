@@ -120,26 +120,38 @@ bool quota_catalog_scrub_removed(quota_model_t *model, quota_catalog_removed_t *
         model->entry_count = (uint8_t)kept;
     }
     /* An interrupted add (new_row) or delete of a removed provider has no row in entries[]; clear
-     * it here and record its target slot so quota_catalog_valid() does not reject the catalog. */
+     * it here and record its target slot so quota_catalog_valid() does not reject the catalog.
+     * If its slot collides with a kept account, leave the intent intact so quota_catalog_valid()
+     * rejects the conflicting catalog without erasing the kept account's credential. */
     quota_model_intent_t *intent = &model->intent;
     if ((intent->kind == QUOTA_INTENT_UPSERT_NATIVE ||
          intent->kind == QUOTA_INTENT_DELETE_NATIVE) &&
         intent->slot < QUOTA_MAX_ACCOUNTS && intent->provider != QUOTA_PROVIDER_CODEX &&
         intent->provider != QUOTA_PROVIDER_DEEPSEEK) {
-        if (removed && removed->count < QUOTA_CATALOG_STORED_ROWS + 1) {
-            if (!intent->new_row)
-                memcpy(removed->rows[removed->count].logical_id, intent->logical_id,
-                       sizeof(intent->logical_id));
-            removed->rows[removed->count].owns_slot = true;
-            removed->rows[removed->count].slot = intent->slot;
-            memcpy(removed->rows[removed->count].credential_id, intent->target_credential_id,
-                   sizeof(intent->target_credential_id));
-            removed->rows[removed->count].credential_generation =
-                intent->target_credential_generation;
-            removed->count++;
+        bool slot_in_use = false;
+        for (unsigned k = 0; k < kept; k++) {
+            if (model->entries[k].source == QUOTA_ACCOUNT_DEVICE &&
+                model->entries[k].binding.native.slot == intent->slot) {
+                slot_in_use = true;
+                break;
+            }
         }
-        memset(intent, 0, sizeof(*intent));
-        changed = true;
+        if (!slot_in_use) {
+            if (removed && removed->count < QUOTA_CATALOG_STORED_ROWS + 1) {
+                if (!intent->new_row)
+                    memcpy(removed->rows[removed->count].logical_id, intent->logical_id,
+                           sizeof(intent->logical_id));
+                removed->rows[removed->count].owns_slot = true;
+                removed->rows[removed->count].slot = intent->slot;
+                memcpy(removed->rows[removed->count].credential_id, intent->target_credential_id,
+                       sizeof(intent->target_credential_id));
+                removed->rows[removed->count].credential_generation =
+                    intent->target_credential_generation;
+                removed->count++;
+            }
+            memset(intent, 0, sizeof(*intent));
+            changed = true;
+        }
     }
     if (selected_removed) {
         memset(model->selected_account_id, 0, sizeof(model->selected_account_id));
